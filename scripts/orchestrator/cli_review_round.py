@@ -314,14 +314,25 @@ def _refuse_unmatched_only(only: List[str]) -> int:
 
 
 def _refuse_if_rounds_spent(
-    kind: _ReviewKind, iteration: int, max_iterations: int, force: bool
+    kind: _ReviewKind, iteration: int, max_iterations: int, force: bool, spare: bool = False
 ) -> Optional[int]:
-    """The round budget, refused in ``kind``'s words. Each caller reads its own setting."""
-    if iteration <= max_iterations or force:
+    """The round budget, refused in ``kind``'s words. Each caller reads its own setting.
+
+    ``spare`` is the one round past it that ``review.whole_change_recheck``
+    grants a whole-change snapshot; the message still names the setting's own
+    value.
+    """
+    if iteration <= max_iterations + int(spare) or force:
         return None
     _err(
-        "refusing to run %s round %d: the budget is %d rounds (%s)."
-        % (kind.label, iteration, max_iterations, kind.budget_setting)
+        "refusing to run %s round %d: the budget is %d rounds (%s)%s."
+        % (
+            kind.label,
+            iteration,
+            max_iterations,
+            kind.budget_setting,
+            " and one spare whole-change round (review.whole_change_recheck)" if spare else "",
+        )
     )
     _err(
         "The round that reached the limit still gets its %s; only the re-review is refused. "

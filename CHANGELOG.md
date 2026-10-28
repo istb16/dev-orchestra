@@ -13,6 +13,46 @@ authors can find it.
 
 ## [Unreleased]
 
+### Added
+
+- **A closing review of the whole change** (#364). With
+  `review.whole_change_recheck` on, a fix-only round that comes back with
+  nothing above Low is followed by one more round over the whole change since
+  the base; a whole-change round (the first one counts) that comes back with
+  nothing above Low has its accepted Low findings fixed and re-tested
+  (`final_fix` tracks that fix, as it does for a spent budget), and the
+  review ends. A Medium finding now calls for another round, as High and
+  Critical do; a finding is "above Low" when its severity is Medium or higher
+  or is in `review.re_review_severities`, and it is not rejected or a
+  duplicate. `review snapshot` and `review run` take the whole change by
+  themselves when that round is due, so `--full` is not needed, and the text
+  output says `scope: whole change (review.whole_change_recheck)`.
+  `max_review_iterations` still caps the rounds, with one exception: the
+  closing whole-change round may run as round `max + 1`, and only straight
+  after a clean fix-only round. When the budget runs out with something above
+  Low, `final_fix` applies as before. The default is `true`; the `quality`
+  preset sets it to `true` and `fast` to `false`, and `standard` leaves the
+  default. A project file that turns it off is gated as loosening review.
+  `review status` prints a `next:` line while the option is on. In `--json`,
+  `review status` gains `whole_change_recheck`, `round_scope`, `next_review`
+  and `wanted` (the findings that keep the loop open), `status` gains
+  `review.next_review`, `review.wanted` and `design_review.wanted`, `review-target.json`
+  gains `scope` and `recheck`, and `consolidated.json` gains `snapshot.scope`
+  and `snapshot.recheck`; no key is removed or renamed.
+
+### Changed
+
+- Under `standard` (and with no preset) and `quality`, the code review loop
+  now re-reviews on a Medium finding and closes with a whole-change round, so
+  a review can take more rounds than before (#364). Set
+  `review.whole_change_recheck: false` to keep the old loop; with it off,
+  behaviour and output are as before.
+- A review round that finds nothing is no longer counted as a repeat of the
+  previous round. Two clean rounds in a row -- a round and then a `--full`
+  one, say -- used to report that the last fix changed nothing, in
+  `review run`'s note, `identical_rounds` and `status`'s reasons; finding
+  nothing twice is not evidence of that.
+
 ## [1.2.1] - 2026-10-25
 
 ### Added

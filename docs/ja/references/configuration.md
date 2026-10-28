@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:5b3a70f8b3836be68f09487887a66c34a77882d6bfb48c42773a59482dc4b3ab -->
+<!-- translated-from: references/configuration.md sha256:17efd5cbf0441770cb71796c266a826007dcc3eb87707ad4da978e4c8d6fee02 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -157,13 +157,14 @@ preset: quality
 | レビュアーの枠（role / Claude の family） | general / fable [Claude]、general [Codex]、security / opus [Claude]、security [Codex]、architecture / opus [Claude]、test / opus [Claude] | general / opus、general / sonnet、security / sonnet→opus [Claude]、test / sonnet | general / opus; security / sonnet、`when: high-risk` |
 | 設計レビュアーの枠（`review.design.reviewers`） | general / sonnet→opus [Claude]、general [Codex]、security / opus [Claude]、test / sonnet [Claude]、architecture / opus [Claude] | general / sonnet→opus [Claude]、security / sonnet [Claude]、test / sonnet [Claude] | general / sonnet [Claude] |
 | `review.design.enabled` | `auto` | 設定しない（`auto`） | `false` |
+| `review.whole_change_recheck` | `true` | 設定しない（`true`） | `false` |
 | `optimization.level` | `quality` | 設定しない（`balanced`） | `aggressive` |
 
 `→opus` は `high_risk_model: {family: opus}` のことです: その枠は high-risk のラウンドでは opus で、
 それ以外では自分の family で動きます。`[Claude]` と `[Codex]` は、配るのではなくそのベンダーに置く
 枠を表します（下の手順 2）。
 
-プリセットが決めるのはこの8つのキーです。それ以外 — budgets、タイムアウト、
+プリセットが決めるのはこの9つのキーです。それ以外 — budgets、タイムアウト、
 `review.max_review_iterations`、`design.require_approval` — は、ファイルが設定しない限り
 組み込みデフォルトのままです（`design.require_approval` は global ファイルだけ:
 [下記](#what-the-project-file-may-not-loosen)）。`standard` のコードパネルは組み込みデフォルトから読み取って作るので、
@@ -586,6 +587,7 @@ review:
   max_review_iterations: 2            # hard stop on review→fix→re-review loops
   parallel: true                      # run reviewers concurrently
   re_review_severities: [critical, high]
+  whole_change_recheck: true          # end on a whole-change round with nothing above Low
   timeout_seconds: 1800               # reviewers only: `review run` and `run <reviewer-id>`
   idle_timeout_seconds: 300           # no output for this long: wedged; read-only `run` too
   design:
@@ -655,6 +657,7 @@ implementation:
 | `review.idle_timeout_seconds` | int、1 から 1,000,000,000 \| null | この時間出力がなければ、実行は固まったものとして扱われます（デフォルト 300。ストリーミングする provider のみ）。レビュアーと、ファイルを変えない `run` で共通です。沈黙の長さはタスクの大きさでは伸びないからです。ファイルを変えうる実行（implementer、review fixer、`--mode implement`）には代わりに 1200 秒を当て、この値の方が大きければこの値を当てます。走らせるテストやビルドがそれより長く黙りうる一方、期限をまったく当てないと、固まった実行が全体の期限まで走り続けるからです。ロールごとには `options.idle_timeout` で設定・上書きできます。 |
 | `review.exclude` | list | diff 本文をレビュアーに渡さない glob パターン。デフォルトのリストを丸ごと置き換えます。`[]` ですべてをレビューします。 |
 | `review.incremental_rounds` | bool | `true`（デフォルト）にすると、2 回目のラウンドは 1 回目のラウンドがレビューした内容に対する diff になり、修正が対処しようとした指摘を引き継ぎます。`false` にすると毎ラウンド変更全体の diff を取り直します。 |
+| `review.whole_change_recheck` | bool | `true`（デフォルト。`standard` と `quality`）にすると、Low より上のもの（medium 以上に `re_review_severities` を足したもの）で再レビューし、Low より上のものが無かった修正だけのラウンドの後に変更全体のラウンドを 1 つ行い -- それは予備のラウンド `max_review_iterations + 1` でもかまいません -- 変更全体のラウンドで Low より上のものが無ければ終わります。`false`（`fast`）はこれまでの規則で、`re_review_severities` でだけ再レビューします。プリセットが決めるキーです。`references/reviews.md`（「変更全体で締めくくる」）を参照。 |
 | `review.max_findings` | int \| null | 各レビュアーに求める指摘の数。`null`（デフォルト）は `optimization.level` に任せ、`0` は上限を外します。上限を超えて返ってきた指摘は保持され、切り捨てられることはありません。 |
 | `review.context.max_chars` | int ≥ 1 \| null | レビューラウンドがそもそも送信する変更本文の最大サイズです。対象は diff、または plan とそれが答える依頼です（デフォルト 400,000 ≈ 100k トークン。ここで記録された最大のプロンプトの 4 倍で、これまで誰かが実行したものは何も拒否しません）。これを超えると、`review run` は何もレビューせずに exit 3 で終了します。上限内に収める方法は、`--base`、`review.exclude`、変更の分割、または plan を短くすることです。`--force` は人間による上書きで、そのラウンドを予算超過として記録します。`null` は `review.max_findings` と同様にデフォルトを意味します。この上限を無効にする値はありません。`references/limits.md` を参照。 |
 | `review.context.inline_chars` | int ≥ 1 \| null | 変更本文のうちどれだけをレビュアーのプロンプトに含めるか（デフォルト 400,000、`max_chars` と同じ数値）。これ以下なら本文はインラインで渡され、ラウンドは clean になり得ます。これを超えると、レビュアーには凍結されたスナップショットのパスが渡され、何が返ってきてもラウンドは `partial` — カバレッジ未検証 — として記録されます。**`max_chars` より小さく設定すると、両者の間に、ラウンドは実行されるものの `partial` として記録される帯域が生まれます**: これは非常に大きなプロンプトに費用をかけたくない人が明示的に選ぶもので、`partial` はその代償です。`max_chars` *より大きく*設定することも許されており、誤りではありません — その場合、本文がファイルとして渡されるのは人間が強制したラウンドだけになります。`null` はデフォルトを意味します。各ラウンドは比較に使った数値を記録するので、`partial` のラウンドはどの上限によってそうなったのかがわかります。`references/limits.md` を参照。 |
@@ -853,6 +856,7 @@ project ファイルの `design.require_approval` は値にかかわらず、ま
 | `review.re_review_severities` | 重大度を外している。`review status` と同じく、大文字小文字を問わず読み、`config validate` が拒否する値（`[]`、リストでない名前ひとつ、知らない名前）はデフォルトの `critical` と `high` として読む |
 | `review.exclude` | パターンを足して、差分をより多く伏せている |
 | `review.max_findings` | 各レビュアーに求める指摘を減らしている（`null` はレベルの上限、`0` は上限なしとして数える） |
+| `review.whole_change_recheck` | off にしている |
 | `review.design.enabled` | `true` → `auto` → `false` の順に下げている |
 | `review.design.max_iterations` | 下げている |
 | `design.ask_questions` | `true` → `auto` → `false` の順に下げている |

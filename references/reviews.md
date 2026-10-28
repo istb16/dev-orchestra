@@ -19,6 +19,7 @@
   - [Why auto-merge stays conservative](#why-auto-merge-stays-conservative)
 - [Triage](#triage)
 - [Re-review](#re-review)
+  - [Closing on the whole change](#closing-on-the-whole-change)
   - [The second round only diffs the fix](#the-second-round-only-diffs-the-fix)
 - [Running reviews on their own](#running-reviews-on-their-own)
 
@@ -1103,6 +1104,77 @@ review_fixer`, the tests again, recorded with `state record test ok|failed`
 stop; do not re-review. Two rounds catch the overwhelming majority of what
 this pipeline is going to catch; a third mostly re-litigates.
 
+### Closing on the whole change
+
+`review.whole_change_recheck` (on in `standard` and `quality`, off in `fast`)
+changes the loop in two ways. The cut-off becomes **anything above Low**:
+unresolved findings at critical, high or medium, plus whatever
+`review.re_review_severities` adds, so a project that made Low blocking stays
+blocking on Low. And a review only finishes on a round that looked at the
+whole change. Each snapshot records which kind of round it is (`scope`:
+`fix` or `whole`), and `review status` reads it from the report:
+
+| The round was | It found | Next (`next_review`) |
+| --- | --- | --- |
+| Either scope | Something above Low, budget left | Fix, re-test, re-review: `fix` when findings were accepted (the snapshot narrows to the fix only then), otherwise `whole` |
+| Fix-only | Nothing above Low | Fix the accepted Lows, re-test, then review the whole change (`whole`) |
+| Whole-change | Nothing above Low | Fix the accepted Lows, re-test, finish -- no re-review (`null`; `final_fix` tracks the fix) |
+| Either scope | Something above Low, no budget left | The final fix and re-test below; no re-review (`null`) |
+
+The first round counts as whole-change, and so does a round snapshotted with
+`--full`. A round with no findings, or with every finding rejected or a
+duplicate, has nothing above Low. Accepted findings of every severity are
+fixed after every round, as before: a fix-only round's Lows are fixed before
+the whole-change round, so that round reviews the finished code.
+
+Nothing has to remember the scope. After a clean fix-only round, a plain
+`review snapshot` (and the one `review run` takes when there is none) takes
+the whole change by itself, records `recheck: true`, and says
+`scope: whole change (review.whole_change_recheck)`. With the option on,
+`review status` adds a `next:` line saying what to do, and `wanted` lists the
+findings above Low that keep the loop open (`blocking` stays at
+`re_review_severities`). It is the snapshot of the same review that could
+otherwise narrow to the fix: one taken with `--full`, with
+`review.incremental_rounds` off, or against a base naming another commit
+records `recheck: false` and gets no spare round. The base is compared by
+commit, as the narrowing compares it: `--base <sha of main>` after
+`--base main` is the same change and still gets its whole-change round. The
+whole-change round still records its tree, so a round after it narrows to
+that round's fix again. A round that finds nothing never counts towards
+`identical_rounds`: finding nothing twice -- a clean fix-only round and the
+clean whole-change round after it, or any two clean rounds -- is not a fix
+that changed nothing.
+
+When a clean whole-change round leaves accepted findings (Lows), their fix
+and re-test are tracked as the spent budget's are: `final_fix` goes `pending`
+→ `retest` → `done`, and at `done` `status` stops with `review finished with
+nothing above Low (...); its accepted findings were fixed and re-tested, not
+re-reviewed -- report`. With none accepted, `final_fix` stays `null`. A
+finished review is not an exhausted one: `iteration_budget_exhausted` stays
+false even at round `max_review_iterations`.
+
+**One spare round.** The whole-change round after a clean fix-only round runs
+even when the fix-only round was the last one `max_review_iterations` allows:
+`review run` accepts round `max_review_iterations + 1` on a snapshot with
+`recheck: true`, and on no other. That is the hard cap, so the loop always
+ends; past it the refusal names both, `the budget is 2 rounds
+(review.max_review_iterations) and one spare whole-change round`, and `status`
+counts the spare round in its reason (`3/3 rounds`), reading it from the
+report of the round it describes, not from a snapshot retaken since. When the budget runs out with something above Low still open -- at
+round `max_review_iterations`, or in the spare round -- the last round gets
+the final fix and re-test (`final_fix`) and no re-review, as with the option
+off. With the default budget of 2, a whole → fix → whole review whose last
+round finds something above Low ends there; raise `max_review_iterations` for
+more loops.
+
+A whole-change round whose diff did not fit inline (`coverage.round:
+partial`) still finishes the review when it comes back clean; the
+[coverage](#coverage) advice still applies to it.
+
+With the option off, the rule is the one above: critical and high (or
+`re_review_severities`) within `max_review_iterations`, and the text output of
+`review status` is unchanged.
+
 **Every round's report is kept.** `consolidated.json` is the current round, and
 the next round replaces it. Each write of it also writes a copy to
 `reviews/rounds/<sha12>-<round_id>.json`, named by the snapshot sha and the
@@ -1191,6 +1263,7 @@ It narrows the scope only when there is a round to be incremental to:
 | Nothing changed since the reviewed round | Whole change |
 | `--base` given | Whole change from that base |
 | `--full`, or `review.incremental_rounds: false` | Whole change |
+| Previous round was fix-only and found nothing above Low, with `review.whole_change_recheck` on | Whole change (`recheck: true`; see [Closing on the whole change](#closing-on-the-whole-change)) |
 
 Every row after the second is a case where narrowing would cost more than it
 saves. Without the "never reviewed" and "nothing changed" rows an ordinary

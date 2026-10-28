@@ -12,6 +12,7 @@ from . import ledger as ledger_mod
 from . import optimization_design as opt_design
 from . import questions as questions_mod
 from . import review as review_mod
+from . import review_loop
 from . import workspace as ws
 from .cli_common import (
     _emit_json,
@@ -24,6 +25,7 @@ from .cli_common import (
 )
 from .round_progress import (
     code_final_pass_from,
+    code_loop_decision,
     design_decision,
     design_final_pass_from,
     design_lineage,
@@ -47,9 +49,11 @@ def cmd_review_status(args: argparse.Namespace) -> int:
     # Read only: stalls are `status`'s to clear.
     book = _ledger(args, base)
     events = [event for event in (base.read_state().get("events") or []) if isinstance(event, dict)]
-    budget = _status_budget(args, loaded, base, book, events, blocking, iteration, accepted)
+    budget = _status_budget(args, loaded, workspace, base, book, events, data, blocking, iteration, accepted)
     coverage = _status_coverage(data)
-    payload, decision = _status_payload(args, loaded, base, data, budget, blocking, iteration, coverage)
+    payload, decision = _status_payload(
+        args, loaded, workspace, base, data, budget, blocking, iteration, coverage
+    )
     if args.json:
         _emit_json(payload)
     else:
@@ -66,14 +70,20 @@ class _StatusBudget(NamedTuple):
     max_iterations: int
     final: Dict[str, Any]
     repeats: int
+    #: Where the loop stands: ``review_loop.decide``'s reading of the report
+    #: for the code review; for the design review, its blocking findings
+    #: against its own budget.
+    loop: review_loop.LoopDecision
 
 
 def _status_budget(
     args: argparse.Namespace,
     loaded: config_mod.LoadedConfig,
+    workspace: ws.Workspace,
     base: ws.Workspace,
     book: ledger_mod.Ledger,
     events: List[Dict[str, Any]],
+    data: Dict[str, Any],
     blocking: List[Dict[str, Any]],
     iteration: int,
     accepted: bool,
@@ -99,20 +109,36 @@ def _status_budget(
             accepted=accepted,
             wrote_plan=_wrote_plan(base),
         )
-        repeats = book.repeats("design_review")
-    else:
-        budget_key = "max_review_iterations"
-        max_iterations = loaded.max_review_iterations()
-        final = code_final_pass_from(
-            events,
-            blocking,
-            iteration=iteration,
+        return _StatusBudget(
+            key=budget_key,
             max_iterations=max_iterations,
-            fixer_left=book.remaining("review_fixer"),
-            accepted=accepted,
+            final=final,
+            repeats=book.repeats("design_review"),
+            loop=review_loop.LoopDecision(
+                wanted=blocking,
+                next_review=None,
+                recheck_next=False,
+                budget_left=iteration < max_iterations,
+                finish=False,
+            ),
         )
-        repeats = book.repeats("review")
-    return _StatusBudget(budget_key, max_iterations, final, repeats)
+    max_iterations = loaded.max_review_iterations()
+    loop = code_loop_decision(loaded, workspace, data, iteration, max_iterations)
+    final = code_final_pass_from(
+        events,
+        loop.wanted,
+        budget_left=loop.budget_left,
+        fixer_left=book.remaining("review_fixer"),
+        accepted=accepted,
+        finish=loop.finish,
+    )
+    return _StatusBudget(
+        key="max_review_iterations",
+        max_iterations=max_iterations,
+        final=final,
+        repeats=book.repeats("review"),
+        loop=loop,
+    )
 
 
 def _status_coverage(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -140,6 +166,7 @@ def _status_coverage(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 def _status_payload(
     args: argparse.Namespace,
     loaded: config_mod.LoadedConfig,
+    workspace: ws.Workspace,
     base: ws.Workspace,
     data: Dict[str, Any],
     budget: _StatusBudget,
@@ -148,16 +175,19 @@ def _status_payload(
     coverage: Optional[Dict[str, Any]],
 ) -> Tuple[Dict[str, Any], Optional[opt_design.DesignDecision]]:
     """``review status --json``'s payload, and the design decision a ``--design`` one names."""
-    max_iterations, final = budget.max_iterations, budget.final
+    max_iterations, final, loop = budget.max_iterations, budget.final, budget.loop
     counts = data.get("counts", {})
     payload: Dict[str, Any] = {
         "iteration": iteration,
         budget.key: max_iterations,
         "blocking": [f["id"] for f in blocking],
         "blocking_count": len(blocking),
+        # What keeps the loop open, and what the two keys below are about:
+        # `blocking` until review.whole_change_recheck widens it to Medium.
+        "wanted": [f["id"] for f in loop.wanted],
         "accepted_count": len(review_mod.accepted_findings(data)),
-        "re_review_recommended": bool(blocking) and iteration < max_iterations,
-        "iteration_budget_exhausted": iteration >= max_iterations,
+        "re_review_recommended": loop.recommended,
+        "iteration_budget_exhausted": loop.exhausted,
         "coverage": coverage,
         # Counted over the snapshot the `coverage` beside it describes, because
         # this is the number printed in the same breath as that value. The
@@ -192,6 +222,13 @@ def _status_payload(
     else:
         payload["final_fix"] = final["state"]
         payload["final_fix_pending"] = final["pending"]
+        meta = workspace.read_snapshot_meta()
+        payload["whole_change_recheck"] = loaded.whole_change_recheck()
+        # "fix" or "whole" for the reported round; None with no report.
+        payload["round_scope"] = (
+            review_loop.round_scope(data, meta if isinstance(meta, dict) else {}) if data else None
+        )
+        payload["next_review"] = loop.next_review
     return payload, decision
 
 
@@ -217,6 +254,8 @@ def _print_status(
     _out("accepted findings: %d" % payload["accepted_count"])
     _out("blocking (%s): %d %s" % ("/".join(severities), len(blocking), ", ".join(payload["blocking"])))
     _out("re-review recommended: %s" % ("yes" if payload["re_review_recommended"] else "no"))
+    if payload.get("whole_change_recheck") and data:
+        _out("next: %s" % _next_step(budget.loop, budget.final, payload["accepted_count"]))
     if coverage is None:
         _out("coverage: not recorded -- this report predates it")
     else:
@@ -237,10 +276,45 @@ def _print_status(
         args.design,
     ):
         _out(line)
-    if payload["iteration_budget_exhausted"] and blocking:
+    if payload["iteration_budget_exhausted"] and budget.loop.wanted:
         _out(
             "iteration budget exhausted -- %s" % _final_pass_advice(args.design, budget.final, budget.repeats)
         )
+
+
+def _next_step(loop: review_loop.LoopDecision, final: Dict[str, Any], accepted: int) -> str:
+    """The ``next:`` line ``review status`` prints with ``review.whole_change_recheck`` on.
+
+    On a finish, ``final`` is where the fix and re-test of the accepted
+    findings stand, as ``status`` reads it.
+    """
+    if loop.next_review == "whole":
+        prefix = "fix the accepted findings and re-test, then " if accepted else ""
+        return prefix + "re-review the whole change (review snapshot takes it)"
+    if loop.next_review == "fix":
+        return "fix the accepted findings, re-test, and re-review what changed"
+    if loop.finish:
+        state = final["state"]
+        if state == "pending":
+            return "fix the accepted findings, re-test, and finish -- do not re-review"
+        if state == "retest":
+            return (
+                "re-run the tests and record them (state record test ok|failed), then finish -- "
+                "do not re-review"
+            )
+        if state == "done":
+            return (
+                "finish -- nothing above Low was open; the accepted findings were fixed and "
+                "re-tested, not re-reviewed; report"
+            )
+        if state == "blocked":
+            return (
+                "the accepted findings are not fixed and no review_fixer attempt is left "
+                "(budgets.review_fixer); report them, or free an attempt (`budget reset`) and fix"
+            )
+        return "finish -- nothing above Low is open; do not re-review"
+    # Something above Low is open and no round is left: the advice below.
+    return "do not re-review -- the iteration budget is spent"
 
 
 def _design_panel_line(payload: Dict[str, Any]) -> str:

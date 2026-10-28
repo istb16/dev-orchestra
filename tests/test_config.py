@@ -729,6 +729,71 @@ class TestValidation(IsolatedCase):
             config_mod.load(self.project)
 
 
+class TestWholeChangeRecheckValidated(IsolatedCase):
+    def test_the_default_is_on(self):
+        self.assertIs(config_mod.default_config()["review"]["whole_change_recheck"], True)
+        self.assertIs(config_mod.LoadedConfig({}, None, None, True).whole_change_recheck(), True)
+
+    def test_it_must_be_a_boolean(self):
+        for value in (True, False, None):
+            data = config_mod.default_config()
+            data["review"]["whole_change_recheck"] = value
+            self.assertEqual(config_mod.validate(data), [], value)
+        for value in ("sometimes", "false", 0, 1):
+            data = config_mod.default_config()
+            data["review"]["whole_change_recheck"] = value
+            self.assertEqual(
+                config_mod.validate(data),
+                ["review.whole_change_recheck: must be true or false, or null"],
+                value,
+            )
+
+    def test_a_refused_value_reads_as_the_default(self):
+        """Commands load unvalidated, so a value ``validate`` refuses reads as the default."""
+        for value, expected in ((True, True), (False, False), (None, True), ("false", True), (0, True)):
+            data = config_mod.default_config()
+            data["review"]["whole_change_recheck"] = value
+            loaded = config_mod.LoadedConfig(data, None, None, True)
+            self.assertIs(loaded.whole_change_recheck(), expected, value)
+        broken = config_mod.LoadedConfig({"review": "broken"}, None, None, True)
+        self.assertIs(broken.whole_change_recheck(), True)
+
+
+class TestProjectGateTurnOff(IsolatedCase):
+    """A project file turning ``review.whole_change_recheck`` off loosens review."""
+
+    def setUp(self):
+        super().setUp()
+        self.fake_clis()
+
+    def write_global(self, text):
+        path = config_mod.global_config_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("version: 1\n" + text)
+
+    def notices(self, text):
+        self.write(".dev-orchestra.yaml", "version: 1\n" + text)
+        loaded = config_mod.load(self.project, validate_result=False)
+        return [
+            line
+            for line in policy_mod.project_loosening_notices(loaded)
+            if line.startswith("review.whole_change_recheck: the project config")
+        ]
+
+    def test_turning_it_off_is_reported(self):
+        [line] = self.notices("review:\n  whole_change_recheck: false\n")
+        self.assertIn("turns it off", line)
+        self.assertIn("can come with the branch under review", line)
+
+    def test_keeping_it_on_is_not(self):
+        self.assertEqual(self.notices("review:\n  whole_change_recheck: true\n"), [])
+
+    def test_off_already_in_the_global_file_is_not(self):
+        self.write_global("review:\n  whole_change_recheck: false\n")
+        self.assertEqual(self.notices("review:\n  whole_change_recheck: false\n"), [])
+
+
 class TestValidateOrder(IsolatedCase):
     """The whole list ``validate`` returns, in the order it says it."""
 

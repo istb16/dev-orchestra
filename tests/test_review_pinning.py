@@ -823,6 +823,7 @@ def status_head(budget_key):
         budget_key,
         "blocking",
         "blocking_count",
+        "wanted",
         "accepted_count",
         "re_review_recommended",
         "iteration_budget_exhausted",
@@ -833,7 +834,14 @@ def status_head(budget_key):
     ]
 
 
-CODE_STATUS = [*status_head("max_review_iterations"), "final_fix", "final_fix_pending"]
+CODE_STATUS = [
+    *status_head("max_review_iterations"),
+    "final_fix",
+    "final_fix_pending",
+    "whole_change_recheck",
+    "round_scope",
+    "next_review",
+]
 
 DESIGN_STATUS = [
     *status_head("max_iterations"),
@@ -879,8 +887,8 @@ class TestStatusPinning(IsolatedCase):
         block = {"shared": True, "adopted": [], "adopted_chars": 0, "reason": "not frozen"}
         self.report({"iteration": 1, "counts": {}, "surrounding": block})
         self.report({"iteration": 1, "counts": {}, "surrounding": block}, design=True)
-        self.assertEqual(list(self.payload()), [*CODE_STATUS[:-2], "surrounding", *CODE_STATUS[-2:]])
-        design = [*DESIGN_STATUS[:11], "surrounding", *DESIGN_STATUS[11:]]
+        self.assertEqual(list(self.payload()), [*CODE_STATUS[:12], "surrounding", *CODE_STATUS[12:]])
+        design = [*DESIGN_STATUS[:12], "surrounding", *DESIGN_STATUS[12:]]
         self.assertEqual(list(self.payload("--design")), design)
         self.assertEqual(self.payload()["surrounding"], block)
 

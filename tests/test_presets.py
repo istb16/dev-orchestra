@@ -229,6 +229,16 @@ class TestExpansion(unittest.TestCase):
         self.assertEqual(set(standard["review"]["design"]), {"reviewers"})
         self.assertNotIn("optimization", standard)
 
+    def test_whole_change_recheck_defaults(self):
+        self.assertIs(presets.expand("quality", BOTH).values["review"]["whole_change_recheck"], True)
+        self.assertIs(presets.expand("fast", BOTH).values["review"]["whole_change_recheck"], False)
+        self.assertNotIn("whole_change_recheck", presets.expand("standard", BOTH).values["review"])
+        for name, expected in (("quality", True), ("standard", True), ("fast", False)):
+            with self.subTest(preset=name):
+                data, _, _, _ = config_mod.compose({"preset": name}, {}, BOTH)
+                loaded = config_mod.LoadedConfig(data, None, None, True)
+                self.assertIs(loaded.whole_change_recheck(), expected)
+
     def test_quality_design_auto(self):
         self.assertEqual(presets.expand("quality", BOTH).values["review"]["design"]["enabled"], "auto")
 
@@ -843,7 +853,7 @@ class TestComposingTheFitDesignPanel(unittest.TestCase):
     def test_file_reviewers_keep_the_presets_design_switch(self):
         reviewers = [config_mod.make_reviewer("m1", "mock", None)]
         fit = config_mod.compose({"preset": "fast", "reviewers": reviewers}, {}, BOTH)[1]
-        self.assertEqual(fit.values["review"], {"design": {"enabled": False}})
+        self.assertEqual(fit.values["review"], {"design": {"enabled": False}, "whole_change_recheck": False})
         fit = config_mod.compose({"reviewers": reviewers}, {}, BOTH)[1]
         self.assertNotIn("review", fit.values)
 

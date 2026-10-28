@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:59bb5e226af75d8b577d2c81e8549e4d4abf631aaf090aeef4f2296396c56585 -->
+<!-- translated-from: references/reviews.md sha256:01957c462a1ef53920ac3827d330b8ea7b4749bda86f92788e6d72e183ecb486 -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -25,6 +25,7 @@
   - [自動マージが保守的なままである理由](#why-auto-merge-stays-conservative)
 - [トリアージ](#triage)
 - [再レビュー](#re-review)
+  - [変更全体で締めくくる](#closing-on-the-whole-change)
   - [2 ラウンド目は修正だけを diff する](#the-second-round-only-diffs-the-fix)
 - [レビューを単独で実行する](#running-reviews-on-their-own)
 
@@ -1130,6 +1131,76 @@ review_fixer`、再度のテスト、そして `state record test ok|failed` に
 報告して停止し、再レビューはしません。このパイプラインが捕捉するもののうち圧倒的
 大部分は 2 ラウンドで捕捉され、3 ラウンド目はおおむね同じ議論の蒸し返しになります。
 
+<a id="closing-on-the-whole-change"></a>
+
+### 変更全体で締めくくる
+
+`review.whole_change_recheck`（`standard` と `quality` では on、`fast` では off）は
+ループを 2 点で変えます。区切りは **Low より上のもの** になります。critical、high、
+medium の未解決の指摘に、`review.re_review_severities` が加えるものを足したもので、
+Low を妨げにしたプロジェクトは Low で妨げられたままです。そして、レビューは変更全体を
+見たラウンドでしか終わりません。各スナップショットは自分がどちらのラウンドかを記録し
+（`scope`: `fix` または `whole`）、`review status` はそれをレポートから読みます。
+
+| そのラウンドは | 見つけたもの | 次（`next_review`） |
+| --- | --- | --- |
+| どちらのスコープでも | Low より上のもの、予算が残っている | 修正、再テスト、再レビュー。指摘が受け入れられていれば `fix`（スナップショットが修正に絞り込むのはそのときだけです）、そうでなければ `whole` |
+| 修正だけ | Low より上のものは無い | 受け入れた Low を修正して再テストし、変更全体をレビューする（`whole`） |
+| 変更全体 | Low より上のものは無い | 受け入れた Low を修正して再テストし、終える -- 再レビューはしない（`null`。修正は `final_fix` が追います） |
+| どちらのスコープでも | Low より上のもの、予算が残っていない | 下の最後の修正と再テスト。再レビューはしない（`null`） |
+
+最初のラウンドは変更全体として数え、`--full` でスナップショットを取ったラウンドも
+同じです。指摘の無いラウンドや、すべての指摘が rejected か duplicate のラウンドには、
+Low より上のものはありません。受け入れた指摘は、これまでどおり重大度にかかわらず
+毎ラウンドの後に修正します。修正だけのラウンドの Low は変更全体のラウンドの前に
+修正するので、そのラウンドは仕上がったコードをレビューします。
+
+スコープを覚えておく必要はありません。修正だけのラウンドがきれいに終わった後は、
+ただの `review snapshot`（と、スナップショットが無いときに `review run` が取るもの）が
+自分で変更全体を取り、`recheck: true` を記録し、
+`scope: whole change (review.whole_change_recheck)` と表示します。オプションが on の
+とき、`review status` は次にすることを `next:` の行で示し、`wanted` にループを続けさせて
+いる Low より上の指摘を挙げます（`blocking` は `re_review_severities` のままです）。
+これは、そうでなければ修正に絞り込めた同じレビューのスナップショットに限ります。
+`--full` で、`review.incremental_rounds` が off で、または別のコミットを指す base に
+対して取ったスナップショットは `recheck: false` を記録し、予備のラウンドはありません。
+base は絞り込みと同じくコミットで比べます。`--base main` の後の `--base <main の sha>` は
+同じ変更で、変更全体のラウンドはそのまま行われます。変更全体のラウンドもツリーを
+記録するので、その後のラウンドはまたそのラウンドの修正に絞り込みます。何も見つけなかった
+ラウンドは `identical_rounds` に数えません。何も見つけないことが 2 回続いても -- きれいに
+終わった修正だけのラウンドとその後のきれいな変更全体のラウンドでも、ほかのどんな 2 回の
+きれいなラウンドでも -- 修正が何も変えなかったことにはならないからです。
+
+きれいに終わった変更全体のラウンドが受け入れた指摘（Low）を残したときは、その修正と
+再テストを予算を使い切ったときと同じく追います。`final_fix` は `pending` → `retest` →
+`done` と進み、`done` で `status` は `review finished with nothing above Low (...); its
+accepted findings were fixed and re-tested, not re-reviewed -- report` として止まります。
+受け入れた指摘が無ければ `final_fix` は `null` のままです。終わったレビューは予算を
+使い切ったレビューではないので、ラウンド `max_review_iterations` でも
+`iteration_budget_exhausted` は false のままです。
+
+**予備のラウンドが 1 つあります。** きれいに終わった修正だけのラウンドの後の変更全体の
+ラウンドは、その修正だけのラウンドが `max_review_iterations` の許す最後のラウンド
+だったときでも実行されます。`review run` は `recheck: true` のスナップショットに限り
+ラウンド `max_review_iterations + 1` を受け付け、それ以外では受け付けません。これが
+上限なので、ループは必ず終わります。それを超えると、拒否のメッセージは両方を挙げ
+（`the budget is 2 rounds (review.max_review_iterations) and one spare whole-change
+round`）、`status` はその理由で予備のラウンドも数えます（`3/3 rounds`）。これは
+報告するラウンドのレポートから読み、その後に取り直したスナップショットからは読みません。Low より上のものが残ったまま予算を使い切った
+とき -- ラウンド `max_review_iterations` でも、予備のラウンドでも -- 最後のラウンドには
+オプションが off のときと同じく最後の修正と再テスト（`final_fix`）が行われ、再レビューは
+しません。デフォルトの予算 2 では、変更全体 → 修正 → 変更全体 と進んだレビューの最後の
+ラウンドが Low より上のものを見つけると、そこで終わります。もっとループさせたいときは
+`max_review_iterations` を上げてください。
+
+diff がインラインに収まらなかった変更全体のラウンド（`coverage.round: partial`）も、
+きれいに戻ってくればレビューを終えます。[coverage](#coverage) の助言はそのラウンドにも
+当てはまります。
+
+オプションが off のときの規則は上のとおりです。`max_review_iterations` の範囲で
+critical と high（または `re_review_severities`）を見るもので、`review status` の
+テキスト出力も変わりません。
+
 **すべてのラウンドのレポートが残ります。** `consolidated.json` は現在のラウンドで、
 次のラウンドがこれを置き換えます。これを書くたびに
 `reviews/rounds/<sha12>-<round_id>.json` にもコピーが書かれ、スナップショットの sha と、
@@ -1219,6 +1290,7 @@ create` と同じ手法です）。そのため、ユーザー自身のインデ
 | レビューされたラウンド以降、何も変わっていない | 変更全体 |
 | `--base` を指定した | そのベースからの変更全体 |
 | `--full`、または `review.incremental_rounds: false` | 変更全体 |
+| 前のラウンドが修正だけで、Low より上のものが無く、`review.whole_change_recheck` が on | 変更全体（`recheck: true`。[変更全体で締めくくる](#closing-on-the-whole-change) を参照） |
 
 2 行目より後の行はすべて、絞り込むと節約できる以上のコストがかかるケースです。
 「一度もレビューされなかった」と「何も変わっていない」の行がなければ、通常の

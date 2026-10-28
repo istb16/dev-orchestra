@@ -1,4 +1,4 @@
-<!-- translated-from: references/json.md sha256:5e2f145cdd3e46ddd881a983a9e2c3cf0f08ac44bdb381eb29b701e305f7cddb -->
+<!-- translated-from: references/json.md sha256:3eaf1ab9ca3e77a9c63102c9d30f6ae3d478c2f102836191d141c56fff04b746 -->
 
 > この文書は [references/json.md](../../../references/json.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -321,6 +321,8 @@ Object. `reviews/review-target.json` が持つスナップショットのメタ�
 | `tree` | string | git の tree オブジェクトとしての作業ツリー。 |
 | `incremental_from` | string | このラウンドが修正だけに絞る元のラウンドの tree。全体のスナップショットでは `""`。 |
 | `full_diff` | string | 差分だけのラウンドでの変更全体の diff。それ以外は `""`。 |
+| `scope` | string | ラウンドが修正に絞り込むなら `fix`、それ以外は `whole`。 |
+| `recheck` | boolean | `review.whole_change_recheck` のためにこのスナップショットが変更全体を取ったかどうか。 |
 | `files` | list of strings | レビュアーに見せるファイル。 |
 | `changed_paths` | list of strings | 変更が触れるすべてのパス。送らないファイルと改名元も含みます。 |
 | `condition_paths` | list of strings | パスで絞り込むレビュアーを照らし合わせるパス。 |
@@ -369,7 +371,7 @@ Object. `consolidated.json` が持つとおりの、まとめたレポートで�
 | `generated_at` | string | 作った時刻。 |
 | `iteration` | integer | ラウンド。 |
 | `lineage` | string | ラウンドを数える単位のワークフロー、ブランチ、基準。 |
-| `snapshot` | object | レビューしたもの。`sha256`、`files`、`round_id`、`over_budget`、`budget_chars`。 |
+| `snapshot` | object | レビューしたもの。`sha256`、`files`、`round_id`、`over_budget`、`budget_chars`、そしてスナップショットが記録していれば `scope` と `recheck`。 |
 | `coverage` | object | `round` と `change`（それぞれ `complete`、`unverified`、`none`）、`unverified_since`、`change_chars`、`inline_chars`。[カバレッジ](reviews.md#coverage) を参照。 |
 | `reviewers` | list | 各レビュアーのエントリ。`review run` と同じ。 |
 | `counts` | object | `findings_total`、`by_severity`、`duplicates_merged`、`duplicate_candidates`、`reviewers_total`、`reviewers_ok`、`reviewers_partial`、`reviewers_failed`、そしてその 4 つに `snapshot_` を付けたもの。 |
@@ -410,15 +412,19 @@ Object. `--design` のときは、下に挙げたコードの 2 つのキーの�
 | `max_review_iterations` | integer | ラウンドの予算。`--design` では `max_iterations`。 |
 | `blocking` | list of strings | 解決していないブロッキングの指摘の id。 |
 | `blocking_count` | integer | その数。 |
+| `wanted` | list of strings | ループを続けさせている解決していない指摘の id。`re_review_recommended`、`iteration_budget_exhausted` と最後のパスはこれについてのもの。`blocking` と同じで、`review.whole_change_recheck` が on なら Low より上のものすべて。 |
 | `accepted_count` | integer | 受け入れた指摘の数。 |
-| `re_review_recommended` | boolean | もう 1 ラウンドが必要で、予算の内かどうか。 |
-| `iteration_budget_exhausted` | boolean | ラウンドの予算を使い切ったかどうか。 |
+| `re_review_recommended` | boolean | もう 1 ラウンドが必要で、予算の内かどうか。`review.whole_change_recheck` が on ならそのループによる。 |
+| `iteration_budget_exhausted` | boolean | ラウンドの予算を使い切ったかどうか。きれいな変更全体のラウンドで終わったレビュー（`review.whole_change_recheck`）では false。 |
 | `coverage` | object or null | `review consolidate` と同じ。持たないレポートでは `null`。 |
 | `reviewers_partial` | integer | このスナップショットのレビュアーのうち、変更をファイルで渡された数。 |
 | `over_budget` | boolean | `--force` が `review.context.max_chars` を超えさせたから走ったラウンドかどうか。 |
 | `counts` | object | `review consolidate` と同じ。 |
-| `final_fix` | string or null | 予算を使い切ったあとの、最後のラウンドの修正の状態。`pending`、`retest`、`done`、`blocked`、`unaccepted`。それまでは `null`。`--design` では `final_revision` で、`pending`、`done`、`blocked`、`approved`、`implemented`、`unaccepted`。 |
+| `final_fix` | string or null | 予算を使い切ったあと、または `review.whole_change_recheck` のレビューが受け入れた指摘を残して終わったあとの、最後のラウンドの修正の状態。`pending`、`retest`、`done`、`blocked`、`unaccepted`。それまでは `null`。`--design` では `final_revision` で、`pending`、`done`、`blocked`、`approved`、`implemented`、`unaccepted`。 |
 | `final_fix_pending` | boolean | その手当てがまだ残っているかどうか。`--design` では `final_revision_pending`。 |
+| `whole_change_recheck` | boolean | `--design` なしのときだけ。`review.whole_change_recheck`。 |
+| `round_scope` | string または null | `--design` なしのときだけ。報告されたラウンドがレビューしたもの、`fix` または `whole`。レポートが無ければ `null`。 |
+| `next_review` | string または null | `--design` なしのときだけ。次に行うラウンド、`fix` または `whole` で、`review snapshot` が取るとおりのもの（`fix` は指摘が受け入れられているときだけ）。無ければ `null` で、`review.whole_change_recheck` が off なら常に `null`。 |
 | `surrounding` | object | Only: ラウンドが周りの文脈を運んだときだけ。 |
 | `enabled` | boolean | Only: `--design` のときだけ。この工程を実行するかどうか。 |
 | `mode` | string | Only: `--design` のときだけ。`on`、`off`、`auto`。 |
@@ -479,8 +485,8 @@ Object.
 | `stalls` | list | 止まっているか死んでいるように見える実行中の工程。`token`、`stage`、`started_at`、`elapsed_seconds`、`deadline_seconds`、`pid`、`process_alive`、`reason`。 |
 | `abandoned_stages` | list of strings | この呼び出しが死んでいると見て `abandoned` にした工程。 |
 | `in_flight` | object | いま動いているもの。トークンをキーにします。 |
-| `review` | object | `iteration`、`max_review_iterations`、`blocking`、`accepted`、`refused_for_size`、`identical_rounds`、`final_fix`、`final_fix_pending`（値は `review status` と同じ）。 |
-| `design_review` | object | `enabled`、`mode`、`reason`、`iteration`、`max_iterations`、`blocking`、`accepted`、`refused_for_size`、`identical_rounds`、`final_revision`、`final_revision_pending`、`optimization`（値は `review status --design` と同じ）。 |
+| `review` | object | `iteration`、`max_review_iterations`、`blocking`、`wanted`、`accepted`、`refused_for_size`、`identical_rounds`、`final_fix`、`final_fix_pending`、`next_review`（値は `review status` と同じ）。 |
+| `design_review` | object | `enabled`、`mode`、`reason`、`iteration`、`max_iterations`、`blocking`、`wanted`、`accepted`、`refused_for_size`、`identical_rounds`、`final_revision`、`final_revision_pending`、`optimization`（値は `review status --design` と同じ）。 |
 | `design_approval` | object | `required`、`state`（`pending`、`stale`、`approved`、`no-plan`、`not-required`、`implemented-unapproved`）、`pending`、`stale_reason`（`plan-changed`、`reviewed-since`、`decisions-changed`、`null`）など。[承認](workflow.md#approval) を参照。 |
 | `design_questions` | object | `mode`、`state`（`off`、`none`、`open`、`round-required`、`answered`）、`pending`、`open`、`answered`、`total`、`architect_rounds`、`max_rounds`、`decisions_file`。[Design の質問](workflow.md#design-questions) を参照。 |
 | `progress` | object | `updates`（`on`、`off`、`auto` のいずれか）、`interval_seconds`、`quiet_notice_seconds`。[進み具合の報告](workflow.md#progress-reports) を参照。 |

@@ -384,6 +384,15 @@ class TestNoProgress(LedgerCase):
         book.register_signature("test", "1 failed")
         book.consume("test")  # must not raise: something changed
 
+    def test_finding_nothing_is_never_a_repeat(self):
+        """Finding nothing twice is not evidence that a fix changed nothing."""
+        book = self.book()
+        book.register_signature("review", "abc")
+        book.register_signature("review", "abc")
+        self.assertEqual(book.register_signature("review", "no-findings"), 1)
+        self.assertEqual(book.register_signature("review", "no-findings"), 1)
+        self.assertEqual(book.repeats("review"), 1)
+
     def test_stages_are_tracked_separately(self):
         book = self.book()
         book.register_signature("test", "x")

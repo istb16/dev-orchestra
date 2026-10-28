@@ -599,6 +599,10 @@ def _fewer_findings(now: LoadedConfig, before: LoadedConfig) -> str:
     )
 
 
+def _recheck(now: LoadedConfig, before: LoadedConfig) -> str:
+    return "turns it off" if before.whole_change_recheck() and not now.whole_change_recheck() else ""
+
+
 def _level(now: LoadedConfig, before: LoadedConfig) -> str:
     new = opt_mod.normalise_level(now.optimization_settings().get("level"))
     old = opt_mod.normalise_level(before.optimization_settings().get("level"))
@@ -638,6 +642,7 @@ _GATES = (
     _Gate("review.re_review_severities", ("review.re_review_severities",), _re_review),
     _Gate("review.exclude", ("review.exclude",), _withheld),
     _Gate("review.max_findings", ("review.max_findings",), _fewer_findings),
+    _Gate("review.whole_change_recheck", ("review.whole_change_recheck",), _recheck),
     _Gate("review.design.enabled", ("review.design.enabled",), _design_mode),
     _Gate(
         "review.design.max_iterations",

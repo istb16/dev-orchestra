@@ -873,11 +873,15 @@ class TestStatusRounds(IsolatedCase):
                 "iteration": 1,
                 "max_review_iterations": 5,
                 "blocking": ["F1", "F2"],
+                "wanted": ["F1", "F2"],
                 "accepted": 2,
                 "refused_for_size": None,
                 "identical_rounds": 3,
                 "final_fix": None,
                 "final_fix_pending": False,
+                # review.whole_change_recheck is on by default; a report with
+                # no recorded scope counts as fix-only.
+                "next_review": "fix",
             },
         )
         design = payload["design_review"]
@@ -890,12 +894,73 @@ class TestStatusRounds(IsolatedCase):
                 "iteration": 2,
                 "max_iterations": 4,
                 "blocking": ["D1"],
+                "wanted": ["D1"],
                 "accepted": 1,
                 "refused_for_size": None,
                 "identical_rounds": 2,
                 "final_revision": None,
                 "final_revision_pending": False,
             },
+        )
+
+
+class TestReviewStatusNextLine(IsolatedCase):
+    """``review status`` prints its ``next:`` line only with ``review.whole_change_recheck`` on."""
+
+    def output(self, enabled: bool) -> List[str]:
+        run_cli("config", "set", "review.whole_change_recheck", "true" if enabled else "false")
+        code, out, err = run_cli("review", "status")
+        self.assertEqual(code, 0, err)
+        return out.splitlines()
+
+    def test_off_is_the_text_as_it_was_and_on_adds_one_line(self):
+        workspace = self.cli_workspace()
+        findings = [
+            {"id": "F1", "severity": "high", "triage": "accepted"},
+            {"id": "F2", "severity": "medium"},
+        ]
+        os.makedirs(os.path.dirname(workspace.consolidated_json_path), exist_ok=True)
+        ws.write_json(workspace.consolidated_json_path, {"iteration": 1, "findings": findings})
+        off = self.output(False)
+        self.assertEqual(
+            off[:4],
+            [
+                "iteration 1/2",
+                "accepted findings: 1",
+                "blocking (critical/high): 1 F1",
+                "re-review recommended: yes",
+            ],
+        )
+        self.assertFalse([line for line in off if line.startswith("next:")])
+        on = self.output(True)
+        self.assertEqual(
+            on, [*off[:4], "next: fix the accepted findings, re-test, and re-review what changed", *off[4:]]
+        )
+
+    def next_line(self, iteration: int, scope: str, *findings: Dict[str, Any]) -> str:
+        workspace = self.cli_workspace()
+        os.makedirs(os.path.dirname(workspace.consolidated_json_path), exist_ok=True)
+        ws.write_json(
+            workspace.consolidated_json_path,
+            {"iteration": iteration, "snapshot": {"scope": scope}, "findings": list(findings)},
+        )
+        [line] = [line for line in self.output(True) if line.startswith("next:")]
+        return line
+
+    def test_a_clean_whole_round_with_nothing_accepted_finishes(self):
+        self.assertEqual(
+            self.next_line(1, "whole"), "next: finish -- nothing above Low is open; do not re-review"
+        )
+
+    def test_a_medium_open_at_the_cap_is_not_re_reviewed(self):
+        self.assertEqual(
+            self.next_line(2, "fix", {"id": "F1", "severity": "medium", "triage": "accepted"}),
+            "next: do not re-review -- the iteration budget is spent",
+        )
+
+    def test_a_clean_fix_round_with_nothing_accepted_goes_straight_to_the_whole_change(self):
+        self.assertEqual(
+            self.next_line(1, "fix"), "next: re-review the whole change (review snapshot takes it)"
         )
 
 

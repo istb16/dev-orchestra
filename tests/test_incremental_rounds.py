@@ -623,6 +623,8 @@ META_KEYS = [
     "base_commit",
     "tree",
     "incremental_from",
+    "scope",
+    "recheck",
     "full_diff",
     "files",
     "changed_paths",
@@ -914,6 +916,53 @@ class TestSnapshotCommandRounds(RoundCase):
         run_cli("review", "run")
         meta = ws.read_json(self.workspace.snapshot_meta_path, {})
         self.assertTrue(meta["incremental_from"])
+
+
+class TestRecheckSnapshotTakesWhole(RoundCase):
+    """After a clean fix-only round, a plain snapshot goes back to the whole change."""
+
+    def clean_fix_round(self, enabled):
+        run_cli("config", "set", "review.whole_change_recheck", "true" if enabled else "false")
+        self.first_round()
+        self.fix()
+        run_cli("review", "snapshot")
+        low = FINDING.replace("Severity: high", "Severity: low").replace("Line: 2", "Line: 3")
+        path = os.path.join(os.environ["DEV_ORCHESTRA_MOCK_DIR"], "review.txt")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(low)
+        run_cli("review", "run")
+        for finding in json.loads(run_cli("review", "show", "--json")[1])["findings"]:
+            run_cli("review", "triage", finding["id"], "--status", "accepted")
+        text = ws.read_text(os.path.join(self.project, "service.py"))
+        self.write("service.py", text.replace("return x * 1", "return x + 1", 1))
+
+    def test_the_snapshot_takes_the_whole_change(self):
+        self.clean_fix_round(enabled=True)
+        code, out, _ = run_cli("review", "snapshot")
+        self.assertEqual(code, 0)
+        self.assertIn("scope:    whole change (review.whole_change_recheck)", out)
+        self.assertNotIn("what changed since the last reviewed round", out)
+        meta = ws.read_json(self.workspace.snapshot_meta_path, {})
+        self.assertFalse(meta["incremental_from"])
+        self.assertEqual((meta["scope"], meta["recheck"]), ("whole", True))
+        self.assertIn("op59", ws.read_text(self.workspace.snapshot_path))
+
+    def test_review_run_takes_it_the_same_way(self):
+        self.clean_fix_round(enabled=True)
+        os.remove(self.workspace.snapshot_path)
+        _, _, err = run_cli("review", "run")
+        self.assertIn("whole change (review.whole_change_recheck)", err)
+        meta = ws.read_json(self.workspace.snapshot_meta_path, {})
+        self.assertEqual((meta["scope"], meta["recheck"]), ("whole", True))
+
+    def test_with_the_option_off_it_stays_the_fix(self):
+        self.clean_fix_round(enabled=False)
+        code, out, _ = run_cli("review", "snapshot")
+        self.assertEqual(code, 0)
+        self.assertNotIn("review.whole_change_recheck", out)
+        meta = ws.read_json(self.workspace.snapshot_meta_path, {})
+        self.assertTrue(meta["incremental_from"])
+        self.assertEqual((meta["scope"], meta["recheck"]), ("fix", False))
 
 
 class TestCoverageSurvivesTheNarrowing(RoundCase):

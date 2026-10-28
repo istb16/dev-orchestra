@@ -173,7 +173,7 @@ Enforced by the action, refusing with **exit code 3**.
 
 | Limit | Config | Enforced by |
 | --- | --- | --- |
-| Review rounds | `review.max_review_iterations` (2) | `review run` |
+| Review rounds | `review.max_review_iterations` (2); one more on a snapshot `review.whole_change_recheck` took (`recheck: true`) | `review run` |
 | Design review rounds | `review.design.max_iterations` (2) | `review run --design` |
 | Change size | `review.context.max_chars` (400,000 chars) | `review run`, `review run --design` |
 | Attempts per stage | `budgets.architect` (3), `.architect_questions` (3), `.implementer` (5), `.review_fixer` (4), `.test` (8) | `run <role>` (`run architect --questions` for `architect_questions`), `budget consume <stage>` |
@@ -193,6 +193,14 @@ or get fixed and re-tested, and only then does `status` say stop. For the same
 reason a spent attempt budget is a `status` reason only while that stage is
 still needed: `architect` only while there is no plan, `review_fixer` only
 while the last round's fix has not been made.
+
+The spare review round is the whole-change round that
+`review.whole_change_recheck` asks for after a fix-only round found nothing
+above Low, when that fix-only round was already the last the budget allows.
+`review run` accepts it only on a snapshot recorded with `recheck: true`, so
+`max_review_iterations + 1` is the hard cap and the loop always ends; with the
+setting off the cap is `max_review_iterations`. See `references/reviews.md`
+("Closing on the whole change").
 
 The last two are backstops for cycles that delegate: every run that consumes an
 attempt — `run <role>` and `budget consume <stage>` — counts against the first,
@@ -624,7 +632,9 @@ the count, because something moved.
 
 Reviews register their own signature automatically, from the set of open
 findings: an identical round is called out in the output and counted here, so
-review→fix→review stops when the fixer stops achieving anything. At the round
+review→fix→review stops when the fixer stops achieving anything. A round that
+found nothing (signature `no-findings`) is never a repeat: finding nothing
+twice is not evidence that a fix changed nothing. At the round
 limit the repeat does not stop the last round's revision or fix and re-test --
 there is no re-review left to save -- so `status` gives it as a reason only
 once those are done, and reports `identical_rounds` meanwhile.

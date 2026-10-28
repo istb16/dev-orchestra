@@ -33,6 +33,7 @@ def create_snapshot(
     incremental: bool = True,
     surrounding: str = "none",
     watched: Sequence[str] = (),
+    recheck: bool = False,
 ) -> Dict[str, Any]:
     """Freeze the change under review into ``.ai/reviews/review-target.diff``.
 
@@ -52,6 +53,11 @@ def create_snapshot(
     ``watched`` is ``instructions.watched_paths``. Those of them that differ
     from the base are recorded as ``instruction_changes``, so the round that
     changes the instructions is high-risk; with none given nothing is recorded.
+
+    ``recheck`` marks a whole-change round that ``review.whole_change_recheck``
+    asked for after a clean fix-only round. See ``review_loop``. It takes the
+    whole change while still recording its tree, so a round after it can
+    narrow to its fix as ``incremental`` allows.
     """
     workspace.ensure()
     root = workspace.root
@@ -64,7 +70,7 @@ def create_snapshot(
     context_on = context_mod.surrounding_mode(surrounding) == "enclosing"
 
     head, frozen_tree, tree, previous_tree, revisions, strategy = _revisions(
-        workspace, root, base, incremental, context_on
+        workspace, root, base, incremental, context_on, recheck
     )
 
     tracked, withheld, suppressed, diff, strategy = _tracked_diff(
@@ -97,6 +103,7 @@ def create_snapshot(
         suppressed,
         untracked,
         patterns,
+        recheck,
     )
     if context_on:
         # The names as they are on disk, as the diff names them: ``meta``
@@ -182,8 +189,13 @@ def _revisions(
     base: Optional[str],
     incremental: bool,
     context_on: bool,
+    recheck: bool = False,
 ) -> _Revisions:
-    """Whether this round diffs against the last reviewed tree or against ``base``."""
+    """Whether this round diffs against the last reviewed tree or against ``base``.
+
+    ``recheck`` takes the whole change without giving up the tree: the round
+    after it may still narrow to its fix.
+    """
     head = _head(root)
     # Writing the tree means hashing every untracked-but-not-ignored file into
     # the object database, which on a repository with a large directory nobody
@@ -205,7 +217,7 @@ def _revisions(
     # what the next round may narrow from, and ``incremental: False`` says none.
     frozen_tree = _write_tree(root) if (wanted or context_on) else ""
     tree = frozen_tree if wanted else ""
-    previous_tree = _reviewed_tree(workspace, base) if wanted else ""
+    previous_tree = _reviewed_tree(workspace, base) if wanted and not recheck else ""
     if previous_tree and tree and previous_tree != tree:
         revisions = [previous_tree, tree]
         strategy = "git diff <previous round> <now>"
@@ -448,6 +460,7 @@ def _snapshot_meta(
     suppressed: Sequence[str],
     untracked: List[str],
     patterns: List[str],
+    recheck: bool = False,
 ) -> Dict[str, Any]:
     """What the snapshot froze, from which revisions, and every path it touches.
 
@@ -489,6 +502,10 @@ def _snapshot_meta(
         #: against exactly what this round reviewed.
         "tree": tree,
         "incremental_from": previous_tree,
+        #: Whether this round reviews the fix only or the whole change, and
+        #: whether review.whole_change_recheck asked for the whole change.
+        "scope": "fix" if previous_tree else "whole",
+        "recheck": recheck,
         "full_diff": full_diff_path,
         "files": [_shown_name(path) for path in reviewed],
         "changed_paths": [_shown_name(path) for path in changed_paths],

@@ -608,6 +608,18 @@ class LoadedConfig:
             return fallback
         return names
 
+    def whole_change_recheck(self) -> bool:
+        """``review.whole_change_recheck``, or the default for anything but a boolean.
+
+        Commands load unvalidated, as for ``blocking_severities``: a string
+        ``"false"`` would otherwise read as true.
+        """
+        review = self.data.get("review")
+        value = review.get("whole_change_recheck") if isinstance(review, dict) else None
+        if not isinstance(value, bool):
+            return bool(default_config()["review"]["whole_change_recheck"])
+        return value
+
     def design_review_settings(self) -> Dict[str, Any]:
         """The ``review.design`` block, with anything absent filled in.
 
