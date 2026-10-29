@@ -283,7 +283,7 @@ def _config_report(report: Dict[str, Any], start: Optional[str]) -> Optional[con
     # refused, or a setting the project file makes is ignored where it would
     # have loosened what is in force, and --strict should say so before a run
     # is attempted. An ignored setting that would have changed nothing -- a
-    # project `design.require_approval: true` over a required approval -- is
+    # project `design.require_approval: true` over `true` in the global file -- is
     # only a note: it is still left out, but --strict has nothing to fail on.
     ignored = policy_mod.project_ignored(loaded)
     warnings = policy_mod.read_only_arg_warnings(loaded)
@@ -306,10 +306,11 @@ def _config_report(report: Dict[str, Any], start: Optional[str]) -> Optional[con
                 % (row["role"], row["layer"], row["path"], row["problem"])
             )
     # Approval off is how a file says nobody is watching; questions asked
-    # there are recorded but not waited for.
+    # there are recorded but not waited for. Under `auto` that depends on
+    # the environment of each run, so it is not a setting to warn about.
     design = loaded.design_settings()
     asking = config_mod.ask_questions_mode(design.get("ask_questions"))
-    if not design.get("require_approval") and asking != "off":
+    if config_mod.approval_mode(design.get("require_approval")) == "off" and asking != "off":
         report["notes"].append(
             "design.ask_questions is %s while design.require_approval is false: the questions are "
             "asked and recorded, but the plan run leaves any still open to the architect" % asking

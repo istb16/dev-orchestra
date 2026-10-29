@@ -97,6 +97,19 @@ def design_review_mode(value: Any) -> str:
     return "on" if value else "off"
 
 
+def approval_mode(value: Any) -> str:
+    """``on``, ``off`` or ``auto`` for a ``design.require_approval`` value.
+
+    Null means the default, ``auto``. Anything else keeps the truth test the
+    readers applied before ``auto`` existed, as ``design_review_mode`` does.
+    """
+    if value is None:
+        return "auto"
+    if isinstance(value, str) and value.strip().lower() == "auto":
+        return "auto"
+    return "on" if value else "off"
+
+
 def ask_questions_mode(value: Any) -> str:
     """``on``, ``off`` or ``auto`` for a ``design.ask_questions`` value; null is the default, off."""
     if isinstance(value, str) and value.strip().lower() == "auto":
@@ -386,11 +399,13 @@ def default_config() -> Dict[str, Any]:
             "design": {"enabled": "auto", "max_iterations": 2},
         },
         # Implementation waits for the user's explicit approval of the plan.
-        # On by default because the point is to catch a plan the user never
-        # saw; `false` is for pipelines nobody is watching (CI, batch runs),
-        # where nobody could answer the question anyway. Top-level rather
-        # than under review.design: approval matters whether or not the
-        # panel reviewed the plan.
+        # `auto` by default: it waits unless nobody is watching (CI, or
+        # DEV_ORCHESTRA_UNATTENDED), the plan touches nothing high-risk and
+        # the design review left nothing above Low -- see approval_auto.py.
+        # `true` always waits, to catch a plan the user never saw; `false`
+        # never does, for pipelines where nobody could answer the question
+        # anyway. Top-level rather than under review.design: approval matters
+        # whether or not the panel reviewed the plan.
         #
         # ``resume`` bounds `run architect --resume`, which continues the
         # architect's last session to revise the plan. An hour is how long the
@@ -405,7 +420,7 @@ def default_config() -> Dict[str, Any]:
         # did before; `auto` asks when the orchestrator finds something worth
         # asking, `true` always runs one architect round first.
         "design": {
-            "require_approval": True,
+            "require_approval": "auto",
             "ask_questions": False,
             "max_question_rounds": 2,
             "resume": {"max_age_seconds": 3600, "max_context_tokens": None},

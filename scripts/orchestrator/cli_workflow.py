@@ -8,6 +8,7 @@ import shutil
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, cast
 
 from . import approval as approval_mod
+from . import approval_auto
 from . import config as config_mod
 from . import instructions as instructions_mod
 from . import jobs as jobs_mod
@@ -346,7 +347,7 @@ def _approval_advice(
     if state == "approved":
         return "approved (%s)" % str(info.get("approved_sha256") or "")[:12]
     if state == "not-required":
-        return "not required (design.require_approval: false)"
+        return str(info.get("requirement") or "not required (design.require_approval: false)")
     if state == "implemented-unapproved":
         return (
             "not recorded; the implementer already ran on this plan (this gate is newer than the "
@@ -676,11 +677,7 @@ def _approval_payload(
     design_exhausted: bool,
 ) -> Tuple[Dict[str, Any], str, Optional[bool]]:
     """``design_approval`` as `status` reports it, with the plan's digest and its own open findings."""
-    approval_info = approval_mod.current(
-        workspace,
-        bool(loaded.design_settings().get("require_approval")),
-        asking=questions_mod.asking(loaded),
-    )
+    approval_info = approval_auto.current(loaded, workspace)
     # The same list `design approve` names, whatever the severity: the user is
     # asked about what the approval will record, not only what blocks.
     design_open = [str(f.get("id")) for f in approval_mod.open_findings(design_data)]
@@ -935,8 +932,8 @@ def cmd_design_approve(args: argparse.Namespace) -> int:
             "%s %s (sha256 %s) for workflow %s"
             % ("already approved" if already else "approved", plan_relative, digest[:12], workspace.workflow)
         )
-    require_approval = bool(loaded.design_settings().get("require_approval"))
-    for note in _approval_notes(require_approval, unreviewed, open_findings, of_current_plan):
+    need = approval_auto.requirement(loaded, workspace)
+    for note in _approval_notes(need, unreviewed, open_findings, of_current_plan):
         _err(note)
     return 0
 
@@ -974,12 +971,15 @@ def _approval_round(design_data: Dict[str, Any], latest: Optional[str]) -> _Appr
 
 
 def _approval_notes(
-    require_approval: bool, unreviewed: bool, open_findings: List[str], of_current_plan: Optional[bool]
+    need: approval_auto.Requirement,
+    unreviewed: bool,
+    open_findings: List[str],
+    of_current_plan: Optional[bool],
 ) -> List[str]:
     """The notes `design approve` prints to stderr after recording, in this order."""
     notes: List[str] = []
-    if not require_approval:
-        notes.append("note: design.require_approval is false; recorded anyway")
+    if not need.required:
+        notes.append("note: approval is %s; recorded anyway" % need.label())
     if unreviewed:
         notes.append(
             "note: the latest design review round ended with no reviewer's review (every reviewer "

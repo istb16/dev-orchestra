@@ -13,6 +13,21 @@ authors can find it.
 
 ## [Unreleased]
 
+### Changed
+
+- **Plan approval decides for itself by default.** `design.require_approval`
+  takes `auto`, now the default. `auto` leaves the approval out only when
+  nobody is watching (`CI` or the new `DEV_ORCHESTRA_UNATTENDED` is set), the
+  plan touches nothing high-risk, and the design review left nothing above
+  Low -- skipped as unneeded under `review.design.enabled: auto`, or its latest
+  round reviewed this very plan with only Low findings open. Anything else
+  asks, as `true` did, so an interactive run behaves as before. Open design
+  questions are left to the architect under `auto` in CI as they are under
+  `false`. `status` prints the answer and its reason on the `Plan approval:`
+  line, and its `design_approval` in `--json` gains `mode`, `reason` and
+  `requirement`. A project file's `auto` over a global `true` is gated as
+  loosening approval. Set `true` to keep asking even in CI.
+
 ## [1.3.0] - 2026-10-28
 
 ### Added

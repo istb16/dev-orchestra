@@ -67,8 +67,8 @@ def linked_outside(root: str, directory: Any) -> bool:
 def ignored(project_layer: Dict[str, Any], root: Optional[str] = None) -> List[Tuple[str, Any]]:
     """``(dotted key, value)`` for each setting the project layer may not make.
 
-    A ``null`` approval is not one: it means the default, which is required,
-    and cannot turn the gate off. A ``workspace.dir`` inside the repository
+    A ``null`` approval is not one: it means the default, ``auto``, and
+    cannot loosen the gate. A ``workspace.dir`` inside the repository
     stays the project's to choose. With ``root``, the repository a command
     runs in, a ``workspace.dir`` a link takes out of it is one too
     (``linked_outside``); without, only the text is read.

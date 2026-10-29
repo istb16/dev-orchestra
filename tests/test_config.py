@@ -17,7 +17,7 @@ from orchestrator import config_paths, config_validation, providers, summary
 from orchestrator import config_policy as policy_mod
 
 DESIGN_DEFAULTS = {
-    "require_approval": True,
+    "require_approval": "auto",
     "ask_questions": False,
     "max_question_rounds": 2,
     "resume": {"max_age_seconds": 3600, "max_context_tokens": None},
@@ -102,13 +102,18 @@ class TestDefaults(IsolatedCase):
         loaded = config_mod.load(self.project)
         self.assertEqual(config_mod.validate(loaded.data), [])
         self.assertEqual(loaded.design_settings(), DESIGN_DEFAULTS)
-        self.assertTrue(summary._approval_required({"design": {"require_approval": None}}))
-        self.assertFalse(summary._approval_required({"design": {"require_approval": False}}))
+        self.assertTrue(summary._approval_mode({"design": {"require_approval": None}}).startswith("auto"))
+        self.assertEqual(summary._approval_mode({"design": {"require_approval": True}}), "required")
+        self.assertEqual(summary._approval_mode({"design": {"require_approval": False}}), "not required")
 
     def test_the_approval_setting_must_be_a_boolean(self):
         data = config_mod.default_config()
         data["design"]["require_approval"] = "yes"
-        self.assertIn("design.require_approval: must be true or false, or null", config_mod.validate(data))
+        self.assertIn(
+            "design.require_approval: must be true, false or auto, or null", config_mod.validate(data)
+        )
+        data["design"] = {"require_approval": "AUTO"}
+        self.assertEqual(config_mod.validate(data), [])
         data["design"] = 3
         self.assertIn("design: must be a mapping", config_mod.validate(data))
 
@@ -846,7 +851,7 @@ class TestValidateOrder(IsolatedCase):
                 "review.context.surrounding: must be one of enclosing, none, or null",
                 "review.exclude[0]: must be a non-empty string (got '')",
                 "review.exclude[1]: must be a non-empty string (got 3)",
-                "design.require_approval: must be true or false, or null",
+                "design.require_approval: must be true, false or auto, or null",
                 "design.ask_questions: must be true, false or auto, or null",
                 "design.max_question_rounds: must be a positive integer or null",
                 "design.resume.max_age_seconds: must be a non-negative integer or null",

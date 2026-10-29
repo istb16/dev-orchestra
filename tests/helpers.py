@@ -52,6 +52,10 @@ ENV_KEYS = (
     "DEV_ORCHESTRA_MOCK_ACTIVITY",
     "DEV_ORCHESTRA_NO_USER_PROVIDERS",
     "DEV_ORCHESTRA_DELEGATED",
+    # `design.require_approval: auto` reads these; a suite run in CI would
+    # otherwise skip the approval every test that does not set them expects.
+    "DEV_ORCHESTRA_UNATTENDED",
+    "CI",
     "CLAUDE_CONFIG_DIR",
     "XDG_CONFIG_HOME",
     "APPDATA",

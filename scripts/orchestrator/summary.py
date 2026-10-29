@@ -109,10 +109,7 @@ def render_summary(
         "    skip unneeded roles: %s  (optimization.skip_unneeded_roles)"
         % ("on" if _skip_unneeded_roles(data) else "off")
     )
-    lines.append(
-        "    plan approval: %s  (design.require_approval)"
-        % ("required" if _approval_required(data) else "not required")
-    )
+    lines.append("    plan approval: %s  (design.require_approval)" % _approval_mode(data))
     lines.append("    design questions: %s  (design.ask_questions)" % _questions_mode(data))
     # The design panel, under its own heading: which seats a design round
     # runs is as much a part of the setup as who reviews the code.
@@ -231,14 +228,16 @@ def describe_unit_tests(mode: str) -> str:
     return ""
 
 
-def _approval_required(data: Dict[str, Any]) -> bool:
-    """Falls back to the built-in default: a layer may name no `design` at all,
-    or name the key with no value, which means the default as it does in
-    ``LoadedConfig.design_settings``."""
+def _approval_mode(data: Dict[str, Any]) -> str:
+    """``required``, ``not required`` or ``auto``. Falls back to the built-in
+    default: a layer may name no `design` at all, or name the key with no
+    value, which means the default as it does in ``LoadedConfig.design_settings``."""
     design = data.get("design")
-    if isinstance(design, dict) and design.get("require_approval") is not None:
-        return bool(design["require_approval"])
-    return bool(config_mod.default_config()["design"]["require_approval"])
+    value = design.get("require_approval") if isinstance(design, dict) else None
+    mode = config_mod.approval_mode(value)
+    return {"on": "required", "off": "not required"}.get(
+        mode, "auto (asks unless nobody is watching and the plan is low-risk)"
+    )
 
 
 def _questions_mode(data: Dict[str, Any]) -> str:

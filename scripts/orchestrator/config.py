@@ -37,6 +37,7 @@ from .config_common import (  # noqa: F401 - re-exported
     ConfigError,
     Implementation,
     Progress,
+    approval_mode,
     ask_questions_mode,
     default_config,
     design_review_mode,

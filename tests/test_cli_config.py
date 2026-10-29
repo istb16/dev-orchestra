@@ -111,6 +111,9 @@ class TestConfigCommands(IsolatedCase):
 
     def test_show_says_whether_the_plan_needs_approving(self):
         _, out, _ = run_cli("config", "show")
+        self.assertIn("plan approval: auto", out)
+        run_cli("config", "set", "design.require_approval", "true")
+        _, out, _ = run_cli("config", "show")
         self.assertIn("plan approval: required", out)
         run_cli("config", "set", "design.require_approval", "false")
         _, out, _ = run_cli("config", "show")

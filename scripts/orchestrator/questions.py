@@ -48,8 +48,8 @@ OPTION_KEYS = "ABCDE"
 DELEGATED = "left to the architect"
 
 #: What the plan run records for a question still open when nobody is there
-#: to answer it (``design.require_approval`` false).
-UNATTENDED = "left to the architect: nobody was there to answer (design.require_approval is false)"
+#: to answer it (``design.require_approval`` false, or ``auto`` in CI).
+UNATTENDED = "left to the architect: nobody was there to answer (design.require_approval)"
 
 _HEADER_RE = re.compile(r"^\s{0,3}#{1,6}\s*question\s*$", re.IGNORECASE)
 #: Any option letter is read as an option, so a sixth one is refused by name

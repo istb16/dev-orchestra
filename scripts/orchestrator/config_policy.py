@@ -18,6 +18,7 @@ from .config import (
     WRITE_ROLES,
     LoadedConfig,
     ReviewerOrigin,
+    approval_mode,
     ask_questions_mode,
     compose_loaded,
     design_review_mode,
@@ -417,11 +418,12 @@ def project_ignored(loaded: LoadedConfig) -> List[Ignored]:
                 continue  # the global file names the same directory, so nothing moved
             how = ", where a link takes it outside the repository,"
         if key == config_trust.APPROVAL:
-            required = bool(loaded.design_settings().get("require_approval"))
-            why = "plan approval is taken only from the global config, so it stays %s" % (
-                "required" if required else "not required"
+            in_force = approval_mode(loaded.design_settings().get("require_approval"))
+            why = (
+                "plan approval is taken only from the global config, so it stays %s"
+                % (_APPROVAL_SHOWN[in_force])
             )
-            loosens = required and not value
+            loosens = _approval_looser(value, in_force)
         else:
             why = "a workspace outside the repository is taken only from the global config, so %s is used" % (
                 used
@@ -461,14 +463,27 @@ def global_only_write(dotted: str, value: Any, file_name: str = "the project fil
     )
 
 
+#: How each ``design.require_approval`` mode reads in a note.
+_APPROVAL_SHOWN = {"on": "required", "auto": "auto", "off": "not required"}
+
+#: ``design.require_approval`` from the least to the most careful.
+_APPROVAL_MODES = ("off", "auto", "on")
+
+
+def _approval_looser(value: Any, in_force: str) -> bool:
+    """Whether a project ``design.require_approval`` would ask less often than ``in_force``."""
+    return _APPROVAL_MODES.index(approval_mode(value)) < _APPROVAL_MODES.index(in_force)
+
+
 def approval_ignored_note(loaded: LoadedConfig) -> str:
-    """The ``note:`` a refused ``run implementer`` adds when the project file tried to turn approval off."""
+    """The ``note:`` a refused ``run implementer`` adds when the project file tried to loosen approval."""
+    in_force = approval_mode(loaded.design_settings().get("require_approval"))
     for key, value in config_trust.ignored(loaded.project_layer):
-        if key == config_trust.APPROVAL and not value:
+        if key == config_trust.APPROVAL and _approval_looser(value, in_force):
             name = os.path.basename(loaded.project_path or "") or "the project file"
             return (
                 "note: design.require_approval: %s in the project config (%s) is ignored; only the "
-                "global config can turn plan approval off" % (_shown(value), name)
+                "global config can loosen plan approval" % (_shown(value), name)
             )
     return ""
 

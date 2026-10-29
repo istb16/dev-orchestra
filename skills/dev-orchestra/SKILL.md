@@ -96,8 +96,9 @@ approval. Panel, templates: `references/workflow.md` (Design review).
 
 **Approval.** Show the user the plan's Goal, Proposed Change, Files to
 Modify, Risks and open design findings, name the plan's file
-(`<Artifacts>/plan.md`) as what is approved, and ask (rule 10). Open
-findings, requested changes: `references/workflow.md` (Approval).
+(`<Artifacts>/plan.md`) as what is approved, and ask (rule 10). Skip
+only on `status`'s `Plan approval: not required`. Open findings,
+requested changes: `references/workflow.md` (Approval).
 
 **Implement.** Require: existing conventions, minimal change, no unrelated
 refactoring, tests added or updated and run; plan wrong → stop and report,

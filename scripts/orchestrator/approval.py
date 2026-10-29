@@ -1,8 +1,9 @@
 """The user's approval of the plan, and whether the current plan still has it.
 
 ``run implementer`` refuses a plan nobody approved while
-``design.require_approval`` is on. SKILL.md tells the orchestrator to ask
-before implementing, but prose can be skipped; this is the part that cannot.
+``design.require_approval`` asks for it (``approval_auto`` decides ``auto``).
+SKILL.md tells the orchestrator to ask before implementing, but prose can be
+skipped; this is the part that cannot.
 The approval is recorded by ``design approve`` only, under its own key in
 ``state.json`` -- ``state record`` can write any event, so an event alone would
 be an approval anyone could fake by accident.
@@ -277,9 +278,9 @@ def refusal_lines(info: Dict[str, Any], plan_relative: str) -> List[str]:
             "revise the plan and ask again." % plan_relative
         )
     else:
-        first = (
-            "refusing to run implementer: the plan at %s is not approved "
-            "(design.require_approval)." % plan_relative
+        first = "refusing to run implementer: the plan at %s is not approved (%s)." % (
+            plan_relative,
+            info.get("requirement") or "design.require_approval",
         )
     return [
         first,

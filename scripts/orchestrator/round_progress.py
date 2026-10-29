@@ -111,7 +111,7 @@ def design_decision(loaded: config_mod.LoadedConfig, workspace: ws.Workspace) ->
     round_ran = (
         int(design_data.get("iteration", 0) or 0) > 0 or approval_mod.design_round(workspace) is not None
     )
-    plan_state, scan = _plan_scan(workspace)
+    plan_state, scan = plan_scan(workspace)
     return opt_design.decide_design(
         mode,
         loaded.optimization_settings(),
@@ -122,7 +122,7 @@ def design_decision(loaded: config_mod.LoadedConfig, workspace: ws.Workspace) ->
     )
 
 
-def _plan_scan(workspace: ws.Workspace) -> Tuple[str, Any]:
+def plan_scan(workspace: ws.Workspace) -> Tuple[str, Any]:
     """``(plan_state, scan)`` of the workflow's plan, read strictly.
 
     ``ok`` with ``review.plan_tokens()`` of it; ``missing`` for no plan or a
@@ -173,7 +173,7 @@ def design_round_plan(
     `status` preview, so the previews cannot drift from the run. A preview
     passes the whole design panel and neither ``--only`` nor ``--high-risk``.
     """
-    plan_state, scan = _plan_scan(workspace)
+    plan_state, scan = plan_scan(workspace)
     return opt_design.decide_design_round(
         loaded.optimization_settings(),
         scan,
@@ -255,7 +255,7 @@ def approved_as_recorded(info: Dict[str, Any]) -> bool:
     """Whether the recorded approval covers this plan and this design round.
 
     Read from the record rather than from ``state``: with
-    ``design.require_approval`` off the state is ``not-required`` whatever was
+    approval not required the state is ``not-required`` whatever was
     recorded, and a plan the user did approve is still one they approved.
     """
     return info.get("matches_current_plan") is True and info.get("reviewed_since_approval") is False

@@ -11,7 +11,7 @@ import sys
 import time
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union, cast
 
-from . import activity, clocks, execution_tree, instructions, units_run
+from . import activity, approval_auto, clocks, execution_tree, instructions, units_run
 from . import approval as approval_mod
 from . import config as config_mod
 from . import config_policy as policy_mod
@@ -1103,9 +1103,7 @@ def _refuse_unless_approved(
     loaded: config_mod.LoadedConfig, workspace: ws.Workspace, args: argparse.Namespace, role: str
 ) -> Optional[int]:
     """Refuse the implementer a plan the user has not approved as it is now."""
-    info = approval_mod.current(
-        workspace, bool(loaded.design_settings().get("require_approval")), questions_mod.asking(loaded)
-    )
+    info = approval_auto.current(loaded, workspace)
     if info["state"] not in approval_mod.REFUSED:
         return None
     lines = approval_mod.refusal_lines(info, workspace.relative(workspace.plan_path))
@@ -1171,14 +1169,12 @@ def _refuse_unless_questions_answered(
         # with no plan output is not.
         return None, False
     info = questions_mod.current_for(loaded, workspace)
-    # Approval off is how a file says nobody is watching: the questions were
-    # asked and recorded, but waiting for an answer would stop the run for
-    # good, so the open ones are left to the architect instead. Never by a
-    # worker: its parent left them before handing over, so one open now was
+    # Nobody watching -- approval off, or `auto` in CI -- and the questions
+    # were asked and recorded, but waiting for an answer would stop the run
+    # for good, so the open ones are left to the architect instead. Never by
+    # a worker: its parent left them before handing over, so one open now was
     # recorded since, and is refused like any other.
-    unattended = (
-        info["state"] == "open" and not loaded.design_settings().get("require_approval") and not args.job_file
-    )
+    unattended = info["state"] == "open" and approval_auto.nobody_watching(loaded) and not args.job_file
     if unattended:
         info = questions_mod.as_if_answered(info)
     if questions_mod.refused(info, bool(getattr(args, "resume", False))):
@@ -1199,8 +1195,9 @@ def _leave_open_questions_to_the_architect(workspace: ws.Workspace) -> None:
     ids = questions_mod.delegate_unattended(workspace)
     if ids:
         _err(
-            "note: design.require_approval is false, so nobody is there to answer: %s left to the "
-            "architect (recorded in %s)" % (", ".join(ids), workspace.relative(workspace.decisions_path))
+            "note: nobody is watching (design.require_approval), so nobody is there to answer: %s "
+            "left to the architect (recorded in %s)"
+            % (", ".join(ids), workspace.relative(workspace.decisions_path))
         )
 
 
