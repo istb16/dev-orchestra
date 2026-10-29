@@ -33,6 +33,18 @@ authors can find it.
   `design_approval` in `--json` gains `mode`, `reason`, `requirement`,
   `nobody_watching` and `unattended_questions`. A project file's `auto` over a global `true` is gated as
   loosening approval. Set `true` to keep asking even in CI.
+- **Claude write runs start with the tools they use, and no MCP servers.** An
+  `implement` run on claude (the implementer, the review fixer, `run --mode
+  implement`) now passes `--tools Read,Edit,Write,Bash,Grep,Glob
+  --strict-mcp-config`, with `PowerShell` added on Windows. Before, it was
+  offered every built-in tool and the user's MCP servers, whose definitions
+  were sent again on every turn: measured on claude 2.1.312, a run started at
+  about 47k tokens of context instead of about 12k, and the same task cost 26%
+  more. The new `options.tools` on a claude write role takes `all` to run as
+  before, or a list of tool names to use instead (still without MCP servers);
+  like `permission_mode`, it is taken only from the global config, and a
+  project file that names it has that role's `implement` runs refused. A CLI
+  whose `--help` does not list both flags runs as before.
 
 ## [1.3.0] - 2026-10-28
 

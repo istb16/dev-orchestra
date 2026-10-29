@@ -500,9 +500,9 @@ class TestReadOnlyRawArgs(IsolatedCase):
             [
                 "orchestrator: options.args is set in the project config (.dev-orchestra.yaml); read-only "
                 "roles take raw arguments only from the global config or from --extra",
-                "implementer: options.permission_mode / options.args is set in the project config "
-                "(.dev-orchestra.yaml); on claude the permission bypass and raw arguments are taken only "
-                "from the global config or from --extra",
+                "implementer: options.permission_mode / options.tools / options.args is set in the project "
+                "config (.dev-orchestra.yaml); on claude the permission bypass and raw arguments are taken "
+                "only from the global config or from --extra",
                 raw % ("'--permission-mode'", 1),
                 raw % ("a bare value", 2),
             ],

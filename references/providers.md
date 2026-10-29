@@ -281,7 +281,7 @@ Verified against `claude` 2.1.x.
 | Model | `--model <alias-or-name>`, omitted when the family is `default` |
 | Model discovery | Parses the aliases the CLI advertises in its own `--model` help text |
 | `plan` / `review` | `--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit --tools Read,Grep,Glob --strict-mcp-config --restricted` |
-| `implement` | `--permission-mode acceptEdits` |
+| `implement` | `--permission-mode acceptEdits --tools Read,Edit,Write,Bash,Grep,Glob --strict-mcp-config` (`PowerShell` added on Windows); the last two only when `--help` lists both, and not with `options.tools: all` |
 | Resume (`run architect --resume`) | the read-only command plus `--resume=<id> --fork-session`, on a CLI version verified to keep a resumed session read-only, or newer than one that was |
 | Auth | Inherited environment; presence detected via `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, or the CLI's credential file |
 
@@ -313,6 +313,29 @@ A CLI whose `claude --help` does not list `--tools`, `--strict-mcp-config` and
 `NOT ENFORCEABLE`; one whose `--help` cannot be read is refused as `UNVERIFIED`.
 `claude --help` is read once per process and shared with model and
 permission-mode discovery.
+
+An `implement` run (the implementer, the review fixer, `run --mode implement`)
+starts with only the tools those roles use and no MCP servers. Without
+`--tools` the CLI offers every built-in tool and the user's MCP servers, and
+their definitions are sent again on every turn. Measured on claude 2.1.312,
+an implement run started at about 47k tokens of context, and at about 12k
+with these six tools; the same task, run from the same commit both ways,
+cost 26% less (from $1.72 to $1.28) and changed the same files, with the same
+tests passing. Over about 10,700 recorded tool calls, implementers and review
+fixers had used nothing else but `Agent`, 4 times. `PowerShell` is added on
+Windows, where Claude Code may offer it instead of `Bash`; a name the CLI does
+not know is dropped without a word, so it costs nothing where it is missing,
+and is left out elsewhere because it adds about 3.5k tokens to every turn.
+Unlike the read-only runs, a write run gets no `--restricted`: it would stop
+reading `.claude/settings.local.json`, and the commands allowed there.
+
+`options.tools` changes that per role: `all` runs with every tool and MCP
+server, as before; a list of tool names (`[Read, Edit, Bash, Agent]`) replaces
+the six, still without MCP servers. Like `permission_mode`, a write role takes
+it only from the global config, and on a read-only role it is ignored. A CLI
+whose `--help` does not list both `--tools` and `--strict-mcp-config`, or
+cannot be read, runs its write runs with everything, as before; a write run is
+never refused for this.
 
 ### Resuming a session
 
@@ -425,13 +448,14 @@ implementer:
     permission_mode: bypassPermissions
 ```
 
-A write role takes `options.permission_mode` and `options.args` only from the
-global config or from `--extra`, as agy's `skip_permissions`: the project file
-can come with the branch under review, and a branch must not turn its own
-implementer's prompts off. A project file that names `options.permission_mode`
-(whatever its value) or sets any `options.args` on the implementer, the review
-fixer or one of their tiers has that role's `implement` runs refused before
-anything is spent, and `config validate` and `doctor` say so.
+A write role takes `options.permission_mode`, `options.tools` and
+`options.args` only from the global config or from `--extra`, as agy's
+`skip_permissions`: the project file can come with the branch under review,
+and a branch must not turn its own implementer's prompts off. A project file
+that names `options.permission_mode` or `options.tools` (whatever the value)
+or sets any `options.args` on the implementer, the review fixer or one of
+their tiers has that role's `implement` runs refused before anything is
+spent, and `config validate` and `doctor` say so.
 
 Or ad hoc, for one run:
 
