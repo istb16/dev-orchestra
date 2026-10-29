@@ -1124,6 +1124,7 @@ def write_design_snapshot(
     plan_text: str,
     digest: str,
     decisions_text: str = "",
+    declared_high_risk: bool = False,
 ) -> Dict[str, Any]:
     """Freeze the plan under review into the scoped ``review-target.md``.
 
@@ -1147,8 +1148,17 @@ def write_design_snapshot(
     report once every reviewer of the round has returned (see
     ``build_consolidation``); ``design approve`` only binds to a round
     whose report carries it.
+
+    ``declared_high_risk`` is ``--high-risk``, kept once any round of the
+    workflow was given it: a later round run without the flag does not make
+    the plan less risky (``approval_auto``). Written before any reviewer
+    runs, by this command alone, so neither a round still running nor a
+    ``state record`` can hide it.
     """
     workspace.ensure()
+    previous = workspace.read_snapshot_meta()
+    carried = isinstance(previous, dict) and previous.get("declared_high_risk") is True
+    declared = declared_high_risk or carried
     ws.write_text(workspace.snapshot_path, plan_text)
     consolidated = ws.read_json(workspace.consolidated_json_path, {}) or {}
     reviewed = str((consolidated.get("snapshot") or {}).get("sha256") or "")
@@ -1168,6 +1178,8 @@ def write_design_snapshot(
         "base": None,
         "empty": False,
     }
+    if declared:
+        meta["declared_high_risk"] = True
     if decisions_text:
         # Only with decisions, so a round without questions is recorded as
         # before. Frozen, as the plan is: decisions.md is rewritten on every

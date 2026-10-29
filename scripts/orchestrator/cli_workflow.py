@@ -288,7 +288,7 @@ def _approval_line(
     if info["pending"] and architect_left == 0 and (design_pass or {}).get("state") != "blocked":
         line += " (no architect attempt is left for changes; `budget reset architect` first)"
     if info["pending"]:
-        line += "".join(approval_mod.pending_notes(info))
+        line += "".join(approval_auto.pending_notes(info))
     return line
 
 
@@ -349,7 +349,7 @@ def _approval_advice(
     if state == "approved":
         return "approved (%s)" % str(info.get("approved_sha256") or "")[:12]
     if state == "not-required":
-        return str(info.get("requirement") or "not required (design.require_approval: false)")
+        return str(info["requirement"])
     if state == "implemented-unapproved":
         return (
             "not recorded; the implementer already ran on this plan (this gate is newer than the "
@@ -934,7 +934,7 @@ def cmd_design_approve(args: argparse.Namespace) -> int:
             "%s %s (sha256 %s) for workflow %s"
             % ("already approved" if already else "approved", plan_relative, digest[:12], workspace.workflow)
         )
-    need = approval_auto.requirement(loaded, workspace)
+    need = approval_auto.requirement(loaded, workspace, plan_text=plan_text)
     for note in _approval_notes(need, unreviewed, open_findings, of_current_plan):
         _err(note)
     return 0

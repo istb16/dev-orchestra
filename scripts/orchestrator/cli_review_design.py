@@ -149,7 +149,13 @@ def _run_design_review(args: argparse.Namespace, loaded: config_mod.LoadedConfig
         loaded, workspace, reviewers, lineage=lineage, declared=declared, only=bool(args.only)
     )
     meta = review_mod.write_design_snapshot(
-        workspace, workspace.plan_path, request_path, plan_text, digest, decisions_text
+        workspace,
+        workspace.plan_path,
+        request_path,
+        plan_text,
+        digest,
+        decisions_text,
+        declared_high_risk=declared,
     )
 
     if not reviewers:

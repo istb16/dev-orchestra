@@ -1106,7 +1106,7 @@ def _refuse_unless_approved(
     info = approval_auto.current(loaded, workspace)
     if info["state"] not in approval_mod.REFUSED:
         return None
-    lines = approval_mod.refusal_lines(info, workspace.relative(workspace.plan_path))
+    lines = approval_auto.refusal_lines(info, workspace.relative(workspace.plan_path))
     ignored = policy_mod.approval_ignored_note(loaded)
     if ignored:
         lines.append(ignored)

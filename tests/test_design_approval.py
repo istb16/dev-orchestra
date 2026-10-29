@@ -17,7 +17,7 @@ import unittest
 from helpers import IsolatedCase
 from test_design_review import PLAN, REVISED_PLAN, DesignReviewCase, run_cli
 
-from orchestrator import approval
+from orchestrator import approval, approval_auto
 from orchestrator import jobs as jobs_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator import review as review_mod
@@ -595,7 +595,13 @@ class TestTheModule(IsolatedCase):
         self.assertIs(info["reviewed_since_approval"], False)
 
     def test_the_refusal_names_the_command(self):
-        lines = approval.refusal_lines({"state": "pending", "stale_reason": None}, ".ai/plan.md")
+        info = {
+            "state": "pending",
+            "stale_reason": None,
+            "requirement": "required (design.require_approval: true)",
+            "unattended_questions": [],
+        }
+        lines = approval_auto.refusal_lines(info, ".ai/plan.md")
         self.assertIn(".ai/plan.md", lines[0])
         self.assertTrue(any("design approve" in line for line in lines))
 

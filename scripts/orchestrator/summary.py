@@ -234,10 +234,7 @@ def _approval_mode(data: Dict[str, Any]) -> str:
     value, which means the default as it does in ``LoadedConfig.design_settings``."""
     design = data.get("design")
     value = design.get("require_approval") if isinstance(design, dict) else None
-    mode = config_mod.approval_mode(value)
-    return {"on": "required", "off": "not required"}.get(
-        mode, "auto (asks unless nobody is watching and the plan is low-risk)"
-    )
+    return config_mod.approval_mode_shown(config_mod.approval_mode(value))
 
 
 def _questions_mode(data: Dict[str, Any]) -> str:

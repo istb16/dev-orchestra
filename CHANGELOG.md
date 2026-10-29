@@ -19,7 +19,9 @@ authors can find it.
   takes `auto`, now the default. `auto` leaves the approval out only when
   nobody is watching (the new `DEV_ORCHESTRA_UNATTENDED` is set, or else `CI`;
   `DEV_ORCHESTRA_UNATTENDED=0` keeps asking under `CI`), the plan touches
-  nothing high-risk, and the design review left nothing above Low -- skipped
+  nothing high-risk (by the patterns of the defaults and the global config,
+  which a project file can add to but not narrow) and no design round of the
+  workflow ran with `--high-risk`, and the design review left nothing above Low -- skipped
   as unneeded under `review.design.enabled: auto`, or its latest round, with
   every reviewer finishing and the whole plan shown, reviewed this very plan
   and left nothing above Low by the review loop's own line

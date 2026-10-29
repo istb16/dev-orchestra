@@ -38,6 +38,7 @@ from .config_common import (  # noqa: F401 - re-exported
     Implementation,
     Progress,
     approval_mode,
+    approval_mode_shown,
     ask_questions_mode,
     default_config,
     design_review_mode,
@@ -717,6 +718,21 @@ class LoadedConfig:
     def implementation_settings(self) -> Implementation:
         """``implementation_settings_of`` the composed data."""
         return implementation_settings_of(self.data)
+
+    def without_project(self) -> Optional["LoadedConfig"]:
+        """The configuration the global file, its preset's fit and the defaults give alone.
+
+        Fitted to the CLIs this one was, without asking for them again. None
+        when the global file does not compose alone: ``validate`` reports it.
+        """
+        # lazy: presets; see the note at the top of this module
+        from . import presets
+
+        installed = self.installed if self.installed is not None else presets.installed_providers()
+        try:
+            return compose_loaded(self.global_layer, {}, installed, self.global_path, None, self.start)
+        except Exception:
+            return None
 
 
 def validate_loaded(loaded: LoadedConfig) -> List[str]:

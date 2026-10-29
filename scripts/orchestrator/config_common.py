@@ -110,6 +110,13 @@ def approval_mode(value: Any) -> str:
     return "on" if value else "off"
 
 
+def approval_mode_shown(mode: str) -> str:
+    """How an ``approval_mode`` reads to the user, in ``config show`` and every note."""
+    return {"on": "required", "off": "not required"}.get(
+        mode, "auto (asks unless nobody is watching and the plan is low-risk)"
+    )
+
+
 def ask_questions_mode(value: Any) -> str:
     """``on``, ``off`` or ``auto`` for a ``design.ask_questions`` value; null is the default, off."""
     if isinstance(value, str) and value.strip().lower() == "auto":

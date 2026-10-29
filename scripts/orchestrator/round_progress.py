@@ -101,8 +101,10 @@ def round_plan(
 def design_decision(
     loaded: config_mod.LoadedConfig,
     workspace: ws.Workspace,
+    *,
     scanned: Optional[Tuple[str, Any]] = None,
     design_data: Optional[Dict[str, Any]] = None,
+    optimization: Optional[Dict[str, Any]] = None,
 ) -> opt_design.DesignDecision:
     """Whether the design review runs for this workflow's plan, and why.
 
@@ -112,6 +114,8 @@ def design_decision(
     a decision made from a guessed file name would be worse than none.
     ``scanned`` (``plan_scan``'s answer) and ``design_data`` (the design
     report) save a caller that already read them reading them again.
+    ``optimization`` replaces ``loaded.optimization_settings()``, for
+    ``approval_auto``'s patterns a project file cannot narrow.
     """
     mode = config_mod.design_review_mode(loaded.design_review_settings().get("enabled"))
     report = design_data
@@ -121,7 +125,7 @@ def design_decision(
     plan_state, scan = scanned if scanned is not None else plan_scan(workspace)
     return opt_design.decide_design(
         mode,
-        loaded.optimization_settings(),
+        loaded.optimization_settings() if optimization is None else optimization,
         scan,
         plan_state=plan_state,
         round_ran=round_ran,
