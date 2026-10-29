@@ -916,6 +916,9 @@ class Plan:
         self.conditional = [dict(record) for record in conditional]
         #: Whether the round was declared high-risk with ``--high-risk``.
         self.declared = declared
+        #: Whether the round runs alongside the tests (``review.start_before_tests``):
+        #: ``test_status`` is then the result recorded on its own tree.
+        self.alongside_tests = False
 
     @property
     def escalated(self) -> bool:
@@ -945,6 +948,12 @@ class Plan:
                 "that does not pass its own tests spends a reviewer on a problem you "
                 "already know about. Fix the tests, record the result, and run again "
                 "-- or pass --force."
+            )
+        if self.gate == GATE_WARN and self.alongside_tests:
+            return (
+                "note: the tests run alongside this round (review.start_before_tests). It is "
+                "used only once they pass on the tree it reviews: `state record test ok|failed` "
+                "when they finish."
             )
         if self.gate == GATE_WARN:
             return (

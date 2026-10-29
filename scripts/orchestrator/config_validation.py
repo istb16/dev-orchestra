@@ -136,6 +136,7 @@ _REVIEW_LIMIT_RULES = (
     _Rule("review.idle_timeout_seconds", _Check(_SECONDS, "must be a positive integer or null", 1)),
     _Rule("review.incremental_rounds", _TRUE_OR_FALSE),
     _Rule("review.whole_change_recheck", _TRUE_OR_FALSE),
+    _Rule("review.start_before_tests", _TRUE_OR_FALSE),
     _Rule("review.max_findings", _Check(_INT, "must be a non-negative integer or null (0 = no cap)")),
 )
 _REVIEW_DESIGN_RULES = (

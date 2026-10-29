@@ -622,6 +622,14 @@ class LoadedConfig:
             return bool(default_config()["review"]["whole_change_recheck"])
         return value
 
+    def start_before_tests(self) -> bool:
+        """``review.start_before_tests``, or the default for anything but a boolean."""
+        review = self.data.get("review")
+        value = review.get("start_before_tests") if isinstance(review, dict) else None
+        if not isinstance(value, bool):
+            return bool(default_config()["review"]["start_before_tests"])
+        return value
+
     def design_review_settings(self) -> Dict[str, Any]:
         """The ``review.design`` block, with anything absent filled in.
 

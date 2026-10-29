@@ -419,6 +419,7 @@ pass `final_revision`, in place of the two code keys named below.
 | `round_scope` | string or null | Only without `--design`: `fix` or `whole`, what the reported round reviewed; `null` with no report. |
 | `next_review` | string or null | Only without `--design`: the round to run next, `fix` or `whole`, as `review snapshot` will take it (`fix` only when findings are accepted); `null` when none is, and always with `review.whole_change_recheck` off. |
 | `surrounding` | object | Only when the round carried surrounding context. |
+| `round_tests` | object | Only without `--design`, with `review.start_before_tests` on and a report: `state` -- `usable`, `pending`, `failed`, `changed` or `unchecked` -- and `detail`, a sentence. Triage and the fix brief wait for `usable` (or `unchecked`). |
 | `enabled` | boolean | Only with `--design`: whether the stage runs. |
 | `mode` | string | Only with `--design`: `on`, `off` or `auto`. |
 | `reason` | string or null | Only with `--design`: why `auto` decided as it did; `null` under `on` and `off`. |

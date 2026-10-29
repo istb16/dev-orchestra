@@ -1,4 +1,4 @@
-<!-- translated-from: references/json.md sha256:3eaf1ab9ca3e77a9c63102c9d30f6ae3d478c2f102836191d141c56fff04b746 -->
+<!-- translated-from: references/json.md sha256:da25eebf7d9a5b8e9021bfa7d6ac191714a98e05862f7912d722d98cfaf9ea01 -->
 
 > この文書は [references/json.md](../../../references/json.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -426,6 +426,7 @@ Object. `--design` のときは、下に挙げたコードの 2 つのキーの�
 | `round_scope` | string または null | `--design` なしのときだけ。報告されたラウンドがレビューしたもの、`fix` または `whole`。レポートが無ければ `null`。 |
 | `next_review` | string または null | `--design` なしのときだけ。次に行うラウンド、`fix` または `whole` で、`review snapshot` が取るとおりのもの（`fix` は指摘が受け入れられているときだけ）。無ければ `null` で、`review.whole_change_recheck` が off なら常に `null`。 |
 | `surrounding` | object | Only: ラウンドが周りの文脈を運んだときだけ。 |
+| `round_tests` | object | Only: `--design` なしで、`review.start_before_tests` がオンで、レポートがあるときだけ。`state` -- `usable`、`pending`、`failed`、`changed` または `unchecked` -- と、文の `detail`。トリアージと fix brief は `usable`（または `unchecked`）を待ちます。 |
 | `enabled` | boolean | Only: `--design` のときだけ。この工程を実行するかどうか。 |
 | `mode` | string | Only: `--design` のときだけ。`on`、`off`、`auto`。 |
 | `reason` | string or null | Only: `--design` のときだけ。`auto` がそう決めた理由。`on` と `off` では `null`。 |

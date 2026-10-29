@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:7d94c57a12f79584a8a3657ead03bf5ae26a0e1ac1b62b926309bb399338ed6e -->
+<!-- translated-from: references/configuration.md sha256:fc4976ef59c9589d694e9c2013e0bfc5227012238edee2655059121205215973 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -589,6 +589,7 @@ review:
   parallel: true                      # run reviewers concurrently
   re_review_severities: [critical, high]
   whole_change_recheck: true          # end on a whole-change round with nothing above Low
+  start_before_tests: false           # true: start the code review while the tests run
   timeout_seconds: 1800               # reviewers only: `review run` and `run <reviewer-id>`
   idle_timeout_seconds: 300           # no output for this long: wedged; read-only `run` too
   design:
@@ -659,6 +660,7 @@ implementation:
 | `review.exclude` | list | diff 本文をレビュアーに渡さない glob パターン。デフォルトのリストを丸ごと置き換えます。`[]` ですべてをレビューします。 |
 | `review.incremental_rounds` | bool | `true`（デフォルト）にすると、2 回目のラウンドは 1 回目のラウンドがレビューした内容に対する diff になり、修正が対処しようとした指摘を引き継ぎます。`false` にすると毎ラウンド変更全体の diff を取り直します。 |
 | `review.whole_change_recheck` | bool | `true`（デフォルト。`standard` と `quality`）にすると、Low より上のもの（medium 以上に `re_review_severities` を足したもの）で再レビューし、Low より上のものが無かった修正だけのラウンドの後に変更全体のラウンドを 1 つ行い -- それは予備のラウンド `max_review_iterations + 1` でもかまいません -- 変更全体のラウンドで Low より上のものが無ければ終わります。`false`（`fast`）はこれまでの規則で、`re_review_severities` でだけ再レビューします。プリセットが決めるキーです。`references/reviews.md`（「変更全体で締めくくる」）を参照。 |
+| `review.start_before_tests` | bool | `false`（デフォルト）はテストを走らせて記録してから、スナップショットを取ります。`true` はコードレビューのラウンドを先に始め、テストを並行して走らせます。ラウンドをトリアージして直すのは、レビューしたそのツリーでテストが通ってからで、そのツリーは `state record test` が記録します。`references/workflow.md`（「テストと並行してレビューする」）を参照してください。 |
 | `review.max_findings` | int \| null | 各レビュアーに求める指摘の数。`null`（デフォルト）は `optimization.level` に任せ、`0` は上限を外します。上限を超えて返ってきた指摘は保持され、切り捨てられることはありません。 |
 | `review.context.max_chars` | int ≥ 1 \| null | レビューラウンドがそもそも送信する変更本文の最大サイズです。対象は diff、または plan とそれが答える依頼です（デフォルト 400,000 ≈ 100k トークン。ここで記録された最大のプロンプトの 4 倍で、これまで誰かが実行したものは何も拒否しません）。これを超えると、`review run` は何もレビューせずに exit 3 で終了します。上限内に収める方法は、`--base`、`review.exclude`、変更の分割、または plan を短くすることです。`--force` は人間による上書きで、そのラウンドを予算超過として記録します。`null` は `review.max_findings` と同様にデフォルトを意味します。この上限を無効にする値はありません。`references/limits.md` を参照。 |
 | `review.context.inline_chars` | int ≥ 1 \| null | 変更本文のうちどれだけをレビュアーのプロンプトに含めるか（デフォルト 400,000、`max_chars` と同じ数値）。これ以下なら本文はインラインで渡され、ラウンドは clean になり得ます。これを超えると、レビュアーには凍結されたスナップショットのパスが渡され、何が返ってきてもラウンドは `partial` — カバレッジ未検証 — として記録されます。**`max_chars` より小さく設定すると、両者の間に、ラウンドは実行されるものの `partial` として記録される帯域が生まれます**: これは非常に大きなプロンプトに費用をかけたくない人が明示的に選ぶもので、`partial` はその代償です。`max_chars` *より大きく*設定することも許されており、誤りではありません — その場合、本文がファイルとして渡されるのは人間が強制したラウンドだけになります。`null` はデフォルトを意味します。各ラウンドは比較に使った数値を記録するので、`partial` のラウンドはどの上限によってそうなったのかがわかります。`references/limits.md` を参照。 |

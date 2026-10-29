@@ -107,6 +107,8 @@ not redesign.
 **Test.** The project's documented commands only; never invent one. A red
 suite stops the pipeline. Record the outcome even if none ran this session:
 `review run` refuses a tree recorded as failing.
+`review.start_before_tests` on: snapshot and `review run` (background) first,
+then Test; triage once `review status` allows, else follow its `next:`.
 Before each *retry*: `budget consume test`, then `progress record test
 --signature "3 failed: test_a, test_b"`. Exit 3 or a repeated signature is a
 refusal.

@@ -13,6 +13,21 @@ authors can find it.
 
 ## [Unreleased]
 
+### Added
+
+- **Reviewing alongside the tests.** `review.start_before_tests: true`
+  (default `false`) lets the code review round start right after the
+  implementer or the review fixer, while the tests run, instead of after
+  them. The round is used only once the tests pass on the very tree it
+  reviewed: with the option on, `state record test` and `re-test` also record
+  `tree`, the working tree as a git tree object, and `review triage` and
+  `review fix-brief` refuse (exit 2) until the last result recorded on the
+  snapshot's tree is `ok`. `review status` says where the round stands on a
+  `tests on the reviewed tree:` line and in the new `round_tests` (`usable`,
+  `pending`, `failed`, `changed` or `unchecked`), and its `next:` line says
+  what to do while the round may not be used. The gate of such a round reads
+  the result recorded on the snapshot's tree rather than the last one of all.
+
 ### Changed
 
 - **Plan approval decides for itself by default.** `design.require_approval`

@@ -352,6 +352,10 @@ def default_config() -> Dict[str, Any]:
             # After a fix-only round leaves nothing above Low, one more round
             # reviews the whole change before the loop finishes.
             "whole_change_recheck": True,
+            # Start a code review round without waiting for the tests. The
+            # round is used only once the tests pass on the very tree it
+            # reviewed; see review_tests.
+            "start_before_tests": False,
             # How many findings each reviewer is asked for. Output costs several
             # times what input does, and a reviewer's output is billed again as
             # the fixer's brief, so an uncapped reviewer costs twice over. 0

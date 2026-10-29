@@ -19,7 +19,7 @@ from typing import (
 from . import config as config_mod
 from . import config_policy as policy_mod
 from . import context as context_mod
-from . import instructions
+from . import instructions, review_tests
 from . import ledger as ledger_mod
 from . import optimization as opt_mod
 from . import review as review_mod
@@ -933,8 +933,25 @@ def cmd_review_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _tests_refusal(args: argparse.Namespace, workspace: ws.Workspace) -> str:
+    """Why a code round started before the tests may not be triaged or fixed yet, or "".
+
+    Only with ``review.start_before_tests`` on: off, the tests were recorded
+    before the snapshot was taken, as they always were.
+    """
+    if args.design or not _load_lenient(args.cwd).start_before_tests():
+        return ""
+    meta = workspace.read_snapshot_meta()
+    verdict = review_tests.round_verdict(_workspace(args), meta if isinstance(meta, dict) else {})
+    return review_tests.refusal(verdict)
+
+
 def cmd_review_triage(args: argparse.Namespace) -> int:
     workspace = _review_workspace(args)
+    refusal = _tests_refusal(args, workspace)
+    if refusal:
+        _err(refusal)
+        return 2
 
     # Read inside the lock: two triage calls run side by side each read the
     # report, set their own decision and wrote it back, and the second write
@@ -960,6 +977,10 @@ def cmd_review_triage(args: argparse.Namespace) -> int:
 
 def cmd_review_fix_brief(args: argparse.Namespace) -> int:
     workspace = _review_workspace(args)
+    refusal = _tests_refusal(args, workspace)
+    if refusal:
+        _err(refusal)
+        return 2
     data = ws.read_json(workspace.consolidated_json_path, {}) or {}
     if args.design:
         brief = review_mod.render_fix_brief(data, "Revise the plan to address these accepted findings")

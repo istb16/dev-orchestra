@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import approval as approval_mod
 from . import config as config_mod
-from . import instructions, review_loop
+from . import instructions, review_loop, review_tests
 from . import ledger as ledger_mod
 from . import optimization as opt_mod
 from . import optimization_design as opt_design
@@ -78,14 +78,24 @@ def round_plan(
 
     A watched instruction path the change still carries is a risk path too,
     though an incremental round's diff may no longer show it.
+
+    With ``review.start_before_tests`` on, the gate reads the test result
+    recorded on the snapshot's own tree: the last one of all was recorded on
+    an earlier tree, before the fix this round is reviewing.
     """
     files = meta.get("files")
-    return opt_mod.decide(
+    alongside = loaded.start_before_tests()
+    test_status = (
+        review_tests.tested_status(workspace, str(meta.get("tree") or ""))
+        if alongside
+        else workspace.last_status("test")
+    )
+    plan = opt_mod.decide(
         loaded.optimization_settings(),
         loaded.review_settings(),
         _risk_paths(meta) + [str(path) for path in meta.get("instruction_changes") or []],
         int(meta.get("lines_added") or 0) + int(meta.get("lines_deleted") or 0),
-        workspace.last_status("test"),
+        test_status,
         len(panel),
         reviewed_files=len(meta.get("files") or []),
         panel=panel,
@@ -96,6 +106,8 @@ def round_plan(
         reviewed=[str(path) for path in files] if isinstance(files, list) else None,
         literal_paths=instructions.watched_paths(loaded),
     )
+    plan.alongside_tests = alongside
+    return plan
 
 
 def design_decision(

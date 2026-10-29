@@ -8,7 +8,7 @@ import shutil
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, cast
 
 from . import approval as approval_mod
-from . import approval_auto
+from . import approval_auto, review_tests
 from . import config as config_mod
 from . import instructions as instructions_mod
 from . import jobs as jobs_mod
@@ -1021,7 +1021,7 @@ def cmd_state_show(args: argparse.Namespace) -> int:
 
 
 #: The stages whose status the review gate and `status` read as a test result.
-_TEST_STAGES = ("test", "re-test")
+_TEST_STAGES = review_tests.TEST_STAGES
 
 
 def cmd_state_record(args: argparse.Namespace) -> int:
@@ -1038,7 +1038,14 @@ def cmd_state_record(args: argparse.Namespace) -> int:
             _err("Refusing --detail %s=...: %s is the event's own field" % (key, key))
             return 2
         detail[key] = config_mod.coerce_scalar(value)
+    if args.stage in _TEST_STAGES and "tree" in detail:
+        # Which tree a result was recorded on is what lets a round started
+        # before the tests count; it is read off the working tree, never given.
+        _err("Refusing --detail tree=...: a test result's tree is read from the working tree")
+        return 2
     workspace = _workspace(args)
+    if args.stage in _TEST_STAGES and _load_lenient(args.cwd).start_before_tests():
+        detail.update(review_tests.tree_detail(workspace.root))
     workspace.record_event(args.stage, args.status, detail)
     _out("recorded %s=%s" % (args.stage, args.status))
     return 0

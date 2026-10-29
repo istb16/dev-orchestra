@@ -12,6 +12,7 @@
 - [Approval](#approval)
 - [Implementation](#implementation)
 - [Test](#test)
+  - [Reviewing alongside the tests](#reviewing-alongside-the-tests)
 - [Reviews](#reviews)
 - [Fix](#fix)
 - [Re-test and re-review](#re-test-and-re-review)
@@ -914,6 +915,40 @@ tests: run the suite once here, after every unit is merged.
 
 A failing suite stops the pipeline. Fix it or report it — do not review a broken
 tree.
+
+<a id="reviewing-alongside-the-tests"></a>
+
+### Reviewing alongside the tests
+
+With `review.start_before_tests: true` (default `false`) the code review round
+does not wait for the tests. Right after the implementer (or the review fixer)
+finishes, take the snapshot and start `review run` in the background, then run
+the tests and record them as usual. Measured here, the tests took a median 381s
+from the end of an implement or fix run to their record, and a round 117s, so
+the round is hidden behind them; only 3 of 219 recorded test runs failed, so
+the round thrown away with a failure is rare.
+
+The round counts only once the tests pass on the tree it reviewed. With the
+option on, `state record test` (and `re-test`) also keeps the working tree as a
+git tree object, as a snapshot does, and `review triage` and `review fix-brief`
+refuse (exit 2) until the last result recorded on the snapshot's tree is `ok`.
+`review status` says where the round stands on a `tests on the reviewed tree:`
+line and in `round_tests`:
+
+- `pending`: no test result since the snapshot. Record it, then look again.
+- `failed`: the tests failed on that tree. The round is not used: fix, re-test,
+  take a new snapshot and review again. A pass recorded afterwards on the same
+  tree (a flaky test run again) makes it usable.
+- `changed`: results were recorded since the snapshot, but on another tree --
+  say a lint fix made while the tests ran. The reviewers did not see that
+  change, so the round is not used either: re-test, snapshot, review again.
+- `usable`: triage it. Fixing it changes the tree afterwards; that does not
+  take back the result the round was judged on.
+
+The gate of a round started this way reads the result recorded on the
+snapshot's own tree, not the last one of all: a failure recorded before a fix
+is about a tree nobody is reviewing. A failure recorded on the snapshot's tree
+still refuses the round below `quality`, as it always has.
 
 ## Reviews
 
