@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:22c949f422299f953aff311727edf9a1e14641c23f98d159c62e1b25b8f77613 -->
+<!-- translated-from: references/workflow.md sha256:ccacf09ad5e31961147065fba0be8a118700f237094b59b8719bec230237fa42 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -920,6 +920,11 @@ implementer の失敗は致命的です。停止し、何が起きたかを報�
   ません。再テストし、スナップショットを取り、レビューし直します。
 - `usable`: トリアージします。直せば後でツリーは変わりますが、ラウンドを判断した結果は
   取り消されません。
+
+ラウンドが `usable` になるまで、そのラウンドでレビューのループは終わりません。`status` は
+そのラウンドについて「review finished」も「review budget spent」も出しません。`failed` か
+`changed` のラウンドは、ラウンドが残っていればもう 1 ラウンドを求め、その次のスナップショットは
+そのラウンドからの修正に絞らず、変更全体を取ります（`review snapshot` が注記で知らせます）。
 
 「ラウンドのツリー」が許すのは、ワークスペース（`.ai/`）の中のもの -- `.ai/` の
 `.gitignore` を消していても、レビュー自身がそこに書くからです -- と、プロジェクトの設定

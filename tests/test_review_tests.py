@@ -6,11 +6,14 @@ import json
 import os
 import shutil
 import unittest
+from typing import Any, ClassVar, Dict, List
 from unittest import mock
 
 from helpers import IsolatedCase, has_git, run_cli
 
-from orchestrator import review_tests
+from orchestrator import config as config_mod
+from orchestrator import review as review_mod
+from orchestrator import review_tests, round_progress
 from orchestrator import workspace as ws
 
 FINDING = """## Finding
@@ -107,6 +110,49 @@ class TestLastOn(unittest.TestCase):
         self.assertIs(found, events[0])
         same.assert_not_called()
 
+    def test_an_older_exact_pass_does_not_outrank_a_newer_failure_on_the_same_tree(self):
+        events = [
+            {"stage": "test", "status": "ok", "tree": "reviewed", "at": "2026-01-01T00:00:01Z"},
+            {"stage": "test", "status": "failed", "tree": "artifacts", "at": "2026-01-01T00:00:02Z"},
+        ]
+        workspace = mock.Mock()
+        workspace.read_state.return_value = {"events": events}
+        snapshot = {"tested_tree": "reviewed", "taken_at": TAKEN}
+        with mock.patch.object(review_tests, "same_tree", return_value=True):
+            verdict = review_tests.round_verdict(workspace, snapshot)
+        self.assertEqual(verdict["state"], review_tests.FAILED)
+
+    def test_an_exact_match_older_than_the_window_is_not_returned(self):
+        events = [
+            {"stage": "test", "status": "ok", "tree": "reviewed", "at": "2026-01-01T00:00:01Z"},
+            {"stage": "test", "status": "ok", "tree": "other", "at": "2026-01-01T00:00:02Z"},
+        ]
+        with mock.patch.object(review_tests, "same_tree", return_value=False):
+            found = review_tests._last_on(None, events, "reviewed", TAKEN)  # type: ignore[arg-type]
+        self.assertIsNone(found)
+
+
+class TestTestedStatus(unittest.TestCase):
+    EVENTS: ClassVar[List[Dict[str, Any]]] = [
+        {"stage": "test", "status": "failed", "tree": "reviewed", "at": "2026-01-01T00:00:01Z"},
+        {"stage": "test", "status": "ok", "tree": "other", "at": "2026-01-01T00:00:05Z"},
+    ]
+
+    def status(self, since):
+        workspace = mock.Mock()
+        workspace.read_state.return_value = {"events": self.EVENTS}
+        with mock.patch.object(review_tests, "same_tree", return_value=False):
+            return review_tests.tested_status(workspace, "reviewed", since)
+
+    def test_since_widens_the_window_to_every_result_after_it(self):
+        self.assertEqual(self.status("2026-01-01T00:00:00Z"), "failed")
+
+    def test_without_since_only_the_newest_result_is_looked_at(self):
+        self.assertEqual(self.status(""), "")
+
+    def test_a_result_before_the_newest_one_before_since_is_not_looked_at(self):
+        self.assertEqual(self.status("2026-01-01T00:00:09Z"), "")
+
 
 @unittest.skipUnless(has_git(), "git is required")
 class TestStartBeforeTests(IsolatedCase):
@@ -116,17 +162,26 @@ class TestStartBeforeTests(IsolatedCase):
         self.write("app.py", "def add(a, b):\n    return a + b\n")
         self.commit_all("init")
         self.write("app.py", "def add(a, b):\n    return a - b\n")
-        mock_dir = os.path.join(self.tmp, "mock")
-        os.makedirs(mock_dir)
-        with open(os.path.join(mock_dir, "review.txt"), "w", encoding="utf-8") as handle:
-            handle.write(FINDING)
-        os.environ["DEV_ORCHESTRA_MOCK_DIR"] = mock_dir
+        self.mock_dir = os.path.join(self.tmp, "mock")
+        os.makedirs(self.mock_dir)
+        self.review_says(FINDING)
+        os.environ["DEV_ORCHESTRA_MOCK_DIR"] = self.mock_dir
         run_cli("config", "setup", "--defaults")
         for reviewer in ("claude-general", "codex-general", "claude-security", "claude-test"):
             run_cli("reviewer", "remove", reviewer)
         run_cli("reviewer", "add", "--provider", "mock", "--id", "m1", "--role", "general")
         run_cli("config", "set", "optimization.level", "balanced")
         run_cli("config", "set", "review.start_before_tests", "true")
+
+    def review_says(self, text):
+        with open(os.path.join(self.mock_dir, "review.txt"), "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+    def review_status(self):
+        return json.loads(run_cli("review", "status", "--json")[1])
+
+    def status(self):
+        return json.loads(run_cli("status", "--json")[1])
 
     def start_round(self):
         self.assertEqual(run_cli("review", "snapshot")[0], 0)
@@ -216,7 +271,10 @@ class TestStartBeforeTests(IsolatedCase):
         run_cli("state", "record", "test", "failed")
         self.assertEqual(self.round_tests()["state"], review_tests.FAILED)
         self.assertEqual(self.triage()[0], 2)
-        self.assertTrue(json.loads(run_cli("review", "status", "--json")[1])["re_review_recommended"])
+        status = self.review_status()
+        self.assertEqual(status["round_tests"]["state"], review_tests.FAILED)
+        self.assertTrue(status["re_review_recommended"])
+        self.assertEqual(status["next_review"], "whole")
         # Run again on the same tree (a flaky test): the last result decides.
         run_cli("state", "record", "test", "ok")
         self.assertEqual(self.triage()[0], 0)
@@ -261,6 +319,23 @@ class TestStartBeforeTests(IsolatedCase):
         self.taken_later()
         self.assertEqual(self.round_tests()["state"], review_tests.PENDING)
 
+    def test_the_gate_does_not_take_a_result_on_a_tree_that_still_had_a_deleted_file(self):
+        self.write("unused.py", "VALUE = 1\n")
+        run_cli("state", "record", "test", "failed")
+        os.remove(os.path.join(self.project, "unused.py"))
+        self.assertEqual(run_cli("review", "snapshot")[0], 0)
+        workspace = self.cli_workspace()
+        meta = workspace.read_snapshot_meta()
+        loaded = config_mod.load(self.project, validate_result=False)
+        with mock.patch.object(review_tests, "tested_status", wraps=review_tests.tested_status) as tested:
+            plan = round_progress.round_plan(loaded, workspace, meta, loaded.reviewers())
+        self.assertEqual(tested.call_args.args[1:], (meta["tested_tree"], meta["generated_at"]))
+        self.assertEqual(plan.test_status, "")
+        # The failure was on another tree: the round runs alongside the tests.
+        code, out, err = run_cli("review", "run")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("the tests run alongside this round", err)
+
     def test_without_incremental_rounds_the_round_still_keeps_its_tree(self):
         run_cli("config", "set", "review.incremental_rounds", "false")
         meta = json.loads(run_cli("review", "snapshot", "--json")[1])
@@ -297,6 +372,103 @@ class TestStartBeforeTests(IsolatedCase):
             handle.write("# touched while the tests ran\n")
         run_cli("state", "record", "test", "ok")
         self.assertEqual(self.round_tests()["state"], review_tests.USABLE)
+
+    def test_a_tracked_workspace_file_changed_or_removed_is_still_the_same_tree(self):
+        workspace_dir = self.cli_workspace().dir
+        kept = self.write(os.path.join(os.path.relpath(workspace_dir, self.project), "kept.json"), "{}\n")
+        gone = self.write(os.path.join(os.path.relpath(workspace_dir, self.project), "gone.json"), "{}\n")
+        self.git("add", "-f", kept, gone)
+        self.git("commit", "-qm", "workspace files")
+        self.start_round()
+        with open(kept, "a", encoding="utf-8") as handle:
+            handle.write("\n")
+        os.remove(gone)
+        run_cli("state", "record", "test", "ok")
+        self.assertEqual(self.round_tests()["state"], review_tests.USABLE)
+
+    def test_the_tests_are_judged_on_the_report_read_inside_the_lock(self):
+        self.start_round()
+        run_cli("state", "record", "test", "ok")
+        path = self.cli_workspace().consolidated_json_path
+        real = review_mod.update_consolidation
+        swapped = {}
+
+        def replaced_first(workspace, change):
+            # Another round's report lands between the command starting and the lock.
+            self.edit_report(lambda data: data["snapshot"].update(tested_tree="0" * 40))
+            with open(path, encoding="utf-8") as handle:
+                swapped["text"] = handle.read()
+            return real(workspace, change)
+
+        with mock.patch.object(review_mod, "update_consolidation", side_effect=replaced_first):
+            code, _, err = self.triage()
+        self.assertEqual(code, 2)
+        self.assertIn("refusing to accept", err)
+        with open(path, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), swapped["text"])
+
+    def test_a_round_thrown_away_past_the_cap_is_not_recommended(self):
+        run_cli("config", "set", "review.max_review_iterations", "1")
+        self.start_round()
+        run_cli("state", "record", "test", "failed")
+        status = self.review_status()
+        self.assertEqual(status["round_tests"]["state"], review_tests.FAILED)
+        self.assertTrue(status["iteration_budget_exhausted"])
+        self.assertFalse(status["re_review_recommended"])
+        self.assertIsNone(status["next_review"])
+        self.assertIsNone(self.status()["review"]["next_review"])
+
+    def test_without_the_recheck_a_round_thrown_away_names_no_next_review(self):
+        run_cli("config", "set", "review.whole_change_recheck", "false")
+        self.start_round()
+        run_cli("state", "record", "test", "failed")
+        status = self.review_status()
+        self.assertTrue(status["re_review_recommended"])
+        self.assertIsNone(status["next_review"])
+        self.assertIsNone(self.status()["review"]["next_review"])
+
+    def test_the_snapshot_after_a_round_thrown_away_does_not_narrow(self):
+        self.start_round()
+        run_cli("state", "record", "test", "ok")
+        self.assertEqual(self.triage()[0], 0)
+        self.edit_report(lambda data: data["snapshot"].update(tested_tree="0" * 40))
+        self.assertEqual(self.round_tests()["state"], review_tests.CHANGED)
+        self.write("app.py", "def add(a, b):\n    return a + b  # fixed\n")
+        code, out, err = run_cli("review", "snapshot", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertFalse(json.loads(out).get("incremental_from"))
+        self.assertIn("the last round is not used", err)
+        # Nor does the one `review run` takes when none is on disk.
+        os.remove(self.cli_workspace().snapshot_path)
+        code, out, err = run_cli("review", "run")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("the last round is not used", err)
+        self.assertFalse(self.cli_workspace().read_snapshot_meta().get("incremental_from"))
+
+    def test_a_clean_round_waiting_for_its_tests_does_not_finish_the_review(self):
+        self.review_says(FINDING.replace("Severity: high", "Severity: low"))
+        self.start_round()
+        run_cli("state", "record", "test", "ok")
+        self.assertEqual(self.triage()[0], 0)
+        run_cli("state", "record", "review_fixer", "ok")
+        run_cli("state", "record", "re-test", "ok")
+        self.assertIn("review finished with nothing above Low", " ".join(self.status()["reasons"]))
+        # The same round, its tests still to come.
+        self.edit_report(
+            lambda data: data["snapshot"].update(tested_tree="0" * 40, taken_at="9999-12-31T23:59:59Z")
+        )
+        self.assertEqual(self.round_tests()["state"], review_tests.PENDING)
+        status = self.status()
+        self.assertEqual(status["verdict"], "continue", status["reasons"])
+        self.assertNotIn("review finished", " ".join(status["reasons"]))
+
+    def test_a_round_waiting_for_its_tests_asks_for_no_new_round(self):
+        self.review_says(FINDING.replace("Severity: high", "Severity: low"))
+        self.start_round()
+        status = self.review_status()
+        self.assertEqual(status["round_tests"]["state"], review_tests.PENDING)
+        self.assertFalse(status["re_review_recommended"])
+        self.assertNotEqual(status["next_review"], "whole")
 
     def test_a_file_the_tests_removed_is_not(self):
         self.write("notes.txt", "kept\n")

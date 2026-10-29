@@ -297,12 +297,34 @@ def _recheck(
     return incremental and recheck_next(loaded, workspace, args.base, _lineage(args, workspace))
 
 
+_THROWN_AWAY_NOTE = (
+    "note: snapshot scope: whole change -- the last round is not used (review.start_before_tests: %s), "
+    "so the next one does not narrow from it"
+)
+
+
+def _thrown_away(loaded: config_mod.LoadedConfig, workspace: ws.Workspace) -> str:
+    """Why the next snapshot takes the whole change: the reported round was thrown away, or "".
+
+    With review.start_before_tests on, a round whose tests failed or ran on
+    another tree is not one the reviewers' premise can be taken from, so the
+    snapshot after it must not narrow to the fix since it.
+    """
+    if not loaded.start_before_tests():
+        return ""
+    data = ws.read_json(workspace.consolidated_json_path, {}) or {}
+    verdict = review_tests.report_verdict(workspace, data) if isinstance(data, dict) else None
+    return str(verdict.get("detail") or "") if verdict and review_tests.needs_new_round(verdict) else ""
+
+
 def cmd_review_snapshot(args: argparse.Namespace) -> int:
     loaded = _load_lenient(args.cwd)
     workspace = _workspace(args)
     settings = loaded.review_settings()
     exclude = () if args.no_exclude else settings.get("exclude")
     incremental = bool(settings.get("incremental_rounds", True)) and not args.full
+    thrown_away = _thrown_away(loaded, workspace) if incremental else ""
+    incremental = incremental and not thrown_away
     recheck = _recheck(args, loaded, workspace, incremental)
     # Read before the snapshot, because the surrounding context is frozen with
     # it: what a reviewer is shown has to come from the tree the diff did.
@@ -323,6 +345,8 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
     except review_mod.ReviewError as exc:
         _err(str(exc))
         return 2
+    if thrown_away:
+        _err(_THROWN_AWAY_NOTE % thrown_away)
     # Warned about, never refused: taking a snapshot spends nothing, and the
     # command that would spend something says so itself. Refusing here would
     # also leave no snapshot to narrow from.
@@ -490,13 +514,16 @@ def _ensure_snapshot(
                 "`review snapshot --base %s` takes it with other options" % (args.base, taken, args.base)
             )
     if retake or not os.path.isfile(workspace.snapshot_path):
-        recheck = _recheck(args, loaded, workspace, bool(settings.get("incremental_rounds", True)))
+        incremental = bool(settings.get("incremental_rounds", True))
+        thrown_away = _thrown_away(loaded, workspace) if incremental else ""
+        incremental = incremental and not thrown_away
+        recheck = _recheck(args, loaded, workspace, incremental)
         try:
             review_mod.create_snapshot(
                 workspace,
                 args.base,
                 exclude=settings.get("exclude"),
-                incremental=bool(settings.get("incremental_rounds", True)),
+                incremental=incremental,
                 surrounding=context_mod.surrounding_mode(context_settings.get("surrounding")),
                 watched=watched,
                 recheck=recheck,
@@ -507,6 +534,8 @@ def _ensure_snapshot(
             return 2
         if recheck:
             _err("note: snapshot scope: %s" % _RECHECK_SCOPE)
+        if thrown_away:
+            _err(_THROWN_AWAY_NOTE % thrown_away)
     return None
 
 

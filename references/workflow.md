@@ -950,6 +950,12 @@ says where the round stands on a `tests on the reviewed tree:` line and in
 - `usable`: triage it. Fixing it changes the tree afterwards; that does not
   take back the result the round was judged on.
 
+Until the round is `usable`, the review loop is not over on it: `status` gives
+neither "review finished" nor "review budget spent" for it. A `failed` or
+`changed` round asks for another round while one is left, and the snapshot
+after it takes the whole change rather than narrowing to the fix since that
+round (`review snapshot` says so in a note).
+
 "The round's tree" allows only for anything under the workspace (`.ai/`), where
 the review itself writes even when its `.gitignore` was removed, and for the
 project config files. Any other change -- a file added, edited or removed --

@@ -32,7 +32,10 @@ authors can find it.
   `changed` or `unchecked`), its `next:` line says what to do while the round
   may not be used, and `status` says the same on its `Review:` line and in
   `review.round_tests`. A round that is `failed` or `changed` sets
-  `re_review_recommended` and `next_review: "whole"`. With the option on, a
+  `re_review_recommended` while a round is left (and `next_review: "whole"`
+  with `review.whole_change_recheck` on), and the next snapshot takes the
+  whole change instead of narrowing from it; until a round is `usable`,
+  `status` does not call the review finished or its budget spent. With the option on, a
   snapshot git cannot record the tree of fails. The gate of such a round reads the result recorded on
   the snapshot's tree rather than the last one of all, and its `optimization`
   record gains `alongside_tests`.

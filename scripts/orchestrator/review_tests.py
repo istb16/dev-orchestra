@@ -83,25 +83,24 @@ def _last_on(
 ) -> Optional[Dict[str, Any]]:
     """The newest test event recorded on ``tree``, or None.
 
-    Newest first: the last result on the tree decides. Git is asked only about
-    results recorded at or after ``since`` (the snapshot's time) and the
-    newest one before it, as status polls this while the tests run and an
-    older result was on an older tree; an exact match needs no git at all.
-    Without ``since``, only that newest one is asked about.
+    Only results recorded at or after ``since`` (the snapshot's time) and the
+    single newest one before it are looked at -- without ``since``, only that
+    newest one -- newest first, and the first on the tree, exactly or by
+    :func:`same_tree`, decides. Nothing older is returned, even an exact
+    match: a newer result on the tree may sit just outside the window, and an
+    older one must not stand in for it. Status polls this while the tests run,
+    so git is never asked about the whole history.
     """
-    before_asked = False
+    before_seen = False
     for event in reversed(events):
         recorded = str(event.get("tree") or "")
         if not recorded:
             continue
-        if recorded == tree:
-            return event
-        if since and str(event.get("at") or "") >= since:
-            asked = True
-        else:
-            asked = not before_asked
-            before_asked = True
-        if asked and same_tree(workspace, tree, recorded):
+        if not since or str(event.get("at") or "") < since:
+            if before_seen:
+                break
+            before_seen = True
+        if recorded == tree or same_tree(workspace, tree, recorded):
             return event
     return None
 

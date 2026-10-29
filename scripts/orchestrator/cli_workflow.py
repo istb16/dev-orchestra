@@ -564,18 +564,26 @@ def _status_payload(
     review_next = code_loop_decision(
         loaded, workspace.read_snapshot_meta(), review_data, iteration, max_iterations
     )
-    review_pass = code_final_pass_from(
-        events,
-        review_next.wanted,
-        budget_left=review_next.budget_left,
-        fixer_left=summary["budgets"].get("review_fixer", {}).get("remaining"),
-        accepted=bool(review_accepted),
-        finish=review_next.finish,
-    )
     # `review status`'s too: with review.start_before_tests on, whether the
     # reported round may be triaged yet, and a round thrown away is reviewed again.
     round_tests = review_tests.report_verdict(workspace, review_data) if loaded.start_before_tests() else None
-    next_review = "whole" if review_tests.needs_new_round(round_tests) else review_next.next_review
+    # A round still waiting for its tests, or thrown away, closes nothing:
+    # neither a finish nor a spent budget is a stop on it.
+    held = not review_tests.usable(round_tests)
+    finish = review_next.finish and not held
+    review_pass = code_final_pass_from(
+        events,
+        review_next.wanted,
+        budget_left=review_next.budget_left or held,
+        fixer_left=summary["budgets"].get("review_fixer", {}).get("remaining"),
+        accepted=bool(review_accepted),
+        finish=finish,
+    )
+    # As `review status` says it: not past the cap, and null with the recheck off.
+    next_review = review_next.next_review
+    thrown_away = review_tests.needs_new_round(round_tests) and review_next.budget_left
+    if thrown_away and loaded.whole_change_recheck():
+        next_review = "whole"
     review_repeats = int((summary["signatures"] or {}).get("review") or 0)
     design_repeats = int((summary["signatures"] or {}).get("design_review") or 0)
     # The cap of the round reported, from its report: a snapshot retaken
@@ -586,7 +594,7 @@ def _status_payload(
         code_round_cap(loaded, review_data.get("snapshot") or {}),
         review_next.wanted,
         review_repeats,
-        review_next.finish,
+        finish,
     )
     design_round = _RoundState(design_pass, design_iteration, design_max, design_blocking, design_repeats)
 

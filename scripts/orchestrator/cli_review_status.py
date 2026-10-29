@@ -230,9 +230,12 @@ def _status_payload(
             payload["round_tests"] = review_tests.report_verdict(base, data)
             # A round thrown away is not one the loop can close on, whatever
             # its findings say: the reviewers never saw the tree that passed.
-            if review_tests.needs_new_round(payload["round_tests"]):
+            # Not past the iteration cap, and `next_review` stays null with
+            # the recheck off, as it always does.
+            if review_tests.needs_new_round(payload["round_tests"]) and loop.budget_left:
                 payload["re_review_recommended"] = True
-                payload["next_review"] = "whole"
+                if loaded.whole_change_recheck():
+                    payload["next_review"] = "whole"
     return payload, decision
 
 

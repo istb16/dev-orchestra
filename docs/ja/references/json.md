@@ -1,4 +1,4 @@
-<!-- translated-from: references/json.md sha256:81263256bae0f69427b62b2b994e3d8a4384b4aa3fb832f4bdabbdf8c58d0304 -->
+<!-- translated-from: references/json.md sha256:e1a84ba0d7ec1704a4dc2e0187f3bb26e21fbc1df2b9e171db3a25d9f07b8059 -->
 
 > この文書は [references/json.md](../../../references/json.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -427,7 +427,7 @@ Object. `--design` のときは、下に挙げたコードの 2 つのキーの�
 | `round_scope` | string または null | `--design` なしのときだけ。報告されたラウンドがレビューしたもの、`fix` または `whole`。レポートが無ければ `null`。 |
 | `next_review` | string または null | `--design` なしのときだけ。次に行うラウンド、`fix` または `whole` で、`review snapshot` が取るとおりのもの（`fix` は指摘が受け入れられているときだけ）。無ければ `null` で、`review.whole_change_recheck` が off なら常に `null`。 |
 | `surrounding` | object | Only: ラウンドが周りの文脈を運んだときだけ。 |
-| `round_tests` | object | Only: `--design` なしで、`review.start_before_tests` がオンで、レポートがあるときだけ。`state` -- `usable`、`pending`、`failed`、`changed` または `unchecked` -- と、文の `detail`。レポートが持つラウンドについてのものです。指摘の受け入れと fix brief は `usable`（または `unchecked`）を待ちます。`failed` か `changed` ならラウンドは使わないので、指摘がどうであれ `re_review_recommended` は true、`next_review` は `whole` です（`status` の `review` でも同じ）。`unchecked` はオプションがオフで取ったレポートだけです。 |
+| `round_tests` | object | Only: `--design` なしで、`review.start_before_tests` がオンで、レポートがあるときだけ。`state` -- `usable`、`pending`、`failed`、`changed` または `unchecked` -- と、文の `detail`。レポートが持つラウンドについてのものです。指摘の受け入れと fix brief は `usable`（または `unchecked`）を待ちます。`failed` か `changed` ならラウンドは使わないので、ラウンドが残っている限り、指摘がどうであれ `re_review_recommended` は true で、`review.whole_change_recheck` がオンなら `next_review` は `whole` です（`status` の `review` でも同じ）。`pending` はどちらも指摘が決めたままにします。`unchecked` はオプションがオフで取ったレポートだけです。 |
 | `enabled` | boolean | Only: `--design` のときだけ。この工程を実行するかどうか。 |
 | `mode` | string | Only: `--design` のときだけ。`on`、`off`、`auto`。 |
 | `reason` | string or null | Only: `--design` のときだけ。`auto` がそう決めた理由。`on` と `off` では `null`。 |
