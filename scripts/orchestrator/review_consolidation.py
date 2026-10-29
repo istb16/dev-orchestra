@@ -429,6 +429,12 @@ def consolidation_from(
     for key in ("scope", "recheck"):
         if key in meta:
             snapshot[key] = meta[key]
+    # What ``review_tests`` judges the round by, kept with its findings: the
+    # snapshot on disk moves on when the next round is taken, and a verdict
+    # read off it would be about that round instead.
+    if "tested_tree" in meta:
+        snapshot["tested_tree"] = meta["tested_tree"]
+        snapshot["taken_at"] = meta.get("generated_at")
     # The round these findings belong to: the last one that got as far as a
     # report, which is what a design approval is given over and what the
     # archived copy of this report is filed under.

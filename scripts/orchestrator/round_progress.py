@@ -86,11 +86,11 @@ def round_plan(
     files = meta.get("files")
     alongside = loaded.start_before_tests()
     test_status = (
-        review_tests.tested_status(workspace, str(meta.get("tree") or ""))
+        review_tests.tested_status(workspace, str(meta.get("tested_tree") or ""))
         if alongside
         else workspace.last_status("test")
     )
-    plan = opt_mod.decide(
+    return opt_mod.decide(
         loaded.optimization_settings(),
         loaded.review_settings(),
         _risk_paths(meta) + [str(path) for path in meta.get("instruction_changes") or []],
@@ -105,9 +105,8 @@ def round_plan(
         condition_paths=_condition_paths(meta),
         reviewed=[str(path) for path in files] if isinstance(files, list) else None,
         literal_paths=instructions.watched_paths(loaded),
+        alongside_tests=alongside,
     )
-    plan.alongside_tests = alongside
-    return plan
 
 
 def design_decision(

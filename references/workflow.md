@@ -929,11 +929,16 @@ the round is hidden behind them; only 3 of 219 recorded test runs failed, so
 the round thrown away with a failure is rare.
 
 The round counts only once the tests pass on the tree it reviewed. With the
-option on, `state record test` (and `re-test`) also keeps the working tree as a
-git tree object, as a snapshot does, and `review triage` and `review fix-brief`
-refuse (exit 2) until the last result recorded on the snapshot's tree is `ok`.
-`review status` says where the round stands on a `tests on the reviewed tree:`
-line and in `round_tests`:
+option on, the snapshot always keeps the working tree as `tested_tree`
+(whatever `review.incremental_rounds` says), the report keeps it with the
+round's findings, and `state record test` (and `re-test`) keeps the tree the
+tests ran on. Accepting a finding (`review triage --status accepted`) and
+`review fix-brief` refuse (exit 2) until the last result recorded on the
+round's tree is `ok`; rejecting or merging findings can go on while the tests
+run. The round judged is the one the report holds, so taking the next
+snapshot does not change the answer for the round before it. `review status`
+says where the round stands on a `tests on the reviewed tree:` line and in
+`round_tests`, and `status` says the same on its `Review:` line:
 
 - `pending`: no test result since the snapshot. Record it, then look again.
 - `failed`: the tests failed on that tree. The round is not used: fix, re-test,
@@ -944,6 +949,13 @@ line and in `round_tests`:
   change, so the round is not used either: re-test, snapshot, review again.
 - `usable`: triage it. Fixing it changes the tree afterwards; that does not
   take back the result the round was judged on.
+
+"The round's tree" allows for files added since the snapshot that it did not
+have -- a test report the run wrote that nothing ignores -- and for anything
+under the workspace (`.ai/`), where the review itself writes even when its
+`.gitignore` was removed. Any other change, a file edited or removed, is one
+the reviewers did not see. A new source file made while the tests ran is
+missed for the same reason; make it before the snapshot.
 
 The gate of a round started this way reads the result recorded on the
 snapshot's own tree, not the last one of all: a failure recorded before a fix

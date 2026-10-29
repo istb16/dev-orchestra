@@ -26,7 +26,7 @@ class TestRoundVerdictWithoutATree(unittest.TestCase):
     def test_a_snapshot_without_a_tree_holds_nothing_back(self):
         verdict = review_tests.round_verdict(None, {})  # type: ignore[arg-type]
         self.assertEqual(verdict["state"], review_tests.UNCHECKED)
-        self.assertEqual(review_tests.refusal(verdict), "")
+        self.assertEqual(review_tests.refusal(verdict, "accept"), "")
         self.assertEqual(review_tests.next_step(verdict), "")
 
 
@@ -120,6 +120,72 @@ class TestStartBeforeTests(IsolatedCase):
         run_cli("state", "record", "test", "failed")
         self.write("app.py", "def add(a, b):\n    return a - b  # fixed the tests\n")
         self.start_round()
+
+    def test_without_incremental_rounds_the_round_still_keeps_its_tree(self):
+        run_cli("config", "set", "review.incremental_rounds", "false")
+        meta = json.loads(run_cli("review", "snapshot", "--json")[1])
+        self.assertEqual(meta["tree"], "")
+        self.assertRegex(meta["tested_tree"], r"^[0-9a-f]{40}$")
+        # A failure recorded on this very tree still refuses the round.
+        run_cli("state", "record", "test", "failed")
+        self.assertEqual(run_cli("review", "run")[0], 3)
+        run_cli("state", "record", "test", "ok")
+        self.assertEqual(run_cli("review", "run")[0], 0)
+        self.assertEqual(self.round_tests()["state"], review_tests.USABLE)
+
+    def test_the_verdict_is_about_the_reported_round_not_the_next_snapshot(self):
+        self.start_round()
+        run_cli("state", "record", "test", "ok")
+        self.assertEqual(self.triage()[0], 0)
+        self.write("app.py", "def add(a, b):\n    return a + b\n")
+        self.assertEqual(run_cli("review", "snapshot")[0], 0)
+        self.assertEqual(run_cli("review", "fix-brief")[0], 0)
+        self.assertEqual(self.round_tests()["state"], review_tests.USABLE)
+
+    def test_a_file_the_tests_added_is_still_the_same_tree(self):
+        self.start_round()
+        self.write("test-results.xml", "<testsuite/>\n")
+        run_cli("state", "record", "test", "ok")
+        self.assertEqual(self.round_tests()["state"], review_tests.USABLE)
+
+    def test_a_file_the_tests_removed_is_not(self):
+        self.write("notes.txt", "kept\n")
+        self.start_round()
+        os.remove(os.path.join(self.project, "notes.txt"))
+        run_cli("state", "record", "test", "ok")
+        self.assertEqual(self.round_tests()["state"], review_tests.CHANGED)
+
+    def test_only_accepting_waits_for_the_tests(self):
+        self.start_round()
+        self.assertEqual(run_cli("review", "triage", "F1", "--status", "rejected")[0], 0)
+        code, _, err = self.triage()
+        self.assertEqual(code, 2)
+        self.assertIn("refusing to accept", err)
+
+    def test_status_says_the_same_as_review_status(self):
+        self.start_round()
+        review = json.loads(run_cli("status", "--json")[1])["review"]
+        self.assertEqual(review["round_tests"]["state"], review_tests.PENDING)
+        self.assertIn("tests on the reviewed tree pending: record the tests", run_cli("status")[1])
+
+    def test_a_report_without_its_time_waits_rather_than_drops(self):
+        run_cli("state", "record", "test", "ok")
+        self.write("app.py", "def add(a, b):\n    return a - b  # later\n")
+        self.start_round()
+        path = os.path.join(self.project, ".ai", "workflows")
+        reports = [
+            os.path.join(root, name)
+            for root, _, names in os.walk(path)
+            for name in names
+            if name == "consolidated.json" and "design" not in root
+        ]
+        self.assertEqual(len(reports), 1)
+        with open(reports[0], encoding="utf-8") as handle:
+            data = json.load(handle)
+        del data["snapshot"]["taken_at"]
+        with open(reports[0], "w", encoding="utf-8") as handle:
+            json.dump(data, handle)
+        self.assertEqual(self.round_tests()["state"], review_tests.PENDING)
 
     def test_off_the_last_result_still_gates_and_nothing_waits(self):
         run_cli("config", "set", "review.start_before_tests", "false")

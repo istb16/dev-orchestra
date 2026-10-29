@@ -318,6 +318,7 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
             surrounding=surrounding,
             watched=instructions.watched_paths(loaded),
             recheck=recheck,
+            tested=loaded.start_before_tests(),
         )
     except review_mod.ReviewError as exc:
         _err(str(exc))
@@ -499,6 +500,7 @@ def _ensure_snapshot(
                 surrounding=context_mod.surrounding_mode(context_settings.get("surrounding")),
                 watched=watched,
                 recheck=recheck,
+                tested=loaded.start_before_tests(),
             )
         except review_mod.ReviewError as exc:
             _err(str(exc))
@@ -933,22 +935,26 @@ def cmd_review_show(args: argparse.Namespace) -> int:
     return 0
 
 
-def _tests_refusal(args: argparse.Namespace, workspace: ws.Workspace) -> str:
-    """Why a code round started before the tests may not be triaged or fixed yet, or "".
+def _tests_refusal(args: argparse.Namespace, workspace: ws.Workspace, action: str) -> str:
+    """Why a code round started before the tests may not go on to ``action`` yet, or "".
 
-    Only with ``review.start_before_tests`` on: off, the tests were recorded
-    before the snapshot was taken, as they always were.
+    Judged on the round the report holds, not on the snapshot on disk, which
+    the next round may already have replaced. Only with
+    ``review.start_before_tests`` on: off, the tests were recorded before the
+    snapshot was taken, as they always were.
     """
     if args.design or not _load_lenient(args.cwd).start_before_tests():
         return ""
-    meta = workspace.read_snapshot_meta()
-    verdict = review_tests.round_verdict(_workspace(args), meta if isinstance(meta, dict) else {})
-    return review_tests.refusal(verdict)
+    data = ws.read_json(workspace.consolidated_json_path, {}) or {}
+    return review_tests.refusal(review_tests.report_verdict(_workspace(args), data), action)
 
 
 def cmd_review_triage(args: argparse.Namespace) -> int:
     workspace = _review_workspace(args)
-    refusal = _tests_refusal(args, workspace)
+    # Accepting is what hands a finding to the fixer, and what narrows the
+    # next snapshot to its fix; rejecting or merging one can go on while the
+    # tests run.
+    refusal = _tests_refusal(args, workspace, "accept") if args.status == "accepted" else ""
     if refusal:
         _err(refusal)
         return 2
@@ -977,7 +983,7 @@ def cmd_review_triage(args: argparse.Namespace) -> int:
 
 def cmd_review_fix_brief(args: argparse.Namespace) -> int:
     workspace = _review_workspace(args)
-    refusal = _tests_refusal(args, workspace)
+    refusal = _tests_refusal(args, workspace, "write the fix brief")
     if refusal:
         _err(refusal)
         return 2

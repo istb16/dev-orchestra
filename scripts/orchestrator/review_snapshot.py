@@ -34,6 +34,7 @@ def create_snapshot(
     surrounding: str = "none",
     watched: Sequence[str] = (),
     recheck: bool = False,
+    tested: bool = False,
 ) -> Dict[str, Any]:
     """Freeze the change under review into ``.ai/reviews/review-target.diff``.
 
@@ -58,6 +59,11 @@ def create_snapshot(
     asked for after a clean fix-only round. See ``review_loop``. It takes the
     whole change while still recording its tree, so a round after it can
     narrow to its fix as ``incremental`` allows.
+
+    ``tested`` is ``review.start_before_tests``: the working tree is written
+    whatever ``incremental`` says and kept as ``tested_tree``, the tree the
+    round's tests have to pass on (``review_tests``). ``tree`` keeps its own
+    meaning, the tree a later round may narrow from.
     """
     workspace.ensure()
     root = workspace.root
@@ -70,7 +76,7 @@ def create_snapshot(
     context_on = context_mod.surrounding_mode(surrounding) == "enclosing"
 
     head, frozen_tree, tree, previous_tree, revisions, strategy = _revisions(
-        workspace, root, base, incremental, context_on, recheck
+        workspace, root, base, incremental, context_on, recheck, tested
     )
 
     tracked, withheld, suppressed, diff, strategy = _tracked_diff(
@@ -120,6 +126,8 @@ def create_snapshot(
     units = _units_meta(workspace)
     if units:
         meta["units"] = units
+    if tested:
+        meta["tested_tree"] = frozen_tree
     if watched:
         meta["instruction_changes"] = _instruction_changes(root, str(meta.get("base_commit") or ""), watched)
     ws.write_json(workspace.snapshot_meta_path, meta)
@@ -190,6 +198,7 @@ def _revisions(
     incremental: bool,
     context_on: bool,
     recheck: bool = False,
+    tested: bool = False,
 ) -> _Revisions:
     """Whether this round diffs against the last reviewed tree or against ``base``.
 
@@ -215,7 +224,7 @@ def _revisions(
     # then does "the working tree still matches this tree" imply "and the diff
     # taken after it". ``meta["tree"]`` keeps its meaning either way -- it is
     # what the next round may narrow from, and ``incremental: False`` says none.
-    frozen_tree = _write_tree(root) if (wanted or context_on) else ""
+    frozen_tree = _write_tree(root) if (wanted or context_on or tested) else ""
     tree = frozen_tree if wanted else ""
     previous_tree = _reviewed_tree(workspace, base) if wanted and not recheck else ""
     if previous_tree and tree and previous_tree != tree:
@@ -316,7 +325,7 @@ def _untracked_diff(
     if include_untracked and not previous_tree:
         # Names as they are on disk; ``_snapshot_meta`` records them shown.
         for name in _list_untracked(root) or []:
-            if _is_orchestrator_artifact(name, workspace):
+            if is_orchestrator_artifact(name, workspace):
                 continue
             path = os.path.join(root, name)
             reason = _unread_reason(path)
@@ -616,7 +625,7 @@ def _reviewed_tree(workspace: ws.Workspace, base: Optional[str] = None) -> str:
     return tree if accepted_findings(consolidated) else ""
 
 
-def _is_orchestrator_artifact(name: str, workspace: ws.Workspace) -> bool:
+def is_orchestrator_artifact(name: str, workspace: ws.Workspace) -> bool:
     """The skill's own files are not part of the change under review.
 
     Without this, the config the setup wizard just wrote and the artifacts in
@@ -905,7 +914,7 @@ def _not_under_review(
         path = str(entry.get("path") or "")
         if not path:
             continue
-        if _is_orchestrator_artifact(path, workspace) or path in untracked:
+        if is_orchestrator_artifact(path, workspace) or path in untracked:
             suppressed.append(path)
     return suppressed
 

@@ -633,6 +633,11 @@ def _status_payload(
             "final_fix_pending": review_round.final_pass["pending"],
             # `review status`'s, from the same decision.
             "next_review": review_next.next_review,
+            # `review status`'s too: with review.start_before_tests on, whether
+            # the reported round may be triaged yet. None otherwise.
+            "round_tests": (
+                review_tests.report_verdict(workspace, review_data) if loaded.start_before_tests() else None
+            ),
         },
         "design_review": _design_review_payload(
             decision, design_round, len(design_accepted), design_refused_for_size, design_plan
@@ -783,7 +788,10 @@ def _status_lines(status: _Status, plan_relative: str, warning: List[str]) -> Li
         review["accepted"],
         len(review["blocking"]),
     )
-    if review["final_fix"] == "pending":
+    held = review_tests.next_step(review.get("round_tests"))
+    if held:
+        line += " -- tests on the reviewed tree %s: %s" % (review["round_tests"]["state"], held)
+    elif review["final_fix"] == "pending":
         line += " -- final fix pending (fix, re-test, do not re-review)"
     elif review["final_fix"] == "retest":
         line += " -- final fix done, re-test pending (record it, do not re-review)"

@@ -227,7 +227,7 @@ def _status_payload(
         # Only with review.start_before_tests on: whether the tests passed on
         # the tree the round reviewed, and so whether it may be triaged.
         if loaded.start_before_tests() and data:
-            payload["round_tests"] = review_tests.round_verdict(base, meta)
+            payload["round_tests"] = review_tests.report_verdict(base, data)
     return payload, decision
 
 
