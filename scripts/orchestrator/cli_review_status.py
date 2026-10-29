@@ -228,6 +228,11 @@ def _status_payload(
         # the tree the round reviewed, and so whether it may be triaged.
         if loaded.start_before_tests() and data:
             payload["round_tests"] = review_tests.report_verdict(base, data)
+            # A round thrown away is not one the loop can close on, whatever
+            # its findings say: the reviewers never saw the tree that passed.
+            if review_tests.needs_new_round(payload["round_tests"]):
+                payload["re_review_recommended"] = True
+                payload["next_review"] = "whole"
     return payload, decision
 
 

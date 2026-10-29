@@ -24,13 +24,16 @@ authors can find it.
   with the round's findings, and `state record test` and `re-test` also record
   `tree`, the tree the tests ran on. Accepting a finding (`review triage
   --status accepted`) and `review fix-brief` refuse (exit 2) until the last
-  result recorded on the round's tree is `ok`; files added since the snapshot
-  and anything under `.ai/` do not count as a different tree. `review status`
+  result recorded on the round's tree is `ok`; only anything under `.ai/` and
+  the project config files do not count as a different tree, so the tests'
+  outputs have to be ignored by `.gitignore`. `review status`
   says where the round the report holds stands on a `tests on the reviewed
   tree:` line and in the new `round_tests` (`usable`, `pending`, `failed`,
   `changed` or `unchecked`), its `next:` line says what to do while the round
   may not be used, and `status` says the same on its `Review:` line and in
-  `review.round_tests`. The gate of such a round reads the result recorded on
+  `review.round_tests`. A round that is `failed` or `changed` sets
+  `re_review_recommended` and `next_review: "whole"`. With the option on, a
+  snapshot git cannot record the tree of fails. The gate of such a round reads the result recorded on
   the snapshot's tree rather than the last one of all, and its `optimization`
   record gains `alongside_tests`.
 

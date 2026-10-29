@@ -86,7 +86,9 @@ def round_plan(
     files = meta.get("files")
     alongside = loaded.start_before_tests()
     test_status = (
-        review_tests.tested_status(workspace, str(meta.get("tested_tree") or ""))
+        review_tests.tested_status(
+            workspace, str(meta.get("tested_tree") or ""), str(meta.get("generated_at") or "")
+        )
         if alongside
         else workspace.last_status("test")
     )

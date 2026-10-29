@@ -950,12 +950,12 @@ says where the round stands on a `tests on the reviewed tree:` line and in
 - `usable`: triage it. Fixing it changes the tree afterwards; that does not
   take back the result the round was judged on.
 
-"The round's tree" allows for files added since the snapshot that it did not
-have -- a test report the run wrote that nothing ignores -- and for anything
-under the workspace (`.ai/`), where the review itself writes even when its
-`.gitignore` was removed. Any other change, a file edited or removed, is one
-the reviewers did not see. A new source file made while the tests ran is
-missed for the same reason; make it before the snapshot.
+"The round's tree" allows only for anything under the workspace (`.ai/`), where
+the review itself writes even when its `.gitignore` was removed, and for the
+project config files. Any other change -- a file added, edited or removed --
+is one the reviewers did not see. That includes what the test run writes: a
+test report or coverage file `.gitignore` does not ignore makes every round
+`changed`, so ignore the tests' outputs before turning the option on.
 
 The gate of a round started this way reads the result recorded on the
 snapshot's own tree, not the last one of all: a failure recorded before a fix

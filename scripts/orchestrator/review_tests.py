@@ -15,11 +15,11 @@ fix made while the tests ran changes the tree, so its round no longer counts:
 it has to be taken again, rather than triaged as though the reviewers had
 seen the fix.
 
-"Its tree" allows for one difference: files added since the snapshot that it
-did not have, such as a test report the run wrote, and anything under the
-workspace (``.ai/``, where the review itself writes). A test run that leaves
-an unignored file behind would otherwise make every round ``changed``. A new
-source file made while the tests ran is missed for the same reason.
+"Its tree" allows for one difference: anything under the workspace
+(``.ai/``, where the review itself writes) and the project config files. Any
+other difference, a file added included, is one the reviewers did not see, so
+a test run that leaves an unignored file behind (a report it wrote) makes
+every round ``changed``: its outputs have to be in ``.gitignore``.
 """
 
 from __future__ import annotations
@@ -54,10 +54,10 @@ def _test_events(workspace: ws.Workspace) -> List[Dict[str, Any]]:
 
 
 def same_tree(workspace: ws.Workspace, reviewed: str, tested: str) -> bool:
-    """Whether the tests ran on ``reviewed``, give or take files added since.
+    """Whether the tests ran on ``reviewed``, give or take the orchestrator's own files.
 
-    Additions only, and anything under the workspace or in a project config
-    file whatever happened to it; every other difference -- a file changed or
+    Anything under the workspace or in a project config file, whatever
+    happened to it; every other difference -- a file added, changed or
     removed -- is a change the reviewers did not see. Git failing is not the
     same tree.
     """
@@ -75,32 +75,48 @@ def same_tree(workspace: ws.Workspace, reviewed: str, tested: str) -> bool:
     fields = entries.split("\0") if entries else []
     if len(fields) % 2:
         return False
-    for status, path in zip(fields[0::2], fields[1::2], strict=True):
-        if status == "A" or review_snapshot.is_orchestrator_artifact(path, workspace):
-            continue
-        return False
-    return True
+    return all(review_snapshot.is_orchestrator_artifact(path, workspace) for path in fields[1::2])
 
 
-def _last_on(workspace: ws.Workspace, events: List[Dict[str, Any]], tree: str) -> Optional[Dict[str, Any]]:
-    # Newest first: the last result on the tree decides, and a long run log
-    # stops at the first match instead of asking git about every entry.
+def _last_on(
+    workspace: ws.Workspace, events: List[Dict[str, Any]], tree: str, since: str
+) -> Optional[Dict[str, Any]]:
+    """The newest test event recorded on ``tree``, or None.
+
+    Newest first: the last result on the tree decides. Git is asked only about
+    results recorded at or after ``since`` (the snapshot's time) and the
+    newest one before it, as status polls this while the tests run and an
+    older result was on an older tree; an exact match needs no git at all.
+    Without ``since``, only that newest one is asked about.
+    """
+    before_asked = False
     for event in reversed(events):
-        if event.get("tree") and same_tree(workspace, tree, str(event["tree"])):
+        recorded = str(event.get("tree") or "")
+        if not recorded:
+            continue
+        if recorded == tree:
+            return event
+        if since and str(event.get("at") or "") >= since:
+            asked = True
+        else:
+            asked = not before_asked
+            before_asked = True
+        if asked and same_tree(workspace, tree, recorded):
             return event
     return None
 
 
-def tested_status(workspace: ws.Workspace, tree: str) -> str:
+def tested_status(workspace: ws.Workspace, tree: str, since: str = "") -> str:
     """The last test result recorded on ``tree``, or "" when there is none.
 
     What the gate of a round started before the tests reads, instead of the
     last result of all: that one was recorded on an earlier tree, and a failure
-    there says nothing about this one.
+    there says nothing about this one. ``since`` is when the snapshot was
+    taken; see :func:`_last_on`.
     """
     if not tree:
         return ""
-    last = _last_on(workspace, _test_events(workspace), tree)
+    last = _last_on(workspace, _test_events(workspace), tree, since)
     return str(last.get("status") or "") if last else ""
 
 
@@ -112,15 +128,23 @@ def round_verdict(workspace: ws.Workspace, snapshot: Dict[str, Any]) -> Dict[str
     the last test result recorded on its tree passed; ``failed`` when it
     failed; ``pending`` when no test result has been recorded since the
     snapshot was taken; ``changed`` when results were recorded since, but none
-    on its tree. ``unchecked`` when the round kept no tree (it was taken with
-    the option off, or git could not write one), where nothing can be told and
-    nothing is held back.
+    on its tree, or when the round has an empty tree. ``unchecked`` only when
+    the round has no tree at all (it was taken with the option off), where
+    nothing can be told and nothing is held back.
     """
+    if "tested_tree" not in snapshot:
+        return {"state": UNCHECKED, "detail": "the round kept no tree to match the tests against"}
     tree = str(snapshot.get("tested_tree") or "")
     if not tree:
-        return {"state": UNCHECKED, "detail": "the round kept no tree to match the tests against"}
+        # The snapshot refuses this now; a report from before, or edited by
+        # hand, must not slip through as one taken with the option off.
+        return {
+            "state": CHANGED,
+            "detail": "git could not record the reviewed tree, so no test result matches it",
+        }
     events = _test_events(workspace)
-    last = _last_on(workspace, events, tree)
+    taken = str(snapshot.get("taken_at") or "")
+    last = _last_on(workspace, events, tree, taken)
     if last is not None and last.get("status") == "ok":
         return {"state": USABLE, "detail": "the tests passed on the reviewed tree"}
     if last is not None:
@@ -130,7 +154,6 @@ def round_verdict(workspace: ws.Workspace, snapshot: Dict[str, Any]) -> Dict[str
     # times are to the second, so one in the same second counts as since: a
     # result recorded just before the snapshot was on its tree, and matched
     # above, unless the tree changed within that second.
-    taken = str(snapshot.get("taken_at") or "")
     if taken and any(str(event.get("at") or "") >= taken for event in events):
         return {
             "state": CHANGED,
@@ -144,11 +167,20 @@ def report_verdict(workspace: ws.Workspace, data: Dict[str, Any]) -> Optional[Di
     if not data:
         return None
     snapshot = data.get("snapshot")
-    return round_verdict(workspace, snapshot if isinstance(snapshot, dict) else {})
+    if snapshot is not None and not isinstance(snapshot, dict):
+        # Not a report from before the option, which has a block without the
+        # tree, but one nothing can be read from: held back, not waved through.
+        return {"state": CHANGED, "detail": "the report's snapshot block cannot be read"}
+    return round_verdict(workspace, snapshot or {})
 
 
 def usable(verdict: Optional[Dict[str, str]]) -> bool:
     return verdict is None or verdict.get("state") in (USABLE, UNCHECKED)
+
+
+def needs_new_round(verdict: Optional[Dict[str, str]]) -> bool:
+    """Whether the round is thrown away, so the loop has to review the whole change again."""
+    return verdict is not None and verdict.get("state") in (FAILED, CHANGED)
 
 
 def refusal(verdict: Optional[Dict[str, str]], action: str) -> str:

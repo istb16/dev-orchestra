@@ -935,17 +935,21 @@ def cmd_review_show(args: argparse.Namespace) -> int:
     return 0
 
 
-def _tests_refusal(args: argparse.Namespace, workspace: ws.Workspace, action: str) -> str:
-    """Why a code round started before the tests may not go on to ``action`` yet, or "".
+def _tests_gated(args: argparse.Namespace) -> bool:
+    """Whether a code round has to wait for the tests on its tree (``review.start_before_tests``).
 
-    Judged on the round the report holds, not on the snapshot on disk, which
-    the next round may already have replaced. Only with
-    ``review.start_before_tests`` on: off, the tests were recorded before the
-    snapshot was taken, as they always were.
+    Off, the tests were recorded before the snapshot was taken, as they
+    always were; a design round has no tests.
     """
-    if args.design or not _load_lenient(args.cwd).start_before_tests():
-        return ""
-    data = ws.read_json(workspace.consolidated_json_path, {}) or {}
+    return not args.design and _load_lenient(args.cwd).start_before_tests()
+
+
+def _tests_refusal(args: argparse.Namespace, data: Dict[str, Any], action: str) -> str:
+    """Why the code round in the report ``data`` may not go on to ``action`` yet, or "".
+
+    Judged on that report, the one the caller goes on to use, not on the
+    snapshot on disk, which the next round may already have replaced.
+    """
     return review_tests.refusal(review_tests.report_verdict(_workspace(args), data), action)
 
 
@@ -954,17 +958,19 @@ def cmd_review_triage(args: argparse.Namespace) -> int:
     # Accepting is what hands a finding to the fixer, and what narrows the
     # next snapshot to its fix; rejecting or merging one can go on while the
     # tests run.
-    refusal = _tests_refusal(args, workspace, "accept") if args.status == "accepted" else ""
-    if refusal:
-        _err(refusal)
-        return 2
+    gated = args.status == "accepted" and _tests_gated(args)
 
     # Read inside the lock: two triage calls run side by side each read the
     # report, set their own decision and wrote it back, and the second write
-    # dropped the first decision while both printed success.
+    # dropped the first decision while both printed success. The tests are
+    # judged there too, on the report being changed: a round built in the
+    # background may have replaced the one judged before the lock.
     def triaged(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if not data:
             return None
+        refusal = _tests_refusal(args, data, "accept") if gated else ""
+        if refusal:
+            raise review_mod.ReviewError(refusal)
         for finding_id in args.ids:
             review_mod.set_triage(data, finding_id, args.status, args.note or "")
         return data
@@ -983,11 +989,12 @@ def cmd_review_triage(args: argparse.Namespace) -> int:
 
 def cmd_review_fix_brief(args: argparse.Namespace) -> int:
     workspace = _review_workspace(args)
-    refusal = _tests_refusal(args, workspace, "write the fix brief")
+    # Read once: the brief is written from the report the tests were judged on.
+    data = ws.read_json(workspace.consolidated_json_path, {}) or {}
+    refusal = _tests_refusal(args, data, "write the fix brief") if _tests_gated(args) else ""
     if refusal:
         _err(refusal)
         return 2
-    data = ws.read_json(workspace.consolidated_json_path, {}) or {}
     if args.design:
         brief = review_mod.render_fix_brief(data, "Revise the plan to address these accepted findings")
     else:

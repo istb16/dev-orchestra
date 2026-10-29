@@ -62,8 +62,9 @@ def create_snapshot(
 
     ``tested`` is ``review.start_before_tests``: the working tree is written
     whatever ``incremental`` says and kept as ``tested_tree``, the tree the
-    round's tests have to pass on (``review_tests``). ``tree`` keeps its own
-    meaning, the tree a later round may narrow from.
+    round's tests have to pass on (``review_tests``); a tree git cannot write
+    raises :class:`ReviewError`. ``tree`` keeps its own meaning, the tree a
+    later round may narrow from.
     """
     workspace.ensure()
     root = workspace.root
@@ -225,6 +226,13 @@ def _revisions(
     # taken after it". ``meta["tree"]`` keeps its meaning either way -- it is
     # what the next round may narrow from, and ``incremental: False`` says none.
     frozen_tree = _write_tree(root) if (wanted or context_on or tested) else ""
+    if tested and not frozen_tree:
+        # Without it no test result can be matched to the round, and a round
+        # that cannot be held back must not be taken.
+        raise ReviewError(
+            "git could not record the working tree as a tree object, and review.start_before_tests "
+            "needs it to match the tests to this round. Fix what git reports, or turn the option off."
+        )
     tree = frozen_tree if wanted else ""
     previous_tree = _reviewed_tree(workspace, base) if wanted and not recheck else ""
     if previous_tree and tree and previous_tree != tree:
