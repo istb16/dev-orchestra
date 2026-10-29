@@ -104,6 +104,22 @@ READ_ONLY_MECHANISM = (
     "--permission-mode plan --disallowed-tools %s --tools %s --strict-mcp-config --restricted"
     % (_READ_ONLY_DENY, _READ_ONLY_TOOLS)
 )
+#: The tools a write run starts with unless its role sets ``options.tools``.
+#: Without ``--tools`` the CLI offers every built-in tool and the user's MCP
+#: servers, and their definitions ride on every turn: measured on 2.1.312, an
+#: implement run started at about 47k tokens of context and at about 12k with
+#: these and no MCP servers, and the same task cost 26% less. Implementers and
+#: fixers had used nothing else, bar 4 ``Agent`` calls in about 10,700.
+_WRITE_TOOLS = ("Read", "Edit", "Write", "Bash", "Grep", "Glob")
+#: The shell Claude Code offers on Windows, besides or instead of Bash. An
+#: unknown name in ``--tools`` is dropped without a word, so naming it on a
+#: machine that lacks it costs nothing; it is left out elsewhere anyway, since
+#: its definition is about 3.5k tokens a turn.
+_WINDOWS_SHELL = "PowerShell"
+#: What ``--help`` has to list before a write run's tools are narrowed. A CLI
+#: without them runs with everything, as before.
+_WRITE_TOOL_FLAGS = ("--tools", "--strict-mcp-config")
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 #: What ``--help`` has to list before a session is resumed.
 _RESUME_FLAGS = ("--resume", "--fork-session")
 #: How the CLI says a resumed session does not exist, before the id.
@@ -362,12 +378,13 @@ class ClaudeProvider(Provider):
         ModelCandidate("haiku", "haiku", "haiku (latest Haiku)", "builtin-fallback"),
     )
     fallback_updated = "2026-09-10"
-    option_keys = ("args", "permission_mode", "output_format", "idle_timeout")
+    option_keys = ("args", "permission_mode", "output_format", "idle_timeout", "tools")
     #: ``permission_mode`` can turn every prompt off (``bypassPermissions``),
     #: and the project file can come with the branch under review, so a write
     #: role takes it -- and raw arguments, which can spell the same -- only
     #: from the global config or --extra, as agy's ``skip_permissions``.
-    local_only_options = ("permission_mode",)
+    #: ``tools`` likewise: ``all`` hands the run the user's MCP servers.
+    local_only_options = ("permission_mode", "tools")
     # Claude Code's own local settings, ignored by git: a unit's worktree
     # would otherwise run without the permissions the user granted.
     worktree_files = (".claude/settings.local.json",)
@@ -623,6 +640,17 @@ class ClaudeProvider(Provider):
         output_format = options.get("output_format")
         if output_format is not None and output_format not in ("stream-json", "text", "json"):
             problems.append("options.output_format %r is not one of stream-json, text, json" % output_format)
+        tools = options.get("tools")
+        if (
+            tools is not None
+            and tools != "all"
+            and not (
+                isinstance(tools, list)
+                and tools
+                and all(isinstance(tool, str) and _TOOL_NAME_RE.match(tool) for tool in tools)
+            )
+        ):
+            problems.append("options.tools must be all or a non-empty list of tool names, such as Read")
         requested = options.get("permission_mode")
         if requested is None:
             return problems
@@ -712,6 +740,8 @@ class ClaudeProvider(Provider):
             command += ["--model", resolved.argument]
         requested = options.get("permission_mode")
         command += _permission_args(mode, requested if isinstance(requested, str) else None)
+        if mode == MODE_IMPLEMENT:
+            command += self._write_tool_args(options)
         # Raw arguments go last. On a read-only run they have already been
         # held to the allowlist by ``run``; nothing here depends on the order
         # to keep that run read-only.
@@ -726,6 +756,26 @@ class ClaudeProvider(Provider):
         if self._output_format(options) != "stream-json":
             return None
         return super().idle_timeout(options, requested)
+
+    def _write_tool_args(self, options: Dict[str, Any]) -> List[str]:
+        """The tools a write run starts with, and no MCP servers.
+
+        Nothing when the role asks for ``all``, or when ``claude --help``
+        cannot be read or does not list both flags: a write run is never
+        refused for this, it runs with everything as it did before. The
+        boolean flag closes ``--tools``, which takes several values.
+        """
+        requested = options.get("tools")
+        if requested == "all":
+            return []
+        text = self.help_text()
+        if text is None or not all(_advertises(text, flag) for flag in _WRITE_TOOL_FLAGS):
+            return []
+        if isinstance(requested, list):
+            tools = [str(tool) for tool in requested]
+        else:
+            tools = list(_WRITE_TOOLS) + ([_WINDOWS_SHELL] if os.name == "nt" else [])
+        return ["--tools", ",".join(tools), "--strict-mcp-config"]
 
     def _output_format(self, options: Optional[Dict[str, Any]]) -> str:
         """The ``--output-format`` a run asks for: the role's, or the default."""

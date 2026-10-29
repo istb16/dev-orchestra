@@ -737,6 +737,7 @@ by `config validate`, not at run time.
 | any | `args` | List of extra CLI arguments, appended verbatim |
 | `claude` | `output_format` | `stream-json` (default), `text`, `json`. `text` disables stall detection |
 | `claude` | `permission_mode` | Whatever the installed CLI advertises for `--permission-mode` (`dev-orchestra model list` aside, run `claude --help` to see them). On a write role, taken only from the global config (or `--extra`) |
+| `claude` | `tools` | Write roles only: the tools an `implement` run starts with. Unset, `Read`, `Edit`, `Write`, `Bash`, `Grep`, `Glob` (and `PowerShell` on Windows) with no MCP servers; `all` for every tool and MCP server; or a list of tool names, still without MCP servers. Taken only from the global config. See [providers](providers.md#claude-code-adapter) |
 | `codex` | `sandbox` | `read-only`, `workspace-write`, `danger-full-access`. On a write role, taken only from the global config (or `--extra`) |
 | `codex` | `approve` | `true` (default) passes `--approve-for-me`; `false` omits it. On a write role, taken only from the global config (or `--extra`) |
 | `agy` | `skip_permissions` | `true` passes `--dangerously-skip-permissions` on `implement` runs, so the implementer can run commands; default `false`. Taken only from the global config (or `--extra --dangerously-skip-permissions`) |
@@ -765,11 +766,12 @@ they hold, because the project file can come with the branch under review, and
 a branch that names its own reviewers' directories can widen what they read. An
 implementer or review fixer, on a CLI other than `claude`, `codex` and `agy`,
 takes `args` from either file. On those three, a write role takes neither its
-permission options -- Claude's `permission_mode`, Codex's `sandbox` and
-`approve`, agy's `skip_permissions` -- nor any `options.args` from the project
-file: a project file that names one of them on the implementer, the review
-fixer or one of their tiers has that role's `implement` runs refused, whatever
-the value, and `config validate` and `doctor` say so. They come from the global
+permission options -- Claude's `permission_mode` and `tools`, Codex's
+`sandbox` and `approve`, agy's `skip_permissions` -- nor any `options.args`
+from the project file: a project file that names one of them on the
+implementer, the review fixer or one of their tiers has that role's
+`implement` runs refused, whatever the value, and `config validate` and
+`doctor` say so. They come from the global
 config, or from `--extra` for one run (`--extra --permission-mode
 bypassPermissions`, `--extra --dangerously-skip-permissions`).
 

@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:7d94c57a12f79584a8a3657ead03bf5ae26a0e1ac1b62b926309bb399338ed6e -->
+<!-- translated-from: references/configuration.md sha256:053be1a3b275a575f05fc6884b076b71f812c842319c3ed4178662cf0fb69bfc -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -713,6 +713,7 @@ Codex の sandbox ポリシーに正直に対応付ける方法はないので�
 | any | `args` | 追加の CLI 引数のリスト。そのまま末尾に追加されます |
 | `claude` | `output_format` | `stream-json`（デフォルト）、`text`、`json`。`text` にすると stall 検出が無効になります |
 | `claude` | `permission_mode` | インストールされている CLI が `--permission-mode` に対して提示するもの（`dev-orchestra model list` とは別に、`claude --help` を実行して確認してください）。書き込みロールでは global 設定（または `--extra`）からだけ受け付けます |
+| `claude` | `tools` | 書き込みロールだけ: `implement` の実行が持つ道具。未設定なら `Read`、`Edit`、`Write`、`Bash`、`Grep`、`Glob`（Windows では `PowerShell` も）で、MCP サーバーはなし。`all` ならすべての道具と MCP サーバー。道具の名前のリストならそれを使い、MCP サーバーはなし。global 設定からだけ受け付けます。[providers](providers.md#claude-code-adapter) を参照 |
 | `codex` | `sandbox` | `read-only`、`workspace-write`、`danger-full-access`。書き込みロールでは global 設定（または `--extra`）からだけ受け付けます |
 | `codex` | `approve` | `true`（デフォルト）は `--approve-for-me` を渡し、`false` は省略します。書き込みロールでは global 設定（または `--extra`）からだけ受け付けます |
 | `agy` | `skip_permissions` | `true` にすると `implement` の実行で `--dangerously-skip-permissions` を渡し、implementer がコマンドを実行できるようになります。デフォルトは `false`。global 設定（または `--extra --dangerously-skip-permissions`）からだけ受け付けます |
@@ -740,7 +741,7 @@ Claude が受け付ける生引数は `--add-dir <path>` だけで、Codex は�
 ブランチと一緒に持ち込まれうるもので、自分のレビュアーのディレクトリを指定できる
 ブランチは、レビュアーが読める範囲を広げられてしまうからです。`claude`・`codex`・`agy`
 以外の CLI では、implementer と review fixer はどちらのファイルからも `args` を受け取ります。
-この 3 つでは、書き込みロールはパーミッションのオプション -- Claude の `permission_mode`、
+この 3 つでは、書き込みロールはパーミッションのオプション -- Claude の `permission_mode` と `tools`、
 Codex の `sandbox` と `approve`、agy の `skip_permissions` -- も `options.args` も
 project ファイルからは受け取りません。project ファイルが implementer、review fixer、
 またはそのいずれかの tier でそのどれかを挙げると、値を問わずそのロールの `implement` の

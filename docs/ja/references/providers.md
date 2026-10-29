@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:077a09ea937ba838ff8dd515c55e082fb791a20290d2745b81f76227f5162e6b -->
+<!-- translated-from: references/providers.md sha256:b6fef417b6e7b0cf88776a581697c800180ce0e55dca50950d373d133e609daf -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -170,7 +170,7 @@ built-in の各アダプタが何を、何によって強制しているか:
 | モデル | `--model <alias-or-name>`。family が `default` の場合は省略 |
 | モデルの検出 | CLI 自身の `--model` のヘルプテキストに示されるエイリアスを解析 |
 | `plan` / `review` | `--permission-mode plan --disallowed-tools Edit,Write,NotebookEdit --tools Read,Grep,Glob --strict-mcp-config --restricted` |
-| `implement` | `--permission-mode acceptEdits` |
+| `implement` | `--permission-mode acceptEdits --tools Read,Edit,Write,Bash,Grep,Glob --strict-mcp-config`（Windows では `PowerShell` を加える）。後ろの 2 つは `--help` に両方が載っているときだけで、`options.tools: all` のときは付けない |
 | 継続（`run architect --resume`） | 読み取り専用のコマンドに `--resume=<id> --fork-session` を足したもの。継続したセッションを読み取り専用のまま保つと確認された CLI の版、またはそれより新しい版でのみ |
 | 認証 | 環境を継承。`ANTHROPIC_API_KEY`、`CLAUDE_CODE_OAUTH_TOKEN`、または CLI の認証情報ファイルで有無を検出 |
 
@@ -182,6 +182,10 @@ built-in の各アダプタが何を、何によって強制しているか:
 - `Read`、`Grep`、`Glob` は作業ディレクトリと `--add-dir` の中に閉じ込められます。claude 2.1.283 で実測: `--restricted` 付きでは、作業ディレクトリ外の絶対パスの Read、そのディレクトリの Grep と Glob がすべて失敗し、付けなければ同じ実行がファイルを読みます。シンボリックリンクは未検証です。
 
 `claude --help` に `--tools`、`--strict-mcp-config`、`--restricted` が載っていない CLI では、`plan` と `review` の実行は拒否され、`doctor` は `NOT ENFORCEABLE` と表示します。`--help` を読めない CLI では `UNVERIFIED` として拒否されます。`claude --help` はプロセスごとに 1 回だけ読まれ、モデルとパーミッションモードの検出と共有されます。
+
+`implement` の実行（implementer、review fixer、`run --mode implement`）は、これらのロールが使う道具だけを持ち、MCP サーバーなしで始まります。`--tools` がないと、CLI は組み込みのすべての道具とユーザーの MCP サーバーを用意し、その定義が手番ごとに送り直されます。claude 2.1.312 で測ったところ、implement の実行は約 47k トークンの文脈で始まっていて、この 6 つの道具では約 12k でした。同じタスクを同じコミットから両方のやり方で走らせると、費用は 26% 下がり（$1.72 から $1.28）、変えたファイルも、通ったテストも同じでした。記録に残る約 10,700 回の道具の呼び出しで、implementer と review fixer がこれ以外に使ったのは `Agent` の 4 回だけです。Windows では Claude Code が `Bash` の代わりに `PowerShell` を用意することがあるので、`PowerShell` を加えます。CLI が知らない名前は何も言わずに捨てられるので、ない環境でも害はありません。それ以外の環境で加えないのは、手番ごとに約 3.5k トークン増えるからです。読み取り専用の実行と違い、書き込む実行には `--restricted` を付けません。付けると `.claude/settings.local.json` と、そこで許可したコマンドが読まれなくなるためです。
+
+`options.tools` で、これをロールごとに変えられます。`all` はこれまでどおりすべての道具と MCP サーバーで走らせ、道具の名前のリスト（`[Read, Edit, Bash, Agent]`）は 6 つの代わりにそれを使います（MCP サーバーはなしのまま）。`permission_mode` と同じく、書き込みロールはこれを global 設定からだけ受け取り、読み取り専用のロールでは無視されます。`--help` に `--tools` と `--strict-mcp-config` の両方が載っていない CLI や、`--help` を読めない CLI では、書き込む実行はこれまでどおりすべての道具で走ります。これを理由に書き込む実行が拒否されることはありません。
 
 <a id="resuming-a-session"></a>
 
@@ -222,7 +226,7 @@ implementer:
     permission_mode: bypassPermissions
 ```
 
-書き込みロールは、`options.permission_mode` と `options.args` を agy の `skip_permissions` と同じく global 設定か `--extra` からだけ受け取ります。project ファイルはレビュー対象のブランチと一緒に持ち込まれうるもので、ブランチが自分の implementer の確認を切れてはいけないからです。project ファイルが implementer、review fixer、またはそのいずれかの tier で `options.permission_mode` を（値を問わず）挙げるか、何らかの `options.args` を設定すると、そのロールの `implement` の実行は何も消費する前に拒否され、`config validate` と `doctor` がそう伝えます。
+書き込みロールは、`options.permission_mode`、`options.tools`、`options.args` を agy の `skip_permissions` と同じく global 設定か `--extra` からだけ受け取ります。project ファイルはレビュー対象のブランチと一緒に持ち込まれうるもので、ブランチが自分の implementer の確認を切れてはいけないからです。project ファイルが implementer、review fixer、またはそのいずれかの tier で `options.permission_mode` か `options.tools` を（値を問わず）挙げるか、何らかの `options.args` を設定すると、そのロールの `implement` の実行は何も消費する前に拒否され、`config validate` と `doctor` がそう伝えます。
 
 または、1 回の実行だけその場で指定します。
 
