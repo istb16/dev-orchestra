@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:e7df05da8fe263f21e74ce4265340c4cedb1ca9919fb9f55a42b2e2a50f527e6 -->
+<!-- translated-from: references/cli.md sha256:e6f71d36866d6b5e8b1165b0fb34b4818d0a480c12d2b799c767aec6a6973da6 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -52,7 +52,7 @@ Microsoft Store のエイリアスだからです。
 終了コード: `0` 成功、`1` 操作は実行されたが結果が否定的（設定が無効、スナップショットが空、
 すべてのレビュアーが失敗、ロールの実行が失敗）、`2` 使い方または設定のエラー、`3` 予算が尽きて
 コマンドが実行を拒否した、`4` ジョブがまだ実行中のまま `jobs wait` が戻った、`5` plan が承認されて
-おらず `design.require_approval` が有効、`6` design の質問がまだ未回答（または質問のラウンドが上限に
+おらず `design.require_approval` が承認を求めている、`6` design の質問がまだ未回答（または質問のラウンドが上限に
 達している）、`7` `units merge` が解決すべき競合を残した、`130` 中断。
 
 `--json` は、文章の代わりに JSON の値を 1 つ標準出力に出します。オブジェクトで、`reviewer list` と
@@ -393,7 +393,8 @@ review fixer、`--mode implement` では 1200 秒で、その設定の方が大�
 試行を消費する前、`--detach` の前です。`--force` ではこれを通れません。`design.ask_questions: true` の
 もとでは、architect のラウンドが記録されるまでも拒否されます。ただし `--resume` のときは除きます。回答が
 記録されているのに、プロンプトが `decisions.md` にも `## Decisions` セクションにも触れていない plan の
-実行は、`note:` を出して実行します。`design.require_approval: false` では、plan を書く実行は拒否する
+実行は、`note:` を出して実行します。誰も見ていないとき（`design.require_approval: false`、または
+`CI` か `DEV_ORCHESTRA_UNATTENDED` のもとでの `auto`）は、plan を書く実行は拒否する
 代わりに未回答の質問を architect に任せますが、それを書き込むのはほかに拒否するものがないと決まってから
 です（ラウンドの確認の後、試行を消費した後、`--detach` がワーカーを起動する前。ワーカーはもう一度は
 行いません）。そのため終了コード 6 や 3 で拒否された実行では、質問は未回答のまま残ります。`run implementer`

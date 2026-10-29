@@ -343,8 +343,8 @@ it, or while the setting was `false` -- before it spends anything and before
 The setting is read at each run: turned to `false`, the gate stops at once;
 turned back on, what is recorded gates again.
 
-**Nobody watching.** With `design.require_approval: false` nobody is there to
-answer, so the questions are asked and recorded but not waited for. Run the
+**Nobody watching.** With `design.require_approval: false`, or `auto` with
+`CI` or `DEV_ORCHESTRA_UNATTENDED` set, nobody is there to answer, so the questions are asked and recorded but not waited for. Run the
 rounds as usual, record what is asked, and do not stop to ask. The plan run
 records every question still open as left to the architect (`left to the
 architect: nobody was there to answer ...`), says so in a `note:`, and goes
@@ -638,14 +638,24 @@ A rewrite overwrites everything older.
 
 ## Approval
 
-With `design.require_approval` on (the default), nothing is implemented until
-the user has approved the plan. Put to them:
+With `design.require_approval` asking for it, nothing is implemented until the
+user has approved the plan. `true` always asks. `auto`, the default, asks too,
+unless nobody is watching (`CI` or `DEV_ORCHESTRA_UNATTENDED` is set), the plan
+touches nothing high-risk, and the design review left nothing above Low -- it
+was skipped as unneeded, or its latest round reviewed this plan and only Low
+findings are open. `status` gives the answer and its reason on the `Plan
+approval:` line; `not required` there means go on to the implementer. When it
+asks with nobody watching, the line says which condition failed. When it asks,
+put to them:
 
 - the plan's **Goal**, **Proposed Change**, **Files to Modify** and **Risks**;
 - its **Units**, when it has them: each unit's kind, files and dependencies,
   and the waves `units check` prints -- the approval covers the split too;
 - any design findings still open, and whether they came from a review of this
   plan or of an earlier revision (`design approve` says which);
+- the design questions a run nobody watched left to the architect, when there
+  are any: nobody answered them (the pending line and the exit-5 refusal name
+  them);
 - the standing instructions in force, the `Instructions:` line of `status`,
   when there are any: the pending `Plan approval:` line then reads `present
   <plan> and the instructions in force to the user and ask`;
@@ -756,7 +766,12 @@ approval recorded before this key existed never goes stale by it.
 
 | Field | Meaning |
 | --- | --- |
-| `required` | `design.require_approval` |
+| `required` | whether `design.require_approval` asks for this plan now |
+| `mode` | `on`, `off` or `auto` |
+| `reason` | why `auto` decided as it did; `null` under `on` and `off` |
+| `requirement` | the two above as one line, as `status` prints it |
+| `nobody_watching` | whether a question now would go unanswered (`false`, or `auto` with nobody watching) |
+| `unattended_questions` | ids of the design questions a run nobody watched left to the architect |
 | `state` | `pending`, `stale`, `approved`, `no-plan`, `not-required`, or `implemented-unapproved` |
 | `pending` | `true` when the user has to be asked (`pending` or `stale`) |
 | `stale_reason` | `plan-changed`, `reviewed-since`, `decisions-changed`, or `null` |

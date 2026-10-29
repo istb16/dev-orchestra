@@ -148,7 +148,7 @@ _REVIEW_CONTEXT_RULES = (
     _Rule("review.context.surrounding_chars", _POSITIVE),
 )
 _DESIGN_RULES = (
-    _Rule("design.require_approval", _TRUE_OR_FALSE),
+    _Rule("design.require_approval", _TRUE_FALSE_OR_AUTO),
     _Rule("design.ask_questions", _TRUE_FALSE_OR_AUTO),
     _Rule("design.max_question_rounds", _POSITIVE),
 )

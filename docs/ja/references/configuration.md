@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:17efd5cbf0441770cb71796c266a826007dcc3eb87707ad4da978e4c8d6fee02 -->
+<!-- translated-from: references/configuration.md sha256:7d94c57a12f79584a8a3657ead03bf5ae26a0e1ac1b62b926309bb399338ed6e -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -337,7 +337,8 @@ picks another)`）。
 **セキュリティ重視や無人実行は、プリセットではなく追加の設定です。** 危険な変更に security
 レビュアーを付けるなら、`reviewer add --provider claude --role security --when high-risk` に加えて、
 このリポジトリ独自の機密パスを `optimization.extra_high_risk_paths` に。これは上のとおりパネルの
-横に足します。誰も見ていない実行なら `config set design.require_approval false`。`preset: quality` と
+横に足します。誰も見ていない実行では、デフォルトの `design.require_approval: auto` が CI での
+危なくない plan の承認をすでに省きます。すべて省くなら `config set design.require_approval false`。`preset: quality` と
 組み合わせれば「無人の quality」になります。
 
 古い dev-orchestra が `preset:` のあるグローバルファイルを読むと、このキーを無視して組み込み
@@ -599,7 +600,7 @@ optimization:
   skip_unneeded_roles: true           # a test/architecture seat sits out a round with nothing for it
 
 design:
-  require_approval: true              # implementer waits for the user's yes (design approve)
+  require_approval: auto              # implementer waits for the user's yes (true, false or auto)
   ask_questions: false                # auto/true: ask the user before the plan is written
   max_question_rounds: 2              # architect question rounds before asking how to proceed
   resume:                             # run architect --resume
@@ -665,7 +666,7 @@ implementation:
 | `review.context.surrounding_chars` | int ≥ 1 \| null | 1 つのラウンドが追加できる周辺コンテキストの最大量（デフォルト 15,000: 1 つのスナップショットで計測したところ、実行あたりの費用は変わらず、60,000 では渡した分がそのまま上乗せされました）。さらに、diff が `max_chars` と `inline_chars` の下に残す分で上限がかかるので、コンテキストがラウンドを拒否させたり、diff をファイル渡しにしたりすることはありません。収まらなかったものは、プロンプトとすべてのレポートで名前を挙げて除外されます。`null` はデフォルトを意味します。`references/limits.md` を参照。 |
 | `review.design.enabled` | bool \| `auto` \| null | 実装の前に `.ai/plan.md` を設計パネル（`review.design.reviewers` を参照）にかけるかどうか。このステージはラウンドごとにパネルのメンバー 1 人につきレビュアー実行 1 回分のコストがかかります。`true` は常に実行、`false` は実行しません。`auto`（デフォルト）は計画書から判断し、その答えと理由を `status` が表示します。計画書のどこにあってもバッククォートで囲まれたトークンと、計画書の `Files to Modify` 見出しの下にあるパスらしい語（バッククォートの有無を問わず、そこにあるフェンスブロックも含む）はすべて、大文字小文字を区別せずに高リスクパターン（`optimization.high_risk_paths` と `extra_high_risk_paths`）と照合され、一致すれば実行します。`db/migrate` のように `/` を含み拡張子のない名前はディレクトリとしても照合します。規模は、`Files to Modify` の下にあるファイル名らしいトークン（`/` かファイル拡張子を含むもの）のうち、フェンスブロックの中、`docs/`・`references/`・`tests/` と `.md`・`.rst`・`.txt` ファイルを除いたものを、ディスクを見ずに数え、6 個以上なら実行します。そこにグロブ、ディレクトリ、`/` を含み拡張子のない名前、`..` を通るパスがあれば実行します（`payload["mode"]` のようなコードはグロブとして読みません）。計画書が読めない、`Files to Modify` セクションがない、あってもファイルを 1 つも挙げていない場合も実行します。計画書がまだないときの答えは `auto -> run (once a plan is written)` です。そしてワークフローで設計レビューのラウンドが一度でも走ったら答えは実行のままなので、改訂によってループが途中で止まることはありません。`null` はデフォルトの `auto` を意味します。 |
 | `review.design.max_iterations` | int ≥ 0 | 設計レビューのラウンド数（レビュー → トリアージ → 修正）。`max_review_iterations` とは別にカウントされます（デフォルト 2）。上限に達したラウンドでも修正は行われます。上限が拒否するのはその後の再レビューだけです。`1`: 1 ラウンド、1 回の修正、その後ユーザーに確認。`0`: 設計レビューなし。`budgets.architect`（デフォルト 3）は、デフォルトでは設計とラウンドごとに 1 回の修正をまかないます。`max_iterations` に合わせて引き上げ、承認時に変更を求められることが予想される場合はさらに 1 つ増やしてください。 |
-| `design.require_approval` | bool | `true`（デフォルト）にすると、`.ai/plan.md` が存在し、現時点の plan が `design approve` で承認されていない間は -- ユーザーが了承した後に承認するものです -- `run implementer` が拒否します（exit 5）。`false` は誰も見ていない実行（CI、バッチ）向けで、このゲートが導入される前の挙動に戻します。`review.design` の下ではなくトップレベルにあるのは、パネルが plan をレビューしたかどうかにかかわらず承認が重要だからです。`--force` ではバイパスできず、この設定だけがバイパスできます。global 設定からだけ受け付け、project ファイルにあっても無視します（[下記](#what-the-project-file-may-not-loosen)）。 |
+| `design.require_approval` | bool \| `auto` \| null | `.ai/plan.md` が存在し、現時点の plan が `design approve` で承認されていない間に -- ユーザーが了承した後に承認するものです -- `run implementer` を拒否するか（exit 5）を決めます。`true` は常に承認を求めます。`false` は求めず、このゲートが導入される前の挙動に戻します。`auto`（デフォルト。`null` も同じ）は、次の3つがすべてそろったときだけ承認を省き、それ以外は求めます: 誰も見ていない（`DEV_ORCHESTRA_UNATTENDED` が `0`・`false`・`no`・`off` 以外の値で設定されている。未設定か空のときは `CI` を同じように読む。このため、プログラムに確認を出させないためだけに `CI` を設定する道具の中でも、`DEV_ORCHESTRA_UNATTENDED=0` なら承認を求め続ける）、plan が危ない変更でない（plan のどの語も `optimization.high_risk_paths` と `extra_high_risk_paths` に当たらず -- これらはデフォルトと global 設定の値に、project ファイルが足したものを加えたもので、project ファイルから減らすことはできない --、ワークフローのどの設計ラウンドも `--high-risk` で走っていない）、設計レビューで Low より上が残っていない（`review.design.enabled: auto` が小さくまとまった plan だとして省いた、または最新のラウンドで全レビュアーが最後まで終わり、plan 全体を見たうえでこの plan そのものをレビューし、Low より上 -- Medium 以上と、`review.re_review_severities` が止める重大度 -- の未解決の指摘がない）。報告のまだないラウンド、レビュアーが失敗したか `partial` で終わったラウンド、前の版の plan へのレビュー、走るべきなのにまだ走っていないレビュー、`review.design.enabled: false` は承認を求めます。project ファイルはレビュー対象のブランチと一緒に来ることがあるため、省いたことを認めるのは project ファイルを除いても（global 設定かデフォルトで）`review.design.enabled` が `auto` のときだけ、問題のないラウンドを認めるのは設計パネルが project ファイルの並べたものでないときだけです（project ファイルの `reviewers_extra` は席を足すだけなので数えません）。そうでなければどちらも承認を求めます。`status` は `Plan approval:` の行に答えと理由を出します。判定のあいだに plan が変わったときは承認を求めます。`review.design` の下ではなくトップレベルにあるのは、パネルが plan をレビューしたかどうかにかかわらず承認が重要だからです。`--force` ではバイパスできず、この設定だけがバイパスできます。global 設定からだけ受け付け、project ファイルにあっても無視します（[下記](#what-the-project-file-may-not-loosen)）。 |
 | `design.ask_questions` | bool \| `auto` \| null | plan を書く前に、設計の未決の点をユーザーに尋ねるかどうかです（[workflow](workflow.md#design-questions)）。`false`（デフォルト）は尋ねず、これまでどおりです。`auto` では、依頼があいまいなとき、新しい挙動や仕様のとき、いくつもの進め方がありうるときに orchestrator が尋ね、記録された質問が未回答の間は plan を書く `run architect` が拒否します（exit 6）。`true` は同じうえで、`run architect --questions` のラウンドが 1 回記録されるまでもその実行を拒否します。`design.require_approval: false`（誰も見ていない実行）でも質問は出して記録しますが、plan の実行は答えを待たず、未回答のものを architect に任せます。project ファイルでも設定できます。`null` はデフォルトの意味です。 |
 | `design.max_question_rounds` | int ≥ 1 \| null | architect の質問のラウンド数の上限です（デフォルト 2）。これを超えると `run architect --questions` と `design questions record --by architect` が拒否し（exit 6）、orchestrator はどう進めるかをユーザーに尋ねます。`--force` でもう 1 回実行できます。各ラウンドは `budgets.architect` ではなく `budgets.architect_questions`（デフォルト 3）を消費します。`null` はデフォルトの意味です。 |
 | `design.resume.max_age_seconds` | int ≥ 0 \| null | `run architect --resume` がセッションを継続できる、直前の architect の実行の古さの上限です（デフォルト 3600。測定時に CLI がプロンプトキャッシュを保持していた時間）。これより古ければ、改訂は全文プロンプトで新規に走ります。`0` は常に新規、`null` はデフォルトの意味です。 |
@@ -817,15 +818,19 @@ project ファイルの `design.require_approval` は値にかかわらず、ま
 リンクもコミットできるからです。`workspace.dir` には承認の記録が入るので、project
 ファイルがそれを別の場所に向けると、誰も出していない承認を持ち込めてしまいます。
 リポジトリの中を指す相対パスの `workspace.dir` はこれまでどおり project が決められ、
-`null` の承認はデフォルト（必須）を意味します。global の値とデフォルトはリンクを
+`null` の承認はデフォルト（`auto`）を意味します。global の値とデフォルトはリンクを
 確かめません。自分で別の場所にリンクした `.ai` はそのまま使えます。`config validate`
 （警告として）と `review run`（`warning:` として）が、無視したものと `--scope global`
 のコマンドを示します。`doctor` は、それを受け付けていたら効いている設定がゆるんで
-いた場合 -- 必須の承認の上の project の `false` や、使われているのとは別の
+いた場合 -- 効いている値より承認を求めることが少なくなる project の値（`auto` や
+`true` の上の `false`、`true` の上の `auto`）や、使われているのとは別の
 ワークスペース -- は問題として出し（`--strict` は失敗します）、そうでなければメモに
-出します。必須の承認の上の project の `design.require_approval: true` はメモです。
-拒否された `run implementer` は、project ファイルが承認を切ろうとしていたときに
-`note:` を足します。
+出します。デフォルトの `auto` の上の project の `design.require_approval: true` はメモです。
+拒否された `run implementer` は、project ファイルが承認をゆるめようとしていたときに
+`note:` を足します。project ファイルは、`auto` が何を危ない変更とみなすかを狭めることも
+できません。plan に承認が要るかを決めるとき、`optimization.high_risk_paths` と
+`extra_high_risk_paths` はデフォルトと global 設定から取り、project ファイルのリストは
+それに足すだけです。
 `config set design.require_approval false` は、`preset` と同じく、プロジェクトに自分の
 ファイルがあっても global ファイルに書き込みます。`config set workspace.dir <外の場所>`
 も同じです。どちらも、キーそのものでも、`design` や `workspace` のブロックをまるごと
@@ -1388,9 +1393,10 @@ codex: installed
 | 「implementer がテストを実行できない」 | `config set --scope global implementer.options.permission_mode bypassPermissions`（agy では `config set --scope global implementer.options.skip_permissions true`）、またはその CLI 自身の設定でコマンドを許可リストに入れる |
 | 「設計もレビューして」／「設計は必ずレビューして」 | `config set review.design.enabled true` |
 | 「設計はレビューしないで」 | `config set review.design.enabled false` |
-| 「plan の承認を求めないで」/ CI で実行する | `config set design.require_approval false` |
+| 「plan の承認を求めないで」 | `config set design.require_approval false` |
+| 「CI でも必ず plan の承認を求めて」 | `config set design.require_approval true` |
 | 「設計の前に確認して」／「まず未決の点を相談して」 | `config set design.ask_questions auto`（architect に毎回質問させるなら `true`） |
-| 「質問で止まらないで」 | `config set design.ask_questions false`。これがデフォルト。CI（`design.require_approval: false`）では質問は記録されるが、答えを待つことはない |
+| 「質問で止まらないで」 | `config set design.ask_questions false`。これがデフォルト。誰も見ていないとき（`design.require_approval: false`、または `CI` のもとでの `auto`）は質問は記録されるが、答えを待つことはない |
 | 「Codex のセキュリティレビュアーを追加して」 | `reviewer add --provider codex --role security` |
 | 「セキュリティレビュアーはリスクのある変更のときだけ走らせて」 | `reviewer set <id> --when high-risk`（[上記](#reviewers-that-run-only-on-high-risk-changes)を参照） |
 | 「リスクのある変更では opus を使って」 | `reviewer set <id> --high-risk-model opus`（設計パネルには `--design` を付ける） |
@@ -1508,7 +1514,7 @@ Configuration
     design review: auto  (review.design.enabled)
     optimization level: balanced  (optimization.level)
     skip unneeded roles: on  (optimization.skip_unneeded_roles)
-    plan approval: required  (design.require_approval)
+    plan approval: auto (asks unless nobody is watching and the plan is low-risk)  (design.require_approval)
     design questions: off  (design.ask_questions)
   Design reviews
     (the code panel; when conditions ignored)  (review.design.reviewers)

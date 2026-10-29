@@ -6,13 +6,12 @@ import argparse
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from . import approval as approval_mod
+from . import approval_auto, review_loop
 from . import config as config_mod
 from . import context as context_mod
 from . import ledger as ledger_mod
 from . import optimization_design as opt_design
-from . import questions as questions_mod
 from . import review as review_mod
-from . import review_loop
 from . import workspace as ws
 from .cli_common import (
     _emit_json,
@@ -103,9 +102,7 @@ def _status_budget(
             iteration=iteration,
             max_iterations=max_iterations,
             of_current_plan=approval_mod.findings_of_current_plan(base, approval_mod.read_plan(base)[0]),
-            approval=approval_mod.current(
-                base, bool(loaded.design_settings().get("require_approval")), questions_mod.asking(loaded)
-            ),
+            approval=approval_auto.current(loaded, base),
             architect_left=book.remaining("architect"),
             accepted=accepted,
             wrote_plan=_wrote_plan(base),

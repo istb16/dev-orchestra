@@ -12,14 +12,15 @@ import math
 import os
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
-from . import config_trust, instructions, presets
+from . import config_trust, instructions
 from . import optimization as opt_mod
 from .config import (
     WRITE_ROLES,
     LoadedConfig,
     ReviewerOrigin,
+    approval_mode,
+    approval_mode_shown,
     ask_questions_mode,
-    compose_loaded,
     design_review_mode,
     get_path,
     read_only_seats,
@@ -417,11 +418,11 @@ def project_ignored(loaded: LoadedConfig) -> List[Ignored]:
                 continue  # the global file names the same directory, so nothing moved
             how = ", where a link takes it outside the repository,"
         if key == config_trust.APPROVAL:
-            required = bool(loaded.design_settings().get("require_approval"))
+            in_force = approval_mode(loaded.design_settings().get("require_approval"))
             why = "plan approval is taken only from the global config, so it stays %s" % (
-                "required" if required else "not required"
+                approval_mode_shown(in_force)
             )
-            loosens = required and not value
+            loosens = _approval_looser(value, in_force)
         else:
             why = "a workspace outside the repository is taken only from the global config, so %s is used" % (
                 used
@@ -461,14 +462,24 @@ def global_only_write(dotted: str, value: Any, file_name: str = "the project fil
     )
 
 
+#: ``design.require_approval`` from the least to the most careful.
+_APPROVAL_MODES = ("off", "auto", "on")
+
+
+def _approval_looser(value: Any, in_force: str) -> bool:
+    """Whether a project ``design.require_approval`` would ask less often than ``in_force``."""
+    return _APPROVAL_MODES.index(approval_mode(value)) < _APPROVAL_MODES.index(in_force)
+
+
 def approval_ignored_note(loaded: LoadedConfig) -> str:
-    """The ``note:`` a refused ``run implementer`` adds when the project file tried to turn approval off."""
+    """The ``note:`` a refused ``run implementer`` adds when the project file tried to loosen approval."""
+    in_force = approval_mode(loaded.design_settings().get("require_approval"))
     for key, value in config_trust.ignored(loaded.project_layer):
-        if key == config_trust.APPROVAL and not value:
+        if key == config_trust.APPROVAL and _approval_looser(value, in_force):
             name = os.path.basename(loaded.project_path or "") or "the project file"
             return (
                 "note: design.require_approval: %s in the project config (%s) is ignored; only the "
-                "global config can turn plan approval off" % (_shown(value), name)
+                "global config can loosen plan approval" % (_shown(value), name)
             )
     return ""
 
@@ -685,18 +696,6 @@ _GATES = (
 )
 
 
-def _without_project(loaded: LoadedConfig) -> Optional[LoadedConfig]:
-    """The configuration the global file, its preset's fit and the defaults give alone.
-
-    Fitted to the CLIs ``loaded`` was, without asking for them again.
-    """
-    installed = loaded.installed if loaded.installed is not None else presets.installed_providers()
-    try:
-        return compose_loaded(loaded.global_layer, {}, installed, loaded.global_path, None, loaded.start)
-    except Exception:
-        return None  # a global file that does not compose is validate's to report
-
-
 def project_loosening_notices(loaded: LoadedConfig) -> List[str]:
     """One line per review gate the project file makes looser.
 
@@ -717,7 +716,7 @@ def _gate_notices(loaded: LoadedConfig) -> List[str]:
     written = {key for gate in _GATES for key in gate.written if get_path(project, key) is not None}
     if not written:
         return []
-    before = _without_project(loaded)
+    before = loaded.without_project()
     if before is None:
         return []
     name = os.path.basename(loaded.project_path or "") or "the project file"

@@ -354,7 +354,9 @@ and refuses `--scope project` (exit 2) without writing.
 reviewer on risky changes, `reviewer add --provider claude --role security
 --when high-risk` plus `optimization.extra_high_risk_paths` for this
 repository's own sensitive paths; that adds it beside the panel, as above. For runs
-nobody watches, `config set design.require_approval false`; with
+nobody watches, the default `design.require_approval: auto` already skips the
+approval of a low-risk plan in CI, and `config set design.require_approval
+false` skips every one; with
 `preset: quality` beside it, that is "unattended quality".
 
 An older dev-orchestra reading a global file with `preset:` ignores the key and
@@ -626,7 +628,7 @@ optimization:
   skip_unneeded_roles: true           # a test/architecture seat sits out a round with nothing for it
 
 design:
-  require_approval: true              # implementer waits for the user's yes (design approve)
+  require_approval: auto              # implementer waits for the user's yes (true, false or auto)
   ask_questions: false                # auto/true: ask the user before the plan is written
   max_question_rounds: 2              # architect question rounds before asking how to proceed
   resume:                             # run architect --resume
@@ -690,7 +692,7 @@ implementation:
 | `review.context.surrounding_chars` | int ≥ 1 \| null | The most surrounding context a round may add (default 15,000: measured on one snapshot, it left the cost per run where it was, while 60,000 added what it carried). Capped further by what the diff leaves under `max_chars` and `inline_chars`, so context never refuses a round or sends a diff over as a file. What does not fit is left out by name, in the prompt and in every report. `null` means the default. See `references/limits.md`. |
 | `review.design.enabled` | bool \| `auto` \| null | Whether `.ai/plan.md` goes in front of the design panel (see `review.design.reviewers`) before implementation; the stage costs a reviewer run per panel member per round. `true` always, `false` never. `auto` (default) decides from the plan, and `status` prints the answer and its reason: every backticked token anywhere in the plan, and every path-shaped word under the plan's `Files to Modify` heading whether backticked or not (a fenced block there included), is checked against the high-risk patterns (`optimization.high_risk_paths` plus `extra_high_risk_paths`) ignoring case, and a hit means run — a name with a `/` and no extension, such as `db/migrate`, is also checked as a directory; the size counts the filename-shaped tokens (a `/` or a file extension) under `Files to Modify` outside fenced blocks, `docs/`, `references/`, `tests/` and `.md`, `.rst` and `.txt` files, without looking at the disk, and 6 or more means run; a glob, a directory, a name with a `/` and no extension, or a path through `..` there means run (code such as `payload["mode"]` is not read as a glob); an unreadable plan, no `Files to Modify` section or one that names no file means run; before a plan is written the answer is `auto -> run (once a plan is written)`; and once a design round has run for the workflow the answer stays run, so a revision cannot switch the loop off half way. `null` means the default, `auto`. |
 | `review.design.max_iterations` | int ≥ 0 | Design review rounds (review → triage → revise), counted apart from `max_review_iterations` (default 2). The round that reaches the limit still gets its revision; the limit refuses only the re-review after it. `1`: one round, one revision, then ask. `0`: no design review. `budgets.architect` (default 3) covers the design plus one revision per round at the default; raise it with `max_iterations`, and by one more if changes asked for at approval are expected. |
-| `design.require_approval` | bool | `true` (default) makes `run implementer` refuse (exit 5) while `.ai/plan.md` exists and the plan as it is now has not been approved with `design approve` -- after the user said yes. `false` is for runs nobody is watching (CI, batch), and restores the behaviour from before the gate existed. Top-level rather than under `review.design`: approval matters whether or not the panel reviewed the plan. `--force` does not bypass it; only this setting does. Taken only from the global config: in the project file it is ignored ([below](#what-the-project-file-may-not-loosen)). |
+| `design.require_approval` | bool \| `auto` \| null | Whether `run implementer` refuses (exit 5) while `.ai/plan.md` exists and the plan as it is now has not been approved with `design approve` -- after the user said yes. `true` always asks. `false` never does, and restores the behaviour from before the gate existed. `auto` (default; `null` too) asks unless all three hold: nobody is watching (`DEV_ORCHESTRA_UNATTENDED` is set to anything but `0`, `false`, `no` or `off`; when it is unset or empty, `CI` is read the same way -- so `DEV_ORCHESTRA_UNATTENDED=0` keeps asking where a tool sets `CI` only to keep programs from prompting), the plan is not high-risk (no plan token matches `optimization.high_risk_paths` or `extra_high_risk_paths` -- as the defaults and the global config set them, plus any the project file adds; it cannot take one away -- and no design round of the workflow was run with `--high-risk`), and the design review left nothing above Low (`review.design.enabled: auto` skipped it for a small, contained plan, or its latest round reviewed this very plan with every reviewer finishing and the whole plan inlined, and no open finding is above Low -- Medium and up, plus whatever `review.re_review_severities` blocks on). A round with no report yet, one where a reviewer failed or ran `partial`, a review of an earlier revision, a review that is owed but has not run, or `review.design.enabled: false` asks. The project file can come with the branch under review, so a skip counts only when `review.design.enabled` is `auto` without it too (the global config or the default), and a clean round only when the design panel is not one the project file lists (its `reviewers_extra` only add seats, and do not count); either one asks otherwise. `status` prints the answer and its reason on the `Plan approval:` line; a plan that changes while it is being judged asks. Top-level rather than under `review.design`: approval matters whether or not the panel reviewed the plan. `--force` does not bypass it; only this setting does. Taken only from the global config: in the project file it is ignored ([below](#what-the-project-file-may-not-loosen)). |
 | `design.ask_questions` | bool \| `auto` \| null | Whether the user is asked the open points of a design before the plan is written ([workflow](workflow.md#design-questions)). `false` (default) never, as before. `auto`: the orchestrator asks when the request is ambiguous, new behaviour or spec, or open to several approaches, and the `run architect` that writes the plan is refused (exit 6) while a recorded question is open. `true`: the same, and that run is also refused until one `run architect --questions` round is recorded. With `design.require_approval: false` (nobody watching) the questions are still asked and recorded, but the plan run leaves any still open to the architect instead of waiting. A project file may set it. `null` means the default. |
 | `design.max_question_rounds` | int ≥ 1 \| null | Architect question rounds before `run architect --questions` and `design questions record --by architect` refuse (exit 6) and the orchestrator asks the user how to proceed (default 2). `--force` runs one more. Each round spends `budgets.architect_questions` (default 3), not `budgets.architect`. `null` means the default. |
 | `design.resume.max_age_seconds` | int ≥ 0 \| null | How old the last architect run may be for `run architect --resume` to continue its session (default 3600, how long the CLI kept its prompt cache when this was measured). Older, the revision runs fresh with the full prompt. `0` always runs fresh; `null` means the default. |
@@ -845,15 +847,20 @@ repository takes outside it once followed (`dir: inner` with `inner` a link to
 `workspace.dir` holds the approval record, so a project file pointing it
 elsewhere could bring an approval nobody gave. A relative `workspace.dir`
 inside the repository is still the project's to choose, and a `null` approval
-means the default, which is required. The global value and the default are
+means the default, `auto`. The global value and the default are
 not checked for links: a `.ai` you link elsewhere keeps working. `config
 validate` (as a warning) and `review run` (as a `warning:`) say what was
 ignored and name the `--scope global` command. `doctor` reports it as a
 problem, so `--strict` fails, when taking it would have loosened what is in
-force -- a project `false` over a required approval, or a workspace other than
-the one used -- and as a note otherwise, as for a project
-`design.require_approval: true` over a required approval. A refused `run
-implementer` adds a `note:` when the project file tried to turn approval off.
+force -- a project value that asks less often than the one in force (`false`
+over `auto` or `true`, `auto` over `true`), or a workspace other than the one
+used -- and as a note otherwise, as for a project `design.require_approval:
+true` over the default `auto`. A refused `run implementer` adds a `note:` when
+the project file tried to loosen approval. Nor can the project file narrow
+what `auto` counts as high-risk: when it decides whether a plan needs
+approving, `optimization.high_risk_paths` and `extra_high_risk_paths` come
+from the defaults and the global config, and the project file's lists only
+add to them.
 `config set design.require_approval false` writes the global file even inside
 a project that has its own, as `preset` does, and so does `config set
 workspace.dir <outside>`; `--scope project` with either, as the key itself or
@@ -1429,9 +1436,10 @@ The skill carries the command grammar; this is the phrasebook.
 | "the implementer can't run the tests" | `config set --scope global implementer.options.permission_mode bypassPermissions` (on agy, `config set --scope global implementer.options.skip_permissions true`), or allow-list the command in that CLI's own settings |
 | "review the design too" / "always review the design" | `config set review.design.enabled true` |
 | "never review the design" | `config set review.design.enabled false` |
-| "don't ask me to approve plans" / running in CI | `config set design.require_approval false` |
+| "don't ask me to approve plans" | `config set design.require_approval false` |
+| "always ask me to approve plans", even in CI | `config set design.require_approval true` |
 | "ask me before designing" / "check with me on the open points first" | `config set design.ask_questions auto` (`true` to have the architect ask every time) |
-| "don't stop to ask me questions" | `config set design.ask_questions false`, the default; under CI (`design.require_approval: false`) questions are recorded but never waited for |
+| "don't stop to ask me questions" | `config set design.ask_questions false`, the default; with nobody watching (`design.require_approval: false`, or `auto` under `CI`) questions are recorded but never waited for |
 | "add a Codex security reviewer" | `reviewer add --provider codex --role security` |
 | "run the security reviewer only on risky changes" | `reviewer set <id> --when high-risk` (see [above](#reviewers-that-run-only-on-high-risk-changes)) |
 | "use opus on risky changes" | `reviewer set <id> --high-risk-model opus` (add `--design` for the design panel) |
@@ -1551,7 +1559,7 @@ Configuration
     design review: auto  (review.design.enabled)
     optimization level: balanced  (optimization.level)
     skip unneeded roles: on  (optimization.skip_unneeded_roles)
-    plan approval: required  (design.require_approval)
+    plan approval: auto (asks unless nobody is watching and the plan is low-risk)  (design.require_approval)
     design questions: off  (design.ask_questions)
   Design reviews
     (the code panel; when conditions ignored)  (review.design.reviewers)

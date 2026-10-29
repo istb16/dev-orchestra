@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:8ca18fa501d428d37bf145a12f3cbadf52fa011d19c81bc83010c56429a931ba -->
+<!-- translated-from: references/workflow.md sha256:66dffb1d9c7ee6a609bee4519e4d95f9d469f9d88f37a3eff12f909306805a93 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -335,7 +335,8 @@ note を表示します。最もありがちな誤りは、答えを渡し忘れ
 設定は実行のたびに読まれます。`false` にすればゲートはすぐに止まり、有効に戻せば、記録された
 ものが再びゲートになります。
 
-**誰も見ていないとき。** `design.require_approval: false` では答える人がいないので、質問は出して
+**誰も見ていないとき。** `design.require_approval: false`、または `CI` か
+`DEV_ORCHESTRA_UNATTENDED` が設定されたもとでの `auto` では答える人がいないので、質問は出して
 記録しますが、答えは待ちません。ラウンドはいつもどおり進め、出た質問を記録し、尋ねるために止まらないで
 ください。plan の実行は、まだ未回答の質問をすべて architect に任せたものとして記録し
 （`left to the architect: nobody was there to answer ...`）、そのことを `note:` で伝えて先に進みます。
@@ -623,14 +624,23 @@ dev-orchestra run architect --resume \
 
 ## 承認
 
-`design.require_approval` が有効な場合（デフォルト）、ユーザーが plan を承認するまで
-何も実装されません。ユーザーに提示するのは次のものです。
+`design.require_approval` が承認を求めているときは、ユーザーが plan を承認するまで
+何も実装されません。`true` は常に求めます。デフォルトの `auto` も求めますが、誰も
+見ていない（`CI` か `DEV_ORCHESTRA_UNATTENDED` が設定されている）、plan が危ない
+変更に触れていない、設計レビューで Low より上が残っていない（不要として省かれた、
+または最新のラウンドがこの plan をレビューし、未解決の指摘が Low だけ）の3つが
+そろったときは求めません。`status` の `Plan approval:` の行が答えと理由を示し、
+そこが `not required` なら implementer に進みます。誰も見ていないのに承認を求めるとき
+は、どの条件がそろわなかったかもその行に出ます。承認を求めるときにユーザーに
+提示するのは次のものです。
 
 - plan の **Goal**、**Proposed Change**、**Files to Modify**、**Risks**
 - plan に **Units** があれば、各作業単位の種類、ファイル、依存と、`units check` が表示する波
   （承認はこの分け方も対象にします）
 - 未解決の design 指摘と、それがこの plan のレビューから出たものか、以前の修正版の
   レビューから出たものか（`design approve` がどちらかを示します）
+- 誰も見ていない実行が architect に任せた設計の質問があれば、それも。誰も答えていない
+  からです（pending の行と exit 5 の拒否がその id を示します）
 - 効いている常設の指示があれば、`status` の `Instructions:` 行。このとき pending の
   `Plan approval:` 行は `present <plan> and the instructions in force to the user and ask` となります
 
@@ -738,7 +748,12 @@ plan が承認されていない間、`run implementer` は拒否します（exi
 
 | フィールド | 意味 |
 | --- | --- |
-| `required` | `design.require_approval` |
+| `required` | `design.require_approval` がいまこの plan の承認を求めているか |
+| `mode` | `on`、`off`、`auto` のどれか |
+| `reason` | `auto` がそう決めた理由。`on` と `off` では `null` |
+| `requirement` | 上の2つを `status` の表示どおり1行にしたもの |
+| `nobody_watching` | いま質問しても答える人がいないか（`false`、または誰も見ていないときの `auto`） |
+| `unattended_questions` | 誰も見ていない実行が architect に任せた設計の質問の id |
 | `state` | `pending`、`stale`、`approved`、`no-plan`、`not-required`、または `implemented-unapproved` |
 | `pending` | ユーザーに尋ねる必要があるとき（`pending` または `stale`）に `true` |
 | `stale_reason` | `plan-changed`、`reviewed-since`、`decisions-changed`、または `null` |

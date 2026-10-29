@@ -91,10 +91,10 @@ class TestGlobalOnly(_Case):
     def test_a_project_file_cannot_turn_approval_off(self):
         self.write_project("design:\n  require_approval: false\n")
         loaded = self.loaded()
-        self.assertIs(loaded.design_settings()["require_approval"], True)
+        self.assertEqual(loaded.design_settings()["require_approval"], "auto")
         [line] = policy_mod.project_ignored_warnings(loaded)
         self.assertIn("design.require_approval: false is set in the project config", line)
-        self.assertIn("so it stays required", line)
+        self.assertIn("so it stays auto (asks unless nobody is watching", line)
         self.assertIn("config set --scope global design.require_approval false", line)
 
     def test_the_global_file_still_can(self):
@@ -112,7 +112,7 @@ class TestGlobalOnly(_Case):
 
     def test_a_project_null_is_the_default_and_not_reported(self):
         self.write_project("design:\n  require_approval: null\n")
-        self.assertIs(self.loaded().design_settings()["require_approval"], True)
+        self.assertEqual(self.loaded().design_settings()["require_approval"], "auto")
         self.assertEqual(self.ignored(), [])
 
     def test_a_project_workspace_outside_the_repository_is_ignored(self):
@@ -243,6 +243,13 @@ class TestGlobalOnly(_Case):
         report = doctor.collect(self.project, probe_models=False)
         self.assertTrue(any("design.require_approval" in line for line in report["problems"]))
 
+    def test_a_project_auto_over_a_global_true_loosens(self):
+        self.write_global("design:\n  require_approval: true\n")
+        self.write_project("design:\n  require_approval: auto\n")
+        report = doctor.collect(self.project, probe_models=False)
+        self.assertTrue(any("design.require_approval" in line for line in report["problems"]))
+        self.assertIs(self.loaded().design_settings()["require_approval"], True)
+
     def test_doctor_notes_an_ignored_value_that_changes_nothing(self):
         """Only a value that would loosen what is in force fails `doctor --strict`."""
         cases = (
@@ -262,6 +269,25 @@ class TestGlobalOnly(_Case):
                 code, out, _ = run_cli("config", "validate", "--json")
                 self.assertEqual(code, 0)
                 self.assertTrue(any(key in line for line in json.loads(out)["warnings"]))
+
+    def test_only_a_project_value_asking_less_often_loosens(self):
+        """``false`` < ``auto`` < ``true``, for both `doctor` and the refusal's note."""
+        for in_force in ("false", "auto", "true"):
+            for value in ("false", "auto", "true"):
+                loosens = ("false", "auto", "true").index(value) < ("false", "auto", "true").index(in_force)
+                with self.subTest(in_force=in_force, value=value):
+                    self.write_global("design:\n  require_approval: %s\n" % in_force)
+                    self.write_project("design:\n  require_approval: %s\n" % value)
+                    report = doctor.collect(self.project, probe_models=False)
+                    line = "design.require_approval: %s is set in the project config" % value
+                    self.assertIs(any(line in problem for problem in report["problems"]), loosens)
+                    self.assertIs(any(line in note for note in report["notes"]), not loosens)
+                    note = policy_mod.approval_ignored_note(self.loaded())
+                    if loosens:
+                        self.assertIn("design.require_approval: %s in the project config" % value, note)
+                        self.assertIn("only the global config can loosen plan approval", note)
+                    else:
+                        self.assertEqual(note, "")
 
     def test_the_workspace_named_is_the_one_used(self):
         """A global `dir` no command can use is not named as the one in use (#279)."""
@@ -448,8 +474,9 @@ class TestLoosened(_Case):
 
     def test_a_baseline_that_does_not_compose_reports_nothing(self):
         self.write_project("review:\n  max_findings: 1\n")
-        with mock.patch.object(policy_mod, "compose_loaded", side_effect=ValueError("broken")):
-            self.assertEqual(self.notices(), [])
+        loaded = self.loaded()
+        with mock.patch.object(config_mod, "compose_loaded", side_effect=ValueError("broken")):
+            self.assertEqual(policy_mod.project_loosening_notices(loaded), [])
 
     def test_a_gate_no_run_could_read_is_skipped(self):
         """A global `review` that is not a mapping: the baseline cannot be read, and nothing crashes."""
@@ -541,7 +568,7 @@ class TestOnTheMock(_Case):
         self.assertIn("refusing to run review round 1", err)
         self.assertGreater(err.index("refusing to run"), err.index("warning: review.max_review_iterations"))
         # The ignored one does not: plan approval stays required.
-        self.assertIs(self.loaded().design_settings()["require_approval"], True)
+        self.assertEqual(self.loaded().design_settings()["require_approval"], "auto")
 
 
 if __name__ == "__main__":

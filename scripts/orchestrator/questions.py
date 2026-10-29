@@ -48,8 +48,13 @@ OPTION_KEYS = "ABCDE"
 DELEGATED = "left to the architect"
 
 #: What the plan run records for a question still open when nobody is there
-#: to answer it (``design.require_approval`` false).
-UNATTENDED = "left to the architect: nobody was there to answer (design.require_approval is false)"
+#: to answer it (``design.require_approval`` false, or ``auto`` in CI). For
+#: display only: the answer's ``unattended`` key is what marks it.
+UNATTENDED = "left to the architect: nobody was there to answer (design.require_approval)"
+
+#: How every wording of ``UNATTENDED`` has begun, for an answer recorded
+#: before the ``unattended`` key existed.
+_UNATTENDED_PREFIX = "left to the architect: nobody was there to answer"
 
 _HEADER_RE = re.compile(r"^\s{0,3}#{1,6}\s*question\s*$", re.IGNORECASE)
 #: Any option letter is read as an option, so a sixth one is refused by name
@@ -343,7 +348,12 @@ def delegate_unattended(workspace: ws.Workspace) -> List[str]:
         for question in data["questions"]:
             if isinstance(question.get("answer"), dict):
                 continue
-            question["answer"] = {"kind": "delegated", "text": UNATTENDED, "answered_at": now}
+            question["answer"] = {
+                "kind": "delegated",
+                "text": UNATTENDED,
+                "answered_at": now,
+                "unattended": True,
+            }
             ids.append(str(question.get("id")))
         if not ids:
             return ids
@@ -355,6 +365,24 @@ def delegate_unattended(workspace: ws.Workspace) -> List[str]:
 
 
 # --------------------------------------------------------------------------- reads
+
+
+def unattended_ids(state: Dict[str, Any]) -> List[str]:
+    """The ids of the questions ``delegate_unattended`` left to the architect.
+
+    By the answer's ``unattended`` key, not its words, which may be reworded;
+    an answer recorded before the key existed is known by how it begins.
+    """
+    return [
+        str(q.get("id"))
+        for q in read(state)["questions"]
+        if isinstance(q.get("answer"), dict)
+        and q["answer"].get("kind") == "delegated"
+        and (
+            q["answer"].get("unattended") is True
+            or str(q["answer"].get("text") or "").startswith(_UNATTENDED_PREFIX)
+        )
+    ]
 
 
 def decisions_text(state: Dict[str, Any]) -> str:

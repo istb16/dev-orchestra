@@ -47,7 +47,7 @@ Exit codes: `0` success, `1` the operation ran but the outcome is negative
 (invalid config, empty snapshot, every reviewer failed, role run failed), `2` a
 usage or configuration error, `3` a budget is exhausted and the command refused
 to run, `4` a `jobs wait` returned while the job was still running, `5` the
-plan is not approved and `design.require_approval` is on, `6` a design question
+plan is not approved and `design.require_approval` asks for it, `6` a design question
 is still open (or a question round is at its cap), `7` `units merge` left
 conflicts to resolve, `130` interrupted.
 
@@ -434,7 +434,8 @@ attempt is spent and before `--detach`; `--force` does not pass it. Under
 `design.ask_questions: true` it is also refused until an architect round is
 recorded, except with `--resume`. A plan run whose prompt names neither
 `decisions.md` nor a `## Decisions` section while answers are recorded prints a
-`note:` and runs. With `design.require_approval: false` the plan run leaves the
+`note:` and runs. With nobody watching (`design.require_approval: false`, or
+`auto` under `CI` or `DEV_ORCHESTRA_UNATTENDED`) the plan run leaves the
 open questions to the architect instead of refusing, but writes that only once
 nothing else refuses it -- after the round check and once its attempt is
 spent, before `--detach` starts the worker, which never does it again -- so a

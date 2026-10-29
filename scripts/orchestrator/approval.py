@@ -1,8 +1,9 @@
 """The user's approval of the plan, and whether the current plan still has it.
 
 ``run implementer`` refuses a plan nobody approved while
-``design.require_approval`` is on. SKILL.md tells the orchestrator to ask
-before implementing, but prose can be skipped; this is the part that cannot.
+``design.require_approval`` asks for it (``approval_auto`` decides ``auto``).
+SKILL.md tells the orchestrator to ask before implementing, but prose can be
+skipped; this is the part that cannot.
 The approval is recorded by ``design approve`` only, under its own key in
 ``state.json`` -- ``state record`` can write any event, so an event alone would
 be an approval anyone could fake by accident.
@@ -106,7 +107,9 @@ def open_findings(design_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     ]
 
 
-def findings_of_current_plan(workspace: ws.Workspace, plan_text: str) -> Optional[bool]:
+def findings_of_current_plan(
+    workspace: ws.Workspace, plan_text: str, state: Optional[Dict[str, Any]] = None
+) -> Optional[bool]:
     """Whether the latest design round reviewed this plan text, or None if none did.
 
     Compared with the frozen plan in ``review-target.md`` rather than through
@@ -114,6 +117,7 @@ def findings_of_current_plan(workspace: ws.Workspace, plan_text: str) -> Optiona
     rewritten request would make findings about this very plan look old. The
     decisions are compared with their frozen copy the same way: a round that
     reviewed this plan under answers since revised reviewed an earlier one.
+    ``state`` is ``state.json`` as the caller read it (``None``: read it here).
     """
     review = workspace.design_review()
     # Read, not os.path.isfile: that can miss the snapshot mid-rename (#358).
@@ -122,7 +126,7 @@ def findings_of_current_plan(workspace: ws.Workspace, plan_text: str) -> Optiona
         return None
     if snapshot != plan_text:
         return False
-    decisions = questions_mod.decisions_text(workspace.read_state())
+    decisions = questions_mod.decisions_text(workspace.read_state() if state is None else state)
     return ws.read_text(review.snapshot_decisions_path) == decisions
 
 
@@ -153,7 +157,12 @@ def implemented_since_plan(workspace: ws.Workspace, events: List[Dict[str, Any]]
     return at is not None and at > written
 
 
-def current(workspace: ws.Workspace, required: bool, asking: bool = True) -> Dict[str, Any]:
+def current(
+    workspace: ws.Workspace,
+    required: bool,
+    asking: bool = True,
+    state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """The approval state `status` prints and `run implementer` gates on.
 
     ``matches_current_plan`` and ``reviewed_since_approval`` are worked out
@@ -161,9 +170,12 @@ def current(workspace: ws.Workspace, required: bool, asking: bool = True) -> Dic
     hide what the record says about the plan. ``asking`` is
     ``questions.asking``: with ``design.ask_questions`` off the recorded
     answers are not enforced, so a revised one does not stale the approval.
+    ``state`` is ``state.json`` as the caller read it (``None``: read it
+    here). ``approval_auto.current`` adds the keys of the requirement in force.
     """
     _, digest = read_plan(workspace)
-    state = workspace.read_state()
+    if state is None:
+        state = workspace.read_state()
     approved = state.get(STAGE)
     if not isinstance(approved, dict):
         approved = None
@@ -255,35 +267,3 @@ def record(
         ws.append_event(state, event)
         workspace.write_state(state)
     return entry
-
-
-def refusal_lines(info: Dict[str, Any], plan_relative: str) -> List[str]:
-    """What `run implementer` prints on stderr, or writes to the job, when it refuses."""
-    approved = str(info.get("approved_sha256") or "")[:12]
-    now = str(info.get("plan_sha256") or "")[:12]
-    if info.get("stale_reason") == "plan-changed":
-        first = (
-            "refusing to run implementer: the plan at %s changed after it was approved "
-            "(approved %s, now %s). Ask again." % (plan_relative, approved, now)
-        )
-    elif info.get("stale_reason") == "reviewed-since":
-        first = (
-            "refusing to run implementer: a design review ran after the plan at %s was approved. "
-            "Present its findings and ask again." % plan_relative
-        )
-    elif info.get("stale_reason") == "decisions-changed":
-        first = (
-            "refusing to run implementer: a recorded decision changed after the plan at %s was approved: "
-            "revise the plan and ask again." % plan_relative
-        )
-    else:
-        first = (
-            "refusing to run implementer: the plan at %s is not approved "
-            "(design.require_approval)." % plan_relative
-        )
-    return [
-        first,
-        "Present the plan to the user -- Goal, Proposed Change, Files to Modify, Risks, "
-        "open design findings -- and ask.",
-        "Record their yes with `dev-orchestra design approve`; never run it without one. Exit 5.",
-    ]

@@ -667,6 +667,71 @@ class TestUnattended(QuestionsCase):
         self.assert_left_open()
 
 
+class TestUnattendedUnderAuto(QuestionsCase):
+    """``design.require_approval: auto``, the default: left only when the environment says nobody watches."""
+
+    def setUp(self):
+        super().setUp()
+        self.ask("auto")
+        self.record("orchestrator", "orchestrator.md")
+        self.record("architect", "architect.md")
+
+    def assert_left_open(self, code, err):
+        self.assertEqual(code, 6, err)
+        self.assertNotIn("note: nobody is watching", err)
+        self.assertEqual(self.questions_status()["open"], ["Q1", "Q2"])
+        self.assertEqual([e for e in self.events(questions_mod.STAGE) if e["status"] == "delegated"], [])
+
+    def test_in_ci_the_plan_run_leaves_them_to_the_architect(self):
+        self.set_env("CI", "true")
+        code, _, err = self.plan_run()
+        self.assertEqual(code, 0, err)
+        self.assertIn(
+            "note: nobody is watching (design.require_approval), so nobody is there to answer: Q1, Q2", err
+        )
+        for question in self.recorded()["questions"]:
+            self.assertEqual(question["answer"]["kind"], "delegated")
+            self.assertIs(question["answer"]["unattended"], True)
+        self.assertEqual(questions_mod.unattended_ids(self.workspace.read_state()), ["Q1", "Q2"])
+
+    def test_outside_ci_it_waits(self):
+        self.assert_left_open(*self.plan_run()[::2])
+
+    def test_unattended_0_keeps_waiting_in_ci(self):
+        self.set_env("CI", "true")
+        self.set_env("DEV_ORCHESTRA_UNATTENDED", "0")
+        self.assert_left_open(*self.plan_run()[::2])
+
+    def test_true_waits_even_in_ci(self):
+        self.set_env("CI", "true")
+        run_cli("config", "set", "design.require_approval", "true")
+        self.assert_left_open(*self.plan_run()[::2])
+
+    def test_a_worker_never_leaves_them_in_ci(self):
+        self.set_env("CI", "true")
+        jobs_mod.write_job(self.workspace, {"id": "u-1", "stage": "architect", "status": "running"})
+        code, _, err = self.plan_run("--force", "--job-file", jobs_mod.job_path(self.workspace, "u-1"))
+        self.assert_left_open(code, err)
+
+
+class TestUnattendedIds(unittest.TestCase):
+    def state(self, answer):
+        return {questions_mod.STAGE: {"questions": [{"id": "Q1", "text": "Which?", "answer": answer}]}}
+
+    def test_known_by_the_marker_whatever_the_words(self):
+        answer = {"kind": "delegated", "text": "reworded", "answered_at": "x", "unattended": True}
+        self.assertEqual(questions_mod.unattended_ids(self.state(answer)), ["Q1"])
+
+    def test_an_answer_from_before_the_marker_is_known_by_its_words(self):
+        old = "left to the architect: nobody was there to answer (design.require_approval is false)"
+        answer = {"kind": "delegated", "text": old, "answered_at": "x"}
+        self.assertEqual(questions_mod.unattended_ids(self.state(answer)), ["Q1"])
+
+    def test_a_delegation_by_the_user_is_not_one(self):
+        answer = {"kind": "delegated", "text": questions_mod.DELEGATED, "answered_at": "x"}
+        self.assertEqual(questions_mod.unattended_ids(self.state(answer)), [])
+
+
 class TestAlwaysAsk(QuestionsCase):
     def setUp(self):
         super().setUp()

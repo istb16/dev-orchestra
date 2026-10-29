@@ -678,6 +678,7 @@ _ALLOWED = {
     ("config.py", "compose", ".presets"),
     ("config.py", "root", ".workspace"),
     ("config.py", "load", ".presets"),
+    ("config.py", "without_project", ".presets"),
     ("config_validation.py", "validate", ".presets"),
     ("config_validation.py", "validate", ".providers"),
     ("config_validation.py", "_validate_role_options", ".providers"),
