@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:29735f63f18e9bd9a37fa68eab203f2d778fc54c40d96c235efc5853f75a5994 -->
+<!-- translated-from: references/workflow.md sha256:66dffb1d9c7ee6a609bee4519e4d95f9d469f9d88f37a3eff12f909306805a93 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -630,7 +630,8 @@ dev-orchestra run architect --resume \
 変更に触れていない、設計レビューで Low より上が残っていない（不要として省かれた、
 または最新のラウンドがこの plan をレビューし、未解決の指摘が Low だけ）の3つが
 そろったときは求めません。`status` の `Plan approval:` の行が答えと理由を示し、
-そこが `not required` なら implementer に進みます。承認を求めるときにユーザーに
+そこが `not required` なら implementer に進みます。誰も見ていないのに承認を求めるとき
+は、どの条件がそろわなかったかもその行に出ます。承認を求めるときにユーザーに
 提示するのは次のものです。
 
 - plan の **Goal**、**Proposed Change**、**Files to Modify**、**Risks**
@@ -638,6 +639,8 @@ dev-orchestra run architect --resume \
   （承認はこの分け方も対象にします）
 - 未解決の design 指摘と、それがこの plan のレビューから出たものか、以前の修正版の
   レビューから出たものか（`design approve` がどちらかを示します）
+- 誰も見ていない実行が architect に任せた設計の質問があれば、それも。誰も答えていない
+  からです（pending の行と exit 5 の拒否がその id を示します）
 - 効いている常設の指示があれば、`status` の `Instructions:` 行。このとき pending の
   `Plan approval:` 行は `present <plan> and the instructions in force to the user and ask` となります
 
@@ -749,6 +752,8 @@ plan が承認されていない間、`run implementer` は拒否します（exi
 | `mode` | `on`、`off`、`auto` のどれか |
 | `reason` | `auto` がそう決めた理由。`on` と `off` では `null` |
 | `requirement` | 上の2つを `status` の表示どおり1行にしたもの |
+| `nobody_watching` | いま質問しても答える人がいないか（`false`、または誰も見ていないときの `auto`） |
+| `unattended_questions` | 誰も見ていない実行が architect に任せた設計の質問の id |
 | `state` | `pending`、`stale`、`approved`、`no-plan`、`not-required`、または `implemented-unapproved` |
 | `pending` | ユーザーに尋ねる必要があるとき（`pending` または `stale`）に `true` |
 | `stale_reason` | `plan-changed`、`reviewed-since`、`decisions-changed`、または `null` |

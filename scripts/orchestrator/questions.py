@@ -357,6 +357,17 @@ def delegate_unattended(workspace: ws.Workspace) -> List[str]:
 # --------------------------------------------------------------------------- reads
 
 
+def unattended_ids(state: Dict[str, Any]) -> List[str]:
+    """The ids of the questions ``delegate_unattended`` left to the architect."""
+    return [
+        str(q.get("id"))
+        for q in read(state)["questions"]
+        if isinstance(q.get("answer"), dict)
+        and q["answer"].get("kind") == "delegated"
+        and q["answer"].get("text") == UNATTENDED
+    ]
+
+
 def decisions_text(state: Dict[str, Any]) -> str:
     """The questions and answers as reviewers are given them; "" when none were asked."""
     data = read(state)

@@ -21,20 +21,20 @@ risk and the design review's verdict, none of which the record itself needs.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Mapping, NamedTuple, Optional
+from typing import Any, Dict, Mapping, NamedTuple, Optional, Tuple
 
 from . import approval as approval_mod
 from . import config as config_mod
-from . import instructions, round_progress
+from . import instructions, review_loop, round_progress
 from . import optimization as opt_mod
 from . import questions as questions_mod
 from . import workspace as ws
-from .review_common import SEVERITY_RANK
 
-#: Set to say nobody is watching, where ``CI`` is not set.
+#: Says whether anybody is watching. Set, it decides alone, so ``0`` keeps the
+#: approval where a tool sets ``CI`` only to keep other programs from prompting.
 UNATTENDED_ENV = "DEV_ORCHESTRA_UNATTENDED"
 
-_FALSE_WORDS = ("", "0", "false", "no", "off")
+_FALSE_WORDS = ("0", "false", "no", "off")
 
 
 class Requirement(NamedTuple):
@@ -45,6 +45,8 @@ class Requirement(NamedTuple):
     required: bool
     #: Empty under ``on`` and ``off``.
     reason: str = ""
+    #: The sha256 of the plan text the decision was made on, "" when there was none.
+    digest: str = ""
 
     def label(self) -> str:
         """``required`` or ``not required``, with the reason under ``auto``."""
@@ -55,9 +57,18 @@ class Requirement(NamedTuple):
 
 
 def unattended(environ: Optional[Mapping[str, str]] = None) -> bool:
-    """Whether the environment says nobody is watching this run."""
+    """Whether the environment says nobody is watching this run.
+
+    ``DEV_ORCHESTRA_UNATTENDED``, when set to anything but empty, decides;
+    otherwise ``CI`` does. Either one counts as unset when empty, and as
+    "watching" when ``0``, ``false``, ``no`` or ``off``.
+    """
     env = os.environ if environ is None else environ
-    return any(str(env.get(key) or "").strip().lower() not in _FALSE_WORDS for key in ("CI", UNATTENDED_ENV))
+    for key in (UNATTENDED_ENV, "CI"):
+        value = str(env.get(key) or "").strip().lower()
+        if value:
+            return value not in _FALSE_WORDS
+    return False
 
 
 def nobody_watching(loaded: config_mod.LoadedConfig, environ: Optional[Mapping[str, str]] = None) -> bool:
@@ -71,84 +82,126 @@ def nobody_watching(loaded: config_mod.LoadedConfig, environ: Optional[Mapping[s
 
 
 def requirement(
-    loaded: config_mod.LoadedConfig, workspace: ws.Workspace, environ: Optional[Mapping[str, str]] = None
+    loaded: config_mod.LoadedConfig,
+    workspace: ws.Workspace,
+    environ: Optional[Mapping[str, str]] = None,
+    plan_text: Optional[str] = None,
 ) -> Requirement:
-    """Whether the plan as it is now needs the user's approval."""
+    """Whether the plan needs the user's approval.
+
+    ``plan_text`` is the plan as the caller read it, strictly (``None``:
+    read it here), so the decision is about the very text the caller gates.
+    """
     mode = config_mod.approval_mode(loaded.design_settings().get("require_approval"))
     if mode != "auto":
         return Requirement(mode, mode == "on")
     if not unattended(environ):
         return Requirement(mode, True, "someone may be watching: neither CI nor %s is set" % UNATTENDED_ENV)
-    plan_state, scan = round_progress.plan_scan(workspace)
-    if plan_state != "ok":
+    if plan_text is None:
+        plan_text = ws.read_text_strict(workspace.plan_path)
+    scanned = round_progress.scan_of(plan_text)
+    if scanned[0] != "ok" or plan_text is None:
         return Requirement(mode, True, "no readable plan")
-    hits = opt_mod.design_risk(loaded.optimization_settings(), scan, instructions.watched_paths(loaded))
+    digest = approval_mod.plan_digest(plan_text)
+    hits = opt_mod.design_risk(loaded.optimization_settings(), scanned[1], instructions.watched_paths(loaded))
     if hits:
         more = " and %d more" % (len(hits) - 1) if len(hits) > 1 else ""
-        return Requirement(mode, True, "the plan touches %s%s" % (ws.redact(hits[0][0]), more))
-    return _by_design_review(loaded, workspace, mode)
+        return Requirement(mode, True, "the plan touches %s%s" % (ws.redact(hits[0][0]), more), digest)
+    required, reason = _by_design_review(loaded, workspace, plan_text, scanned)
+    return Requirement(mode, required, reason, digest)
 
 
-def _by_design_review(loaded: config_mod.LoadedConfig, workspace: ws.Workspace, mode: str) -> Requirement:
+def _by_design_review(
+    loaded: config_mod.LoadedConfig, workspace: ws.Workspace, plan_text: str, scanned: Tuple[str, Any]
+) -> Tuple[bool, str]:
     """The design review's half of ``auto``, for an unattended plan that is not high-risk."""
     design_data = ws.read_json(workspace.design_review().consolidated_json_path, {}) or {}
     latest = approval_mod.design_round(workspace)
     if latest is None and not int(design_data.get("iteration", 0) or 0):
-        decision = round_progress.design_decision(loaded, workspace)
+        decision = round_progress.design_decision(loaded, workspace, scanned, design_data)
         if decision.mode == "off":
-            return Requirement(mode, True, "the design review is off (review.design.enabled: false)")
+            return True, "the design review is off (review.design.enabled: false)"
         if decision.run:
-            return Requirement(mode, True, "the design review has not run on this plan")
-        return Requirement(
-            mode, False, "nobody watching; the design review was skipped (%s)" % decision.reason
-        )
+            return True, "the design review has not run on this plan"
+        return False, "nobody watching; the design review was skipped (%s)" % decision.reason
     if latest is None or latest != approval_mod.reported_round(design_data):
-        return Requirement(mode, True, "the latest design review round has no report")
+        return True, "the latest design review round has no report"
+    short = _short_coverage(design_data)
+    if short:
+        return True, short
     if _declared_high_risk(workspace, latest):
-        return Requirement(mode, True, "the design review ran with --high-risk")
-    plan_text, _ = approval_mod.read_plan(workspace)
+        return True, "the design review ran with --high-risk"
     if approval_mod.findings_of_current_plan(workspace, plan_text) is not True:
-        return Requirement(mode, True, "the latest design review was of an earlier revision of the plan")
-    above = _above_low(approval_mod.open_findings(design_data))
-    if above:
-        return Requirement(
-            mode, True, "%d design finding(s) above Low still open: %s" % (len(above), ", ".join(above))
-        )
-    return Requirement(
-        mode, False, "nobody watching, not high-risk, and the design review left nothing above Low"
-    )
-
-
-def _above_low(findings: List[Dict[str, Any]]) -> List[str]:
-    """The ids of the findings above Low; one with no known severity counts as Medium, as elsewhere."""
-    low = SEVERITY_RANK["low"]
-    return [
+        return True, "the latest design review was of an earlier revision of the plan"
+    # The same line the review loop draws: Medium and up, plus whatever
+    # review.re_review_severities makes blocking.
+    wanted = review_loop.above_low_severities(loaded.blocking_severities())
+    above = [
         str(f.get("id"))
-        for f in findings
-        if SEVERITY_RANK.get(str(f.get("severity") or "medium").lower(), SEVERITY_RANK["medium"]) < low
+        for f in approval_mod.open_findings(design_data)
+        if str(f.get("severity") or "medium").lower() in wanted
     ]
+    if above:
+        return True, "%d design finding(s) above Low still open: %s" % (len(above), ", ".join(above))
+    return False, "nobody watching, not high-risk, and the design review left nothing above Low"
+
+
+def _short_coverage(design_data: Dict[str, Any]) -> str:
+    """Why the latest design round did not review the whole plan, or "".
+
+    Its findings say nothing about what a reviewer did not read: a reviewer
+    that failed or ran ``partial``, or a plan handed over as a file
+    (``coverage.round`` other than ``complete``), asks.
+    """
+    counts = design_data.get("counts")
+    counts = counts if isinstance(counts, dict) else {}
+    failed = int(counts.get("snapshot_reviewers_failed") or 0)
+    partial = int(counts.get("snapshot_reviewers_partial") or 0)
+    if failed or partial:
+        return "%d design reviewer(s) failed and %d ran partial in the latest round" % (failed, partial)
+    if not int(counts.get("snapshot_reviewers_ok") or 0):
+        return "no design reviewer finished the latest round"
+    coverage = design_data.get("coverage")
+    if not isinstance(coverage, dict) or coverage.get("round") != "complete":
+        return "the latest design round did not show the whole plan to every reviewer"
+    return ""
 
 
 def _declared_high_risk(workspace: ws.Workspace, round_id: str) -> bool:
-    """Whether the design round ``round_id`` was run with ``--high-risk``, from its run-log event."""
-    for event in workspace.read_state().get("events") or []:
+    """Whether the design round ``round_id`` was run with ``--high-risk``, from its run-log event.
+
+    Read from the end: the round's event is among the last, and the first one
+    found for it answers.
+    """
+    for event in reversed(workspace.read_state().get("events") or []):
         if not isinstance(event, dict) or event.get("stage") != "design_review":
             continue
         if str(event.get("round_id") or "") != round_id:
             continue
         optimization = event.get("optimization")
-        if isinstance(optimization, dict) and optimization.get("declared"):
-            return True
+        return isinstance(optimization, dict) and bool(optimization.get("declared"))
     return False
 
 
 def current(
     loaded: config_mod.LoadedConfig, workspace: ws.Workspace, environ: Optional[Mapping[str, str]] = None
 ) -> Dict[str, Any]:
-    """``approval.current`` under the requirement in force, with its mode and reason."""
-    need = requirement(loaded, workspace, environ)
-    info = approval_mod.current(workspace, need.required, questions_mod.asking(loaded))
+    """``approval.current`` under the requirement in force, with its mode and reason.
+
+    The plan is read once for the decision. If the plan ``approval.current``
+    then reads is another text, it changed in between, and approval is
+    required: the decision was about a plan nobody is about to run.
+    """
+    need = requirement(loaded, workspace, environ, ws.read_text_strict(workspace.plan_path))
+    asking = questions_mod.asking(loaded)
+    info = approval_mod.current(workspace, need.required, asking)
+    if not need.required and need.digest and info.get("plan_sha256") != need.digest:
+        need = need._replace(required=True, reason="the plan changed while it was being judged")
+        info = approval_mod.current(workspace, True, asking)
     info["mode"] = need.mode
     info["reason"] = need.reason or None
     info["requirement"] = need.label()
+    info["nobody_watching"] = nobody_watching(loaded, environ)
+    # Answered by nobody: whoever approves the plan is shown them too.
+    info["unattended_questions"] = questions_mod.unattended_ids(workspace.read_state())
     return info

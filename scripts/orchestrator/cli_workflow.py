@@ -287,6 +287,8 @@ def _approval_line(
     # change, and then `run architect` refuses and says so.
     if info["pending"] and architect_left == 0 and (design_pass or {}).get("state") != "blocked":
         line += " (no architect attempt is left for changes; `budget reset architect` first)"
+    if info["pending"]:
+        line += "".join(approval_mod.pending_notes(info))
     return line
 
 

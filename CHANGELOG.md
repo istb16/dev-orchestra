@@ -17,15 +17,19 @@ authors can find it.
 
 - **Plan approval decides for itself by default.** `design.require_approval`
   takes `auto`, now the default. `auto` leaves the approval out only when
-  nobody is watching (`CI` or the new `DEV_ORCHESTRA_UNATTENDED` is set), the
-  plan touches nothing high-risk, and the design review left nothing above
-  Low -- skipped as unneeded under `review.design.enabled: auto`, or its latest
-  round reviewed this very plan with only Low findings open. Anything else
+  nobody is watching (the new `DEV_ORCHESTRA_UNATTENDED` is set, or else `CI`;
+  `DEV_ORCHESTRA_UNATTENDED=0` keeps asking under `CI`), the plan touches
+  nothing high-risk, and the design review left nothing above Low -- skipped
+  as unneeded under `review.design.enabled: auto`, or its latest round, with
+  every reviewer finishing and the whole plan shown, reviewed this very plan
+  and left nothing above Low by the review loop's own line
+  (`review.re_review_severities` included). Anything else
   asks, as `true` did, so an interactive run behaves as before. Open design
   questions are left to the architect under `auto` in CI as they are under
-  `false`. `status` prints the answer and its reason on the `Plan approval:`
-  line, and its `design_approval` in `--json` gains `mode`, `reason` and
-  `requirement`. A project file's `auto` over a global `true` is gated as
+  `false`, and the approval asked for afterwards names them. `status` prints
+  the answer and its reason on the `Plan approval:` line, and its
+  `design_approval` in `--json` gains `mode`, `reason`, `requirement`,
+  `nobody_watching` and `unattended_questions`. A project file's `auto` over a global `true` is gated as
   loosening approval. Set `true` to keep asking even in CI.
 
 ## [1.3.0] - 2026-10-28

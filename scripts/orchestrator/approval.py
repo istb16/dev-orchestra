@@ -258,6 +258,25 @@ def record(
     return entry
 
 
+def pending_notes(info: Dict[str, Any]) -> List[str]:
+    """What a pending approval adds to its `status` line, each starting with ``; ``.
+
+    Under ``auto`` with nobody watching, why it still asks -- the one of its
+    conditions that failed. And the design questions a run nobody watched left
+    to the architect: nobody answered them, so whoever approves sees them too.
+    """
+    notes: List[str] = []
+    if info.get("mode") == "auto" and info.get("nobody_watching") and info.get("reason"):
+        notes.append("; asked because %s (design.require_approval: auto)" % info["reason"])
+    left = info.get("unattended_questions") or []
+    if left:
+        notes.append(
+            "; also present the design questions left to the architect while nobody was watching (%s)"
+            % ", ".join(left)
+        )
+    return notes
+
+
 def refusal_lines(info: Dict[str, Any], plan_relative: str) -> List[str]:
     """What `run implementer` prints on stderr, or writes to the job, when it refuses."""
     approved = str(info.get("approved_sha256") or "")[:12]
@@ -282,9 +301,15 @@ def refusal_lines(info: Dict[str, Any], plan_relative: str) -> List[str]:
             plan_relative,
             info.get("requirement") or "design.require_approval",
         )
+    left = info.get("unattended_questions") or []
+    also = (
+        ", and the design questions left to the architect while nobody was watching (%s)" % ", ".join(left)
+        if left
+        else ""
+    )
     return [
         first,
         "Present the plan to the user -- Goal, Proposed Change, Files to Modify, Risks, "
-        "open design findings -- and ask.",
+        "open design findings%s -- and ask." % also,
         "Record their yes with `dev-orchestra design approve`; never run it without one. Exit 5.",
     ]

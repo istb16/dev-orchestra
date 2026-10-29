@@ -98,20 +98,27 @@ def round_plan(
     )
 
 
-def design_decision(loaded: config_mod.LoadedConfig, workspace: ws.Workspace) -> opt_design.DesignDecision:
+def design_decision(
+    loaded: config_mod.LoadedConfig,
+    workspace: ws.Workspace,
+    scanned: Optional[Tuple[str, Any]] = None,
+    design_data: Optional[Dict[str, Any]] = None,
+) -> opt_design.DesignDecision:
     """Whether the design review runs for this workflow's plan, and why.
 
     One answer for ``status``, ``review status --design`` and ``review run
     --design``. Once a design round exists ``auto`` keeps answering run, so a
     revision cannot switch the loop off half way. The plan is read strictly:
     a decision made from a guessed file name would be worse than none.
+    ``scanned`` (``plan_scan``'s answer) and ``design_data`` (the design
+    report) save a caller that already read them reading them again.
     """
     mode = config_mod.design_review_mode(loaded.design_review_settings().get("enabled"))
-    design_data = ws.read_json(workspace.design_review().consolidated_json_path, {}) or {}
-    round_ran = (
-        int(design_data.get("iteration", 0) or 0) > 0 or approval_mod.design_round(workspace) is not None
-    )
-    plan_state, scan = plan_scan(workspace)
+    report = design_data
+    if report is None:
+        report = ws.read_json(workspace.design_review().consolidated_json_path, {}) or {}
+    round_ran = int(report.get("iteration", 0) or 0) > 0 or approval_mod.design_round(workspace) is not None
+    plan_state, scan = scanned if scanned is not None else plan_scan(workspace)
     return opt_design.decide_design(
         mode,
         loaded.optimization_settings(),
@@ -128,7 +135,11 @@ def plan_scan(workspace: ws.Workspace) -> Tuple[str, Any]:
     ``ok`` with ``review.plan_tokens()`` of it; ``missing`` for no plan or a
     blank one, as approval.read_plan reads it; ``unreadable`` otherwise.
     """
-    text = ws.read_text_strict(workspace.plan_path)
+    return scan_of(ws.read_text_strict(workspace.plan_path))
+
+
+def scan_of(text: Optional[str]) -> Tuple[str, Any]:
+    """``plan_scan`` of plan text already read strictly: ``None`` is unreadable."""
     if text is None:
         return "unreadable", None
     if not text.strip():
