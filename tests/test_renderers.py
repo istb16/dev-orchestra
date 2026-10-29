@@ -882,6 +882,8 @@ class TestStatusRounds(IsolatedCase):
                 # review.whole_change_recheck is on by default; a report with
                 # no recorded scope counts as fix-only.
                 "next_review": "fix",
+                # review.start_before_tests is off by default.
+                "round_tests": None,
             },
         )
         design = payload["design_review"]
