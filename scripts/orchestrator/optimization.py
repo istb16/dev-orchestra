@@ -897,6 +897,7 @@ class Plan:
         lines: int = 0,
         conditional: Sequence[Dict[str, Any]] = (),
         declared: bool = False,
+        alongside_tests: bool = False,
     ) -> None:
         #: The configured level, before any escalation.
         self.requested = requested
@@ -916,6 +917,9 @@ class Plan:
         self.conditional = [dict(record) for record in conditional]
         #: Whether the round was declared high-risk with ``--high-risk``.
         self.declared = declared
+        #: Whether the round runs alongside the tests (``review.start_before_tests``):
+        #: ``test_status`` is then the result recorded on its own tree.
+        self.alongside_tests = alongside_tests
 
     @property
     def escalated(self) -> bool:
@@ -945,6 +949,12 @@ class Plan:
                 "that does not pass its own tests spends a reviewer on a problem you "
                 "already know about. Fix the tests, record the result, and run again "
                 "-- or pass --force."
+            )
+        if self.gate == GATE_WARN and self.alongside_tests:
+            return (
+                "note: the tests run alongside this round (review.start_before_tests). It is "
+                "used only once they pass on the tree it reviews: `state record test ok|failed` "
+                "when they finish."
             )
         if self.gate == GATE_WARN:
             return (
@@ -989,6 +999,7 @@ class Plan:
             "lines": self.lines,
             "conditional": [dict(record) for record in self.conditional],
             "declared": self.declared,
+            "alongside_tests": self.alongside_tests,
         }
 
 
@@ -1008,6 +1019,7 @@ def decide(
     condition_paths: Optional[Sequence[str]] = None,
     reviewed: Optional[Sequence[str]] = None,
     literal_paths: Sequence[str] = (),
+    alongside_tests: bool = False,
 ) -> Plan:
     """Work out what this round should cost, from the change and the config.
 
@@ -1038,6 +1050,10 @@ def decide(
     evidence of absence either.
 
     ``literal_paths`` are high-risk too, each matched verbatim (``risk_patterns``).
+
+    ``alongside_tests`` says ``test_status`` is the result recorded on the
+    round's own tree (``review.start_before_tests``); it changes the gate's
+    note, not the gate.
     """
     requested = normalise_level(settings.get("level"))
     hits = high_risk_matches(paths, risk_patterns(settings, literal_paths))
@@ -1113,6 +1129,7 @@ def decide(
         lines=lines,
         conditional=conditional,
         declared=bool(declared),
+        alongside_tests=alongside_tests,
     )
 
 

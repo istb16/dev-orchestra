@@ -12,6 +12,7 @@
 - [Approval](#approval)
 - [Implementation](#implementation)
 - [Test](#test)
+  - [Reviewing alongside the tests](#reviewing-alongside-the-tests)
 - [Reviews](#reviews)
 - [Fix](#fix)
 - [Re-test and re-review](#re-test-and-re-review)
@@ -914,6 +915,58 @@ tests: run the suite once here, after every unit is merged.
 
 A failing suite stops the pipeline. Fix it or report it — do not review a broken
 tree.
+
+<a id="reviewing-alongside-the-tests"></a>
+
+### Reviewing alongside the tests
+
+With `review.start_before_tests: true` (default `false`) the code review round
+does not wait for the tests. Right after the implementer (or the review fixer)
+finishes, take the snapshot and start `review run` in the background, then run
+the tests and record them as usual. Measured here, the tests took a median 381s
+from the end of an implement or fix run to their record, and a round 117s, so
+the round is hidden behind them; only 3 of 219 recorded test runs failed, so
+the round thrown away with a failure is rare.
+
+The round counts only once the tests pass on the tree it reviewed. With the
+option on, the snapshot always keeps the working tree as `tested_tree`
+(whatever `review.incremental_rounds` says), the report keeps it with the
+round's findings, and `state record test` (and `re-test`) keeps the tree the
+tests ran on. Accepting a finding (`review triage --status accepted`) and
+`review fix-brief` refuse (exit 2) until the last result recorded on the
+round's tree is `ok`; rejecting or merging findings can go on while the tests
+run. The round judged is the one the report holds, so taking the next
+snapshot does not change the answer for the round before it. `review status`
+says where the round stands on a `tests on the reviewed tree:` line and in
+`round_tests`, and `status` says the same on its `Review:` line:
+
+- `pending`: no test result since the snapshot. Record it, then look again.
+- `failed`: the tests failed on that tree. The round is not used: fix, re-test,
+  take a new snapshot and review again. A pass recorded afterwards on the same
+  tree (a flaky test run again) makes it usable.
+- `changed`: results were recorded since the snapshot, but on another tree --
+  say a lint fix made while the tests ran. The reviewers did not see that
+  change, so the round is not used either: re-test, snapshot, review again.
+- `usable`: triage it. Fixing it changes the tree afterwards; that does not
+  take back the result the round was judged on.
+
+Until the round is `usable`, the review loop is not over on it: `status` gives
+neither "review finished" nor "review budget spent" for it. A `failed` or
+`changed` round asks for another round while one is left, and the snapshot
+after it takes the whole change rather than narrowing to the fix since that
+round (`review snapshot` says so in a note).
+
+"The round's tree" allows only for anything under the workspace (`.ai/`), where
+the review itself writes even when its `.gitignore` was removed, and for the
+project config files. Any other change -- a file added, edited or removed --
+is one the reviewers did not see. That includes what the test run writes: a
+test report or coverage file `.gitignore` does not ignore makes every round
+`changed`, so ignore the tests' outputs before turning the option on.
+
+The gate of a round started this way reads the result recorded on the
+snapshot's own tree, not the last one of all: a failure recorded before a fix
+is about a tree nobody is reviewing. A failure recorded on the snapshot's tree
+still refuses the round below `quality`, as it always has.
 
 ## Reviews
 

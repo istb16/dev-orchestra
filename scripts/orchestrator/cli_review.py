@@ -19,7 +19,7 @@ from typing import (
 from . import config as config_mod
 from . import config_policy as policy_mod
 from . import context as context_mod
-from . import instructions
+from . import instructions, review_tests
 from . import ledger as ledger_mod
 from . import optimization as opt_mod
 from . import review as review_mod
@@ -297,12 +297,34 @@ def _recheck(
     return incremental and recheck_next(loaded, workspace, args.base, _lineage(args, workspace))
 
 
+_THROWN_AWAY_NOTE = (
+    "note: snapshot scope: whole change -- the last round is not used (review.start_before_tests: %s), "
+    "so the next one does not narrow from it"
+)
+
+
+def _thrown_away(loaded: config_mod.LoadedConfig, workspace: ws.Workspace) -> str:
+    """Why the next snapshot takes the whole change: the reported round was thrown away, or "".
+
+    With review.start_before_tests on, a round whose tests failed or ran on
+    another tree is not one the reviewers' premise can be taken from, so the
+    snapshot after it must not narrow to the fix since it.
+    """
+    if not loaded.start_before_tests():
+        return ""
+    data = ws.read_json(workspace.consolidated_json_path, {}) or {}
+    verdict = review_tests.report_verdict(workspace, data) if isinstance(data, dict) else None
+    return str(verdict.get("detail") or "") if verdict and review_tests.needs_new_round(verdict) else ""
+
+
 def cmd_review_snapshot(args: argparse.Namespace) -> int:
     loaded = _load_lenient(args.cwd)
     workspace = _workspace(args)
     settings = loaded.review_settings()
     exclude = () if args.no_exclude else settings.get("exclude")
     incremental = bool(settings.get("incremental_rounds", True)) and not args.full
+    thrown_away = _thrown_away(loaded, workspace) if incremental else ""
+    incremental = incremental and not thrown_away
     recheck = _recheck(args, loaded, workspace, incremental)
     # Read before the snapshot, because the surrounding context is frozen with
     # it: what a reviewer is shown has to come from the tree the diff did.
@@ -318,10 +340,13 @@ def cmd_review_snapshot(args: argparse.Namespace) -> int:
             surrounding=surrounding,
             watched=instructions.watched_paths(loaded),
             recheck=recheck,
+            tested=loaded.start_before_tests(),
         )
     except review_mod.ReviewError as exc:
         _err(str(exc))
         return 2
+    if thrown_away:
+        _err(_THROWN_AWAY_NOTE % thrown_away)
     # Warned about, never refused: taking a snapshot spends nothing, and the
     # command that would spend something says so itself. Refusing here would
     # also leave no snapshot to narrow from.
@@ -489,22 +514,28 @@ def _ensure_snapshot(
                 "`review snapshot --base %s` takes it with other options" % (args.base, taken, args.base)
             )
     if retake or not os.path.isfile(workspace.snapshot_path):
-        recheck = _recheck(args, loaded, workspace, bool(settings.get("incremental_rounds", True)))
+        incremental = bool(settings.get("incremental_rounds", True))
+        thrown_away = _thrown_away(loaded, workspace) if incremental else ""
+        incremental = incremental and not thrown_away
+        recheck = _recheck(args, loaded, workspace, incremental)
         try:
             review_mod.create_snapshot(
                 workspace,
                 args.base,
                 exclude=settings.get("exclude"),
-                incremental=bool(settings.get("incremental_rounds", True)),
+                incremental=incremental,
                 surrounding=context_mod.surrounding_mode(context_settings.get("surrounding")),
                 watched=watched,
                 recheck=recheck,
+                tested=loaded.start_before_tests(),
             )
         except review_mod.ReviewError as exc:
             _err(str(exc))
             return 2
         if recheck:
             _err("note: snapshot scope: %s" % _RECHECK_SCOPE)
+        if thrown_away:
+            _err(_THROWN_AWAY_NOTE % thrown_away)
     return None
 
 
@@ -933,15 +964,42 @@ def cmd_review_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _tests_gated(args: argparse.Namespace) -> bool:
+    """Whether a code round has to wait for the tests on its tree (``review.start_before_tests``).
+
+    Off, the tests were recorded before the snapshot was taken, as they
+    always were; a design round has no tests.
+    """
+    return not args.design and _load_lenient(args.cwd).start_before_tests()
+
+
+def _tests_refusal(args: argparse.Namespace, data: Dict[str, Any], action: str) -> str:
+    """Why the code round in the report ``data`` may not go on to ``action`` yet, or "".
+
+    Judged on that report, the one the caller goes on to use, not on the
+    snapshot on disk, which the next round may already have replaced.
+    """
+    return review_tests.refusal(review_tests.report_verdict(_workspace(args), data), action)
+
+
 def cmd_review_triage(args: argparse.Namespace) -> int:
     workspace = _review_workspace(args)
+    # Accepting is what hands a finding to the fixer, and what narrows the
+    # next snapshot to its fix; rejecting or merging one can go on while the
+    # tests run.
+    gated = args.status == "accepted" and _tests_gated(args)
 
     # Read inside the lock: two triage calls run side by side each read the
     # report, set their own decision and wrote it back, and the second write
-    # dropped the first decision while both printed success.
+    # dropped the first decision while both printed success. The tests are
+    # judged there too, on the report being changed: a round built in the
+    # background may have replaced the one judged before the lock.
     def triaged(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if not data:
             return None
+        refusal = _tests_refusal(args, data, "accept") if gated else ""
+        if refusal:
+            raise review_mod.ReviewError(refusal)
         for finding_id in args.ids:
             review_mod.set_triage(data, finding_id, args.status, args.note or "")
         return data
@@ -960,7 +1018,12 @@ def cmd_review_triage(args: argparse.Namespace) -> int:
 
 def cmd_review_fix_brief(args: argparse.Namespace) -> int:
     workspace = _review_workspace(args)
+    # Read once: the brief is written from the report the tests were judged on.
     data = ws.read_json(workspace.consolidated_json_path, {}) or {}
+    refusal = _tests_refusal(args, data, "write the fix brief") if _tests_gated(args) else ""
+    if refusal:
+        _err(refusal)
+        return 2
     if args.design:
         brief = review_mod.render_fix_brief(data, "Revise the plan to address these accepted findings")
     else:

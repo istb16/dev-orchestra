@@ -6,7 +6,7 @@ import argparse
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from . import approval as approval_mod
-from . import approval_auto, review_loop
+from . import approval_auto, review_loop, review_tests
 from . import config as config_mod
 from . import context as context_mod
 from . import ledger as ledger_mod
@@ -224,6 +224,18 @@ def _status_payload(
         # "fix" or "whole" for the reported round; None with no report.
         payload["round_scope"] = review_loop.round_scope(data, meta) if data else None
         payload["next_review"] = loop.next_review
+        # Only with review.start_before_tests on: whether the tests passed on
+        # the tree the round reviewed, and so whether it may be triaged.
+        if loaded.start_before_tests() and data:
+            payload["round_tests"] = review_tests.report_verdict(base, data)
+            # A round thrown away is not one the loop can close on, whatever
+            # its findings say: the reviewers never saw the tree that passed.
+            # Not past the iteration cap, and `next_review` stays null with
+            # the recheck off, as it always does.
+            if review_tests.needs_new_round(payload["round_tests"]) and loop.budget_left:
+                payload["re_review_recommended"] = True
+                if loaded.whole_change_recheck():
+                    payload["next_review"] = "whole"
     return payload, decision
 
 
@@ -249,7 +261,13 @@ def _print_status(
     _out("accepted findings: %d" % payload["accepted_count"])
     _out("blocking (%s): %d %s" % ("/".join(severities), len(blocking), ", ".join(payload["blocking"])))
     _out("re-review recommended: %s" % ("yes" if payload["re_review_recommended"] else "no"))
-    if payload.get("whole_change_recheck") and data:
+    round_tests = payload.get("round_tests")
+    held = review_tests.next_step(round_tests) if isinstance(round_tests, dict) else ""
+    if isinstance(round_tests, dict):
+        _out("tests on the reviewed tree: %s -- %s" % (round_tests["state"], round_tests["detail"]))
+    if held:
+        _out("next: %s" % held)
+    elif payload.get("whole_change_recheck") and data:
         _out("next: %s" % _next_step(budget.loop, budget.final, payload["accepted_count"]))
     if coverage is None:
         _out("coverage: not recorded -- this report predates it")

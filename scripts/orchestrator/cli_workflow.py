@@ -8,7 +8,7 @@ import shutil
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, cast
 
 from . import approval as approval_mod
-from . import approval_auto
+from . import approval_auto, review_tests
 from . import config as config_mod
 from . import instructions as instructions_mod
 from . import jobs as jobs_mod
@@ -564,14 +564,26 @@ def _status_payload(
     review_next = code_loop_decision(
         loaded, workspace.read_snapshot_meta(), review_data, iteration, max_iterations
     )
+    # `review status`'s too: with review.start_before_tests on, whether the
+    # reported round may be triaged yet, and a round thrown away is reviewed again.
+    round_tests = review_tests.report_verdict(workspace, review_data) if loaded.start_before_tests() else None
+    # A round still waiting for its tests, or thrown away, closes nothing:
+    # neither a finish nor a spent budget is a stop on it.
+    held = not review_tests.usable(round_tests)
+    finish = review_next.finish and not held
     review_pass = code_final_pass_from(
         events,
         review_next.wanted,
-        budget_left=review_next.budget_left,
+        budget_left=review_next.budget_left or held,
         fixer_left=summary["budgets"].get("review_fixer", {}).get("remaining"),
         accepted=bool(review_accepted),
-        finish=review_next.finish,
+        finish=finish,
     )
+    # As `review status` says it: not past the cap, and null with the recheck off.
+    next_review = review_next.next_review
+    thrown_away = review_tests.needs_new_round(round_tests) and review_next.budget_left
+    if thrown_away and loaded.whole_change_recheck():
+        next_review = "whole"
     review_repeats = int((summary["signatures"] or {}).get("review") or 0)
     design_repeats = int((summary["signatures"] or {}).get("design_review") or 0)
     # The cap of the round reported, from its report: a snapshot retaken
@@ -582,7 +594,7 @@ def _status_payload(
         code_round_cap(loaded, review_data.get("snapshot") or {}),
         review_next.wanted,
         review_repeats,
-        review_next.finish,
+        finish,
     )
     design_round = _RoundState(design_pass, design_iteration, design_max, design_blocking, design_repeats)
 
@@ -632,7 +644,9 @@ def _status_payload(
             "final_fix": review_round.final_pass["state"],
             "final_fix_pending": review_round.final_pass["pending"],
             # `review status`'s, from the same decision.
-            "next_review": review_next.next_review,
+            "next_review": next_review,
+            # None unless review.start_before_tests is on.
+            "round_tests": round_tests,
         },
         "design_review": _design_review_payload(
             decision, design_round, len(design_accepted), design_refused_for_size, design_plan
@@ -783,7 +797,10 @@ def _status_lines(status: _Status, plan_relative: str, warning: List[str]) -> Li
         review["accepted"],
         len(review["blocking"]),
     )
-    if review["final_fix"] == "pending":
+    held = review_tests.next_step(review.get("round_tests"))
+    if held:
+        line += " -- tests on the reviewed tree %s: %s" % (review["round_tests"]["state"], held)
+    elif review["final_fix"] == "pending":
         line += " -- final fix pending (fix, re-test, do not re-review)"
     elif review["final_fix"] == "retest":
         line += " -- final fix done, re-test pending (record it, do not re-review)"
@@ -1021,7 +1038,7 @@ def cmd_state_show(args: argparse.Namespace) -> int:
 
 
 #: The stages whose status the review gate and `status` read as a test result.
-_TEST_STAGES = ("test", "re-test")
+_TEST_STAGES = review_tests.TEST_STAGES
 
 
 def cmd_state_record(args: argparse.Namespace) -> int:
@@ -1038,7 +1055,14 @@ def cmd_state_record(args: argparse.Namespace) -> int:
             _err("Refusing --detail %s=...: %s is the event's own field" % (key, key))
             return 2
         detail[key] = config_mod.coerce_scalar(value)
+    if args.stage in _TEST_STAGES and "tree" in detail:
+        # Which tree a result was recorded on is what lets a round started
+        # before the tests count; it is read off the working tree, never given.
+        _err("Refusing --detail tree=...: a test result's tree is read from the working tree")
+        return 2
     workspace = _workspace(args)
+    if args.stage in _TEST_STAGES and _load_lenient(args.cwd).start_before_tests():
+        detail.update(review_tests.tree_detail(workspace.root))
     workspace.record_event(args.stage, args.status, detail)
     _out("recorded %s=%s" % (args.stage, args.status))
     return 0

@@ -13,6 +13,33 @@ authors can find it.
 
 ## [Unreleased]
 
+### Added
+
+- **Reviewing alongside the tests.** `review.start_before_tests: true`
+  (default `false`) lets the code review round start right after the
+  implementer or the review fixer, while the tests run, instead of after
+  them. The round is used only once the tests pass on the very tree it
+  reviewed: with the option on, the snapshot keeps the working tree as
+  `tested_tree` whatever `review.incremental_rounds` says, the report keeps it
+  with the round's findings, and `state record test` and `re-test` also record
+  `tree`, the tree the tests ran on. Accepting a finding (`review triage
+  --status accepted`) and `review fix-brief` refuse (exit 2) until the last
+  result recorded on the round's tree is `ok`; only anything under `.ai/` and
+  the project config files do not count as a different tree, so the tests'
+  outputs have to be ignored by `.gitignore`. `review status`
+  says where the round the report holds stands on a `tests on the reviewed
+  tree:` line and in the new `round_tests` (`usable`, `pending`, `failed`,
+  `changed` or `unchecked`), its `next:` line says what to do while the round
+  may not be used, and `status` says the same on its `Review:` line and in
+  `review.round_tests`. A round that is `failed` or `changed` sets
+  `re_review_recommended` while a round is left (and `next_review: "whole"`
+  with `review.whole_change_recheck` on), and the next snapshot takes the
+  whole change instead of narrowing from it; until a round is `usable`,
+  `status` does not call the review finished or its budget spent. With the option on, a
+  snapshot git cannot record the tree of fails. The gate of such a round reads the result recorded on
+  the snapshot's tree rather than the last one of all, and its `optimization`
+  record gains `alongside_tests`.
+
 ### Changed
 
 - **Plan approval decides for itself by default.** `design.require_approval`

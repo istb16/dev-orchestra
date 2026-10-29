@@ -322,6 +322,7 @@ three keys about the size limit.
 | `full_diff` | string | The whole change's diff on an incremental round; `""` otherwise. |
 | `scope` | string | `fix` when the round narrows to the fix, `whole` otherwise. |
 | `recheck` | boolean | Whether `review.whole_change_recheck` made this snapshot take the whole change. |
+| `tested_tree` | string | Only with `review.start_before_tests` on: the working tree as a git tree object, kept whatever `review.incremental_rounds` says; the tree the round's tests have to pass on. |
 | `files` | list of strings | The files a reviewer is shown. |
 | `changed_paths` | list of strings | Every path the change touches, withheld files and rename sources included. |
 | `condition_paths` | list of strings | The paths a path-scoped reviewer is matched against. |
@@ -350,7 +351,7 @@ Object.
 | `partial` | integer | Reviewers handed the change as a file. |
 | `reviewers` | list | One entry per reviewer that ran: `id`, `provider`, `role`, `model`, `status` (`ok`, `partial`, `failed`, `stalled` or `unparsed`), `error`, `duration_seconds`, `findings`, `report`, `delivery` (`inline` or `file`), `change_chars`, `inline_chars`, `snapshot`, `over_budget`, `budget_chars`, `usage`, and `model_slot`, `warnings` where they apply. |
 | `counts` | object | The consolidated report's counts, as `review show` has them. |
-| `optimization` | object | What the round decided. Code: `requested_level`, `level` (`aggressive`, `balanced` or `quality`), `escalated`, `high_risk`, `gate` (`allow`, `warn` or `refuse`), `test_status`, `max_findings`, `reviewer_limit`, `files`, `lines`, `conditional`, `declared`. `--design`: `level`, `high_risk`, `declared`, `conditional`, `files`. |
+| `optimization` | object | What the round decided. Code: `requested_level`, `level` (`aggressive`, `balanced` or `quality`), `escalated`, `high_risk`, `gate` (`allow`, `warn` or `refuse`), `test_status`, `max_findings`, `reviewer_limit`, `files`, `lines`, `conditional`, `declared`, `alongside_tests` (whether `test_status` is the result recorded on the snapshot's own tree, `review.start_before_tests`). `--design`: `level`, `high_risk`, `declared`, `conditional`, `files`. |
 | `plan` | string | Only with `--design`: the plan reviewed. |
 | `surrounding` | object | Only on a code round with `review.context.surrounding: enclosing` in force: the context adopted and left out. |
 | `measurement` | object | Only with `--surrounding`: `surrounding`, `snapshot`, `tree`, `head`, `base`, `workflow`, `epoch`, `rerun`, `inputs`. |
@@ -419,6 +420,7 @@ pass `final_revision`, in place of the two code keys named below.
 | `round_scope` | string or null | Only without `--design`: `fix` or `whole`, what the reported round reviewed; `null` with no report. |
 | `next_review` | string or null | Only without `--design`: the round to run next, `fix` or `whole`, as `review snapshot` will take it (`fix` only when findings are accepted); `null` when none is, and always with `review.whole_change_recheck` off. |
 | `surrounding` | object | Only when the round carried surrounding context. |
+| `round_tests` | object | Only without `--design`, with `review.start_before_tests` on and a report: `state` -- `usable`, `pending`, `failed`, `changed` or `unchecked` -- and `detail`, a sentence, about the round the report holds. Accepting a finding and the fix brief wait for `usable` (or `unchecked`). With `failed` or `changed` the round is not used, so while a round is left `re_review_recommended` is true and, with `review.whole_change_recheck` on, `next_review` is `whole` (as in `status`'s `review`), whatever the findings say; `pending` leaves both as the findings set them. `unchecked` is only for a report taken with the option off. |
 | `enabled` | boolean | Only with `--design`: whether the stage runs. |
 | `mode` | string | Only with `--design`: `on`, `off` or `auto`. |
 | `reason` | string or null | Only with `--design`: why `auto` decided as it did; `null` under `on` and `off`. |
@@ -470,7 +472,7 @@ Object.
 | `stalls` | list | In-flight stages that look stuck or dead: `token`, `stage`, `started_at`, `elapsed_seconds`, `deadline_seconds`, `pid`, `process_alive`, `reason`. |
 | `abandoned_stages` | list of strings | The stages this call found dead and marked `abandoned`. |
 | `in_flight` | object | What is running now, keyed by token. |
-| `review` | object | `iteration`, `max_review_iterations`, `blocking`, `wanted`, `accepted`, `refused_for_size`, `identical_rounds`, `final_fix`, `final_fix_pending`, `next_review` (values as in `review status`). |
+| `review` | object | `iteration`, `max_review_iterations`, `blocking`, `wanted`, `accepted`, `refused_for_size`, `identical_rounds`, `final_fix`, `final_fix_pending`, `next_review`, `round_tests` (values as in `review status`; `round_tests` is `null` when that leaves it out). |
 | `design_review` | object | `enabled`, `mode`, `reason`, `iteration`, `max_iterations`, `blocking`, `wanted`, `accepted`, `refused_for_size`, `identical_rounds`, `final_revision`, `final_revision_pending`, `optimization` (values as in `review status --design`). |
 | `design_approval` | object | `required`, `state` (`pending`, `stale`, `approved`, `no-plan`, `not-required` or `implemented-unapproved`), `pending`, `stale_reason` (`plan-changed`, `reviewed-since`, `decisions-changed` or `null`) and the rest -- see [Approval](workflow.md#approval). |
 | `design_questions` | object | `mode`, `state` (`off`, `none`, `open`, `round-required` or `answered`), `pending`, `open`, `answered`, `total`, `architect_rounds`, `max_rounds`, `decisions_file` -- see [Design questions](workflow.md#design-questions). |
