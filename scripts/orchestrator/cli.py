@@ -43,7 +43,7 @@ from .cli_workflow import (
     _add_workflow_parsers,
 )
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 
 # --------------------------------------------------------------------------- parser

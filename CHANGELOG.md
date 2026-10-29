@@ -13,6 +13,8 @@ authors can find it.
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-10-29
+
 ### Added
 
 - **Reviewing alongside the tests.** `review.start_before_tests: true`
@@ -3588,7 +3590,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/istb16/dev-orchestra/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/istb16/dev-orchestra/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/istb16/dev-orchestra/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/istb16/dev-orchestra/compare/v1.1.2...v1.2.0
