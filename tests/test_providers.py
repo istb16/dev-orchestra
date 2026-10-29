@@ -543,8 +543,36 @@ class TestClaudeAdapter(IsolatedCase):
         resolved = self.provider.resolve_model({"family": "opus"})
         command = self.provider.build_command(base.MODE_IMPLEMENT, resolved, self.project)
         self.assertEqual(command[command.index("--permission-mode") + 1], "acceptEdits")
-        for flag in ("--tools", "--strict-mcp-config", "--restricted"):
-            self.assertNotIn(flag, command)
+        self.assertNotIn("--restricted", command)
+        self.assertNotIn("--disallowed-tools", command)
+
+    def test_implement_mode_starts_with_the_work_tools_and_no_mcp(self):
+        """``--strict-mcp-config`` right after the list is what closes it."""
+        resolved = self.provider.resolve_model({"family": "opus"})
+        for os_name, tools in (
+            ("posix", "Read,Edit,Write,Bash,Grep,Glob"),
+            ("nt", "Read,Edit,Write,Bash,Grep,Glob,PowerShell"),
+        ):
+            with self.subTest(os_name=os_name), mock.patch.object(claude_module.os, "name", os_name):
+                command = self.provider.build_command(base.MODE_IMPLEMENT, resolved, self.project)
+                at = command.index("--tools")
+                self.assertEqual(command[at : at + 3], ["--tools", tools, "--strict-mcp-config"])
+                self.assertLess(command.index("--permission-mode"), at)
+
+    def test_implement_mode_keeps_every_tool_on_a_cli_without_the_flags(self):
+        resolved = self.provider.resolve_model({"family": "opus"})
+        for stdout, code in ((CLAUDE_HELP_OLD, 0), ("", 1)):
+            with self.subTest(code=code):
+                base.clear_discovery_cache()
+                provider = ClaudeProvider()
+                setattr(
+                    provider,
+                    "_capture",
+                    lambda command, timeout=30, out=stdout, rc=code: _FakeCompleted(out, "", rc),
+                )
+                command = provider.build_command(base.MODE_IMPLEMENT, resolved, self.project)
+                self.assertNotIn("--tools", command)
+                self.assertNotIn("--strict-mcp-config", command)
 
     def test_missing_cli_reports_cleanly(self):
         self.provider.which = lambda: None
@@ -586,6 +614,41 @@ class TestClaudeRoleOptions(IsolatedCase):
             base.MODE_IMPLEMENT, self.resolved, self.project, options={"args": ["--add-dir", "../shared"]}
         )
         self.assertEqual(command[-2:], ["--add-dir", "../shared"])
+
+    def test_tools_all_hands_an_implement_run_everything(self):
+        command = self.provider.build_command(
+            base.MODE_IMPLEMENT, self.resolved, self.project, options={"tools": "all"}
+        )
+        self.assertNotIn("--tools", command)
+        self.assertNotIn("--strict-mcp-config", command)
+
+    def test_a_tools_list_replaces_the_work_tools(self):
+        command = self.provider.build_command(
+            base.MODE_IMPLEMENT, self.resolved, self.project, options={"tools": ["Read", "Edit", "Agent"]}
+        )
+        at = command.index("--tools")
+        self.assertEqual(command[at : at + 3], ["--tools", "Read,Edit,Agent", "--strict-mcp-config"])
+
+    def test_read_only_modes_ignore_a_configured_tools_option(self):
+        for mode in (base.MODE_PLAN, base.MODE_REVIEW):
+            for tools in ("all", ["Bash"]):
+                command = self.provider.build_command(
+                    mode, self.resolved, self.project, options={"tools": tools}
+                )
+                at = command.index("--tools")
+                self.assertEqual(command[at + 1], "Read,Grep,Glob")
+                self.assertEqual(command.count("--tools"), 1)
+
+    def test_tools_must_be_all_or_a_list_of_names(self):
+        for tools in ("all", ["Read"], ["Read", "Bash", "PowerShell"]):
+            self.assertEqual(self.provider.validate_options({"tools": tools}), [], tools)
+        for tools in ("none", [], ["Read,Bash"], ["Read", 3], ["--restricted"], True):
+            with self.subTest(tools=tools):
+                problems = self.provider.validate_options({"tools": tools})
+                self.assertTrue(any(p.startswith("options.tools must be") for p in problems), problems)
+
+    def test_tools_is_taken_only_from_the_global_config(self):
+        self.assertIn("tools", self.provider.local_only_options)
 
     def test_unknown_permission_mode_is_rejected(self):
         problems = self.provider.validate_options({"permission_mode": "yolo"})

@@ -84,6 +84,19 @@ class TestClaude(_Case):
                 )
                 self.assertEqual(list(self.refusals()), [role])
 
+    def test_project_tools_on_a_claude_write_role_are_refused_whatever_they_hold(self):
+        for tools in ("all", '["Read", "Edit"]'):
+            with self.subTest(tools=tools):
+                self.write_project("implementer:\n" + CLAUDE_ROLE + "  options:\n    tools: %s\n" % tools)
+                refusals = self.refusals()
+                self.assertEqual(list(refusals), ["implementer"])
+                self.assertIn("options.tools", refusals["implementer"])
+
+    def test_the_global_tools_option_is_allowed(self):
+        self.write_global("implementer:\n  options:\n    tools: all\n")
+        self.write_project("implementer:\n" + CLAUDE_ROLE)
+        self.assertEqual(self.refusals(), {})
+
     def test_the_global_permission_mode_is_allowed(self):
         self.write_global("implementer:\n  options:\n    permission_mode: bypassPermissions\n")
         self.write_project("implementer:\n" + CLAUDE_ROLE)
@@ -140,7 +153,7 @@ class TestClaude(_Case):
             ],
         )
         claude = (
-            "%s: options.permission_mode / options.args is set in the project config "
+            "%s: options.permission_mode / options.tools / options.args is set in the project config "
             "(.dev-orchestra.yaml); on claude the permission bypass and raw arguments are taken only "
             "from the global config or from --extra"
         )

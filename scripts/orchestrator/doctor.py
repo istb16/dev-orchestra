@@ -780,7 +780,7 @@ def _ignored_options(label: str, options: Dict[str, Any], problems: List[str]) -
 
 #: Options that would loosen a sandbox. Harmless on the implementer and fixer,
 #: silently overridden everywhere else -- so say so out loud instead.
-READ_ONLY_IGNORED_OPTIONS = {"permission_mode", "sandbox", "approve", "skip_permissions"}
+READ_ONLY_IGNORED_OPTIONS = {"permission_mode", "sandbox", "approve", "skip_permissions", "tools"}
 
 
 def _enforcement_report(
