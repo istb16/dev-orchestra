@@ -13,6 +13,18 @@ authors can find it.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A continued architect run records only its own cost.** The Claude CLI's
+  `total_cost_usd` on a `--resume` run covers the whole resumed chain, and it
+  was recorded as that run's cost, inflating the end event, the
+  `architect`/`architect:resumed` ledger totals and the report's resumed
+  ratios (#381). The parent session's figure is now subtracted; the CLI's
+  figure is kept on the end event as `resume.session_cost_usd` for the next
+  revision, and a cost that cannot be worked out is recorded as unknown with a
+  note on stderr. Token counts are unchanged, and events recorded before this
+  keep their figures.
+
 ## [1.3.1] - 2026-10-29
 
 ### Added

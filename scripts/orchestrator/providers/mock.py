@@ -15,6 +15,9 @@ Resuming, for the tests of an architect continuing its session:
 UUID otherwise), ``$DEV_ORCHESTRA_MOCK_CONTEXT_TOKENS`` its context size, and
 ``$DEV_ORCHESTRA_MOCK_RESUME`` makes a resumed run fail the way the real CLI
 does for a missing session (``reject``) or stall (``stall``).
+``$DEV_ORCHESTRA_MOCK_COST_USD`` is the cost a run reports (``0.0``
+otherwise), as it is on every run: nothing is added up. A test resuming a
+session sets it to the chain total a real CLI would report for that run.
 ``$DEV_ORCHESTRA_MOCK_TRACE`` names a file each run appends one JSON line to:
 its mode, command, the session it resumed and the prompt's length.
 
@@ -56,6 +59,9 @@ class MockProvider(Provider):
     #: Set by tests to force a failure without touching the environment.
     fail = False
     supports_resume = True
+    #: Imitates Claude: ``$DEV_ORCHESTRA_MOCK_COST_USD`` is read as a chain
+    #: total, set so by each test (the mock reports it unchanged).
+    resume_cost_cumulative = True
 
     def which(self) -> Optional[str]:
         return "mock"
@@ -236,13 +242,24 @@ def _mock_usage(prompt: str, response: str) -> Usage:
         output_tokens=max(len(response) // 4, 1),
         cache_read_tokens=0,
         cache_write_tokens=0,
-        cost_usd=0.0,
+        cost_usd=_mock_cost(),
         source="mock",
         prompt_chars=len(prompt),
         tool_uses=0,
         tool_uses_by_name={},
         tool_output_chars=0,
     )
+
+
+def _mock_cost() -> float:
+    """The cost a run reports, from ``DEV_ORCHESTRA_MOCK_COST_USD``; 0.0 otherwise."""
+    raw = os.environ.get("DEV_ORCHESTRA_MOCK_COST_USD")
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            return 0.0
+    return 0.0
 
 
 def _mock_delay() -> float:

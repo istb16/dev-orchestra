@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:5815a230a21991f28d16714fb4ce1a6ff08119441b4c8f15c5a118f0430dc1ae -->
+<!-- translated-from: references/cli.md sha256:73d1591c66979c1f42bf4719dda6c726def83be88d9c4f06f88b314ac73d9301 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -501,6 +501,15 @@ CLI が拒んだ後の 2 回目は別の試行です。architect の予算に照
 されます（`--tier` のラベルが優先されます）。`--detach` では両方のプロンプトがジョブにコピーされるので、
 コマンドが戻った後にどちらかのファイルを編集しても実行には届きません。ジョブレコードには `force`、
 `resume_prompt_file`、`session_id`、`resume` が入ります。
+
+継続した Claude の実行の `cost_usd`（終了イベント、台帳、レポート）は、その実行自身のコストです。
+CLI は継続したセッションの連なり全体のコストを報告するので、親セッションの額を差し引きます。CLI の
+報告した額は継続した実行の終了イベントに `resume.session_cost_usd` として残り、次の改訂がそれを差し
+引きます。実行自身のコストを求められないとき（親が額を記録していない、または CLI の額が親の額を
+下回る）は不明（`null`。`tokens show` は価格付きとして数えません）として記録し、stderr に
+`note: this continued run's own cost is unknown; recorded without one` を出します。拒否された継続と
+新規に走った実行は、CLI が報告した額のままです。この変更より前に記録されたイベントは、記録された
+連なり全体の額のままです。
 
 ```bash
 dev-orchestra run architect --prompt-file .ai/execution/design-request.md --output .ai/plan.md
