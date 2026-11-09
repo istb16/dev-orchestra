@@ -395,6 +395,8 @@ class ClaudeProvider(Provider):
     #: What the adapter asks for unless a role overrides it.
     default_output_format = "stream-json"
     supports_resume = True
+    #: Measured: ``total_cost_usd`` covers the whole resumed chain.
+    resume_cost_cumulative = True
 
     # What the live check asks (base.py, "live check"). ``--restricted``
     # confines a read-only run and ``--add-dir`` widens it; the repository's
@@ -896,6 +898,11 @@ def parse_stream_usage(stdout: str) -> Optional[Usage]:
     summed into a single "input" figure, which would misstate the cost in
     whichever direction the cache happened to fall. For money, the CLI's own
     ``total_cost_usd`` is the number to trust.
+
+    On a resumed (``--resume``/``--fork-session``) run ``total_cost_usd`` is
+    cumulative: it covers every run of the session chain, measured on 2.1.319,
+    while ``usage`` is this invocation's alone. It is read as reported here;
+    the orchestrator subtracts the parent's figure.
 
     Returns None when this was not a stream, or was a stream carrying no usage
     -- absent is reported as absent, never as zero.

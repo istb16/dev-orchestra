@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import re
 import shlex
@@ -271,6 +272,13 @@ class _Attempt(NamedTuple):
     #: condition and the ``:resumed`` usage label read.
     session_id: Optional[str]
     resume_detail: Optional[Dict[str, Any]]
+    #: What the CLI reported for a resumed run, before the parent's share was
+    #: taken off: the next resume subtracts it (``resume.session_cost_usd``).
+    #: Kept only for an adapter whose resumed cost is the chain's total.
+    session_cost_usd: Optional[float] = None
+    #: Whether ``session_cost_usd`` was kept, so the end event carries it --
+    #: None included, which says the chain's total is unknown.
+    session_cost_kept: bool = False
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -392,8 +400,11 @@ def _run_in_process(
     args, workspace, unit = run.args, run.workspace, run.unit
     session_id: Optional[str] = None
     resume_detail: Optional[Dict[str, Any]] = None
+    parent_chain: Optional[float] = None
     if args.resume:
-        session_id, resume_detail = _choose_resume(loaded, workspace, run.provider, run.seat.provider_name)
+        session_id, resume_detail, parent_chain = _choose_resume(
+            loaded, workspace, run.provider, run.seat.provider_name
+        )
     # Written down before the call, so a stall is visible from outside this
     # process and survives it dying. The record is kept: whether the user
     # forced this run is in it, and the worker's own --force says nothing.
@@ -424,6 +435,8 @@ def _run_in_process(
                 if isinstance(retried, int):
                     return retried
                 attempt = retried
+            if attempt.session_id is not None and not attempt.result.resume_rejected:
+                attempt = _resumed_own_cost(run, attempt, parent_chain)
         if unit is not None:
             # Before the outcome: `jobs wait` returns on the job's status, and
             # what it returns to must find the unit's tree and diff written
@@ -580,7 +593,7 @@ def _print_command(
     # Looked up without opening the ledger, so printing spends nothing.
     session_id = None
     if args.resume:
-        session_id, _ = _choose_resume(loaded, workspace, provider, seat.provider_name)
+        session_id, _, _ = _choose_resume(loaded, workspace, provider, seat.provider_name)
     # A unit's command runs in its worktree while it has one; printing makes none.
     cwd = workspace.root
     if args.unit and seat.role == "implementer":
@@ -773,9 +786,10 @@ def _run_once(
     return _Attempt(token, result, resume_session, resume_detail)
 
 
-def _end_detail(run: _Run, result: Any, resume_detail: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _end_detail(run: _Run, attempt: _Attempt) -> Dict[str, Any]:
     """The detail of a run's end event."""
     seat = run.seat
+    result, resume_detail = attempt.result, attempt.resume_detail
     detail: Dict[str, Any] = {
         "mode": seat.mode,
         "provider": seat.provider_name,
@@ -804,6 +818,12 @@ def _end_detail(run: _Run, result: Any, resume_detail: Optional[Dict[str, Any]])
     }
     if resume_detail is not None:
         detail["resume"] = dict(resume_detail, outcome="ok" if result.ok else None)
+        if attempt.session_cost_kept:
+            # Only on a run that continued a session under an adapter whose
+            # cost is the chain's total, for the next one to subtract: the
+            # event's own ``cost_usd`` is this run's alone. A rejected resume
+            # never got this far, so its ``resume`` block has no such key.
+            detail["resume"]["session_cost_usd"] = attempt.session_cost_usd
     if run.unit is not None:
         # Only for a unit: under the pass rule not every run spends an attempt.
         detail["unit"] = run.unit.name
@@ -825,7 +845,7 @@ def _retry_fresh_after_rejection(
     # job: the job's outcome is the fresh run's.
     if result.invoked:
         book.record_usage(role, result.usage.to_dict())
-    rejected_detail = _end_detail(run, result, rejected.resume_detail)
+    rejected_detail = _end_detail(run, rejected)
     rejected_detail["context_tokens"] = None
     rejected_detail["resume"] = dict(cast(Dict[str, Any], rejected.resume_detail), outcome="rejected")
     book.end(
@@ -865,6 +885,72 @@ def _retry_fresh_after_rejection(
     return retried
 
 
+def _resumed_own_cost(run: _Run, attempt: _Attempt, parent_chain: Optional[float]) -> _Attempt:
+    """A resumed attempt with its usage costing this run alone (#381).
+
+    An adapter whose resumed cost is not cumulative is left as it reported,
+    with no chain total kept: its figure is this run's own. One whose is keeps
+    the CLI's figure on the attempt and has the parent's chain taken off, or
+    the cost made unknown when that cannot be worked out -- never the chain's
+    total recorded as this run's.
+    """
+    if not getattr(run.provider, "resume_cost_cumulative", False):
+        return attempt
+    usage = attempt.result.usage
+    reported = usage.cost_usd
+    attempt = attempt._replace(session_cost_usd=reported, session_cost_kept=True)
+    usage.cost_usd = _own_cost(reported, parent_chain)
+    if usage.cost_usd is None and _is_number(reported):
+        _err("note: this continued run's own cost is unknown; recorded without one")
+    return attempt
+
+
+def _own_cost(chain_after: Any, parent_chain: Any) -> Optional[float]:
+    """What a resumed run cost itself: its chain total less its parent's, or None."""
+    if not (_is_cost(chain_after) and _is_cost(parent_chain)):
+        return None
+    after = float(chain_after)
+    own = round(after - float(parent_chain), 8)
+    if not 0 <= own <= after:
+        return None
+    return own + 0.0  # a negative zero from float noise is recorded as 0.0
+
+
+def _chain_cost(events: List[Dict[str, Any]], session_id: str) -> Optional[float]:
+    """What the session chain ending in ``session_id`` had cost, from its architect event.
+
+    A resumed event recorded since #381 keeps the CLI's chain total in
+    ``resume.session_cost_usd``; any other event's ``cost_usd`` is that total
+    -- a fresh run's own cost, or an older resumed event's cumulative figure.
+    """
+    for event in reversed(events):
+        if not isinstance(event, dict) or event.get("stage") != "architect":
+            continue
+        if event.get("session_id") != session_id:
+            continue
+        resume = event.get("resume")
+        figure: Any = event.get("cost_usd")
+        if isinstance(resume, dict) and resume.get("mode") == "resumed" and "session_cost_usd" in resume:
+            figure = cast(Dict[str, Any], resume).get("session_cost_usd")
+        return float(figure) if _is_cost(figure) else None
+    return None
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_cost(value: Any) -> bool:
+    """A number that can be a cost: finite and not negative (not NaN or ±Infinity)."""
+    if not _is_number(value):
+        return False
+    try:
+        figure = float(value)
+    except OverflowError:  # an int too large for a float
+        return False
+    return math.isfinite(figure) and figure >= 0
+
+
 def _record_outcome(run: _Run, attempt: _Attempt) -> None:
     """Close the books on the run, then say in the job how it finished."""
     # The books are closed before the job says it finished. `jobs wait`
@@ -892,10 +978,11 @@ def _record_outcome(run: _Run, attempt: _Attempt) -> None:
             elif attempt.session_id is not None:
                 label = "%s:resumed" % seat.stage
             book.record_usage(seat.stage, result.usage.to_dict(), label=label)
+        detail = _end_detail(run, attempt)
         book.end(
             attempt.token,
             "ok" if result.ok else ("stalled" if result.stalled else "failed"),
-            _end_detail(run, result, attempt.resume_detail),
+            detail,
             # What the child was measured to take, whatever it exited with. A run
             # killed at its deadline spent the time it spent; so did a failed one.
             # The time the machine slept through is not execution.
@@ -1518,17 +1605,23 @@ def _fresh_resume_detail(reason: str) -> Dict[str, Any]:
 
 def _choose_resume(
     loaded: config_mod.LoadedConfig, workspace: ws.Workspace, provider: Any, provider_name: str
-) -> Tuple[Optional[str], Dict[str, Any]]:
-    """Look up the session ``--resume`` continues and say which it is on stderr."""
+) -> Tuple[Optional[str], Dict[str, Any], Optional[float]]:
+    """Look up the session ``--resume`` continues and say which it is on stderr.
+
+    The third value is what that session's chain had already cost
+    (:func:`_chain_cost`); None when running fresh or when it is unknown.
+    """
+    events = list(workspace.read_state().get("events") or [])
     session_id, detail, note = _resume_candidate(
         workspace,
-        list(workspace.read_state().get("events") or []),
+        events,
         provider,
         provider_name,
         loaded.design_settings(),
     )
     _announce_resume(session_id, detail, note)
-    return session_id, detail
+    parent_chain = _chain_cost(events, session_id) if session_id is not None else None
+    return session_id, detail, parent_chain
 
 
 def _announce_resume(session_id: Optional[str], detail: Dict[str, Any], note: str) -> None:
