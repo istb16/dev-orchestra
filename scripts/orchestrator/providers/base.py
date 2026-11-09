@@ -494,6 +494,11 @@ class Provider:
     #: reports ``verified`` or ``trusted``.
     supports_resume = False
 
+    #: True when a resumed run's reported ``cost_usd`` covers the whole
+    #: session chain it continued, not that run alone. The orchestrator then
+    #: subtracts what the parent session had already cost.
+    resume_cost_cumulative = False
+
     #: The checks a version must pass before this adapter's resumed sessions
     #: are trusted. The strictest set unless an adapter names its own. That
     #: set includes the confinement and hooks checks, which the live check

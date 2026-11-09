@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
 import sys
 import unittest
@@ -662,6 +663,223 @@ class TestCodexIsNotResumed(ResumeCase):
         run_cli("config", "set", "architect.model.family", "recommended-coding")
         _, _, err = self.revise("--print-command")
         self.assertIn("running fresh: the provider cannot resume a session", err)
+
+
+class TestTheResumedRunsOwnCost(ResumeCase):
+    """The CLI's cost on a resumed run covers the chain; only the run's own is recorded (#381)."""
+
+    UNKNOWN = "note: this continued run's own cost is unknown; recorded without one"
+
+    def at(self, cost, *extra):
+        os.environ["DEV_ORCHESTRA_MOCK_COST_USD"] = cost
+        code, _, err = self.revise(*extra)
+        self.assertEqual(code, 0, err)
+        return err
+
+    def resumed_account(self):
+        return self.tokens()["by_label"]["architect:resumed"]
+
+    def resumed_report_no_cost(self):
+        """Resumed runs report no cost at all, as a CLI that gave none would."""
+        original = MockProvider._launch
+
+        def launch(provider, prompt, mode, cwd, **kwargs):
+            result = original(provider, prompt, mode, cwd, **kwargs)
+            if kwargs.get("resume_session") is not None:
+                result.usage.cost_usd = None
+            return result
+
+        self.addCleanup(setattr, MockProvider, "_launch", original)
+        setattr(MockProvider, "_launch", launch)
+        return original
+
+    def test_a_resumed_run_with_the_parents_cost_cost_nothing(self):
+        self.at("0.5")
+        err = self.at("0.5")
+        self.assertEqual(self.last()["cost_usd"], 0.0)
+        self.assertEqual(self.last()["resume"]["session_cost_usd"], 0.5)
+        self.assertNotIn(self.UNKNOWN, err)
+
+    def test_a_resumed_run_reporting_no_cost_records_none_quietly(self):
+        self.at("0.5")
+        self.resumed_report_no_cost()
+        err = self.at("0.8")
+        event = self.last()
+        self.assertEqual(event["resume"]["mode"], "resumed")
+        self.assertIsNone(event["cost_usd"])
+        self.assertIn("session_cost_usd", event["resume"])
+        self.assertIsNone(event["resume"]["session_cost_usd"])
+        self.assertNotIn(self.UNKNOWN, err)
+
+    def test_a_middle_run_of_unknown_own_cost_still_prices_the_next(self):
+        self.at("0.8")
+        self.at("0.5")
+        self.assertIsNone(self.last()["cost_usd"])
+        self.assertEqual(self.last()["resume"]["session_cost_usd"], 0.5)
+        err = self.at("0.9")
+        third = self.last()
+        self.assertEqual(third["resume"]["mode"], "resumed")
+        # The chain's total is read from the middle run, not its own cost.
+        self.assertAlmostEqual(third["cost_usd"], 0.4)
+        self.assertNotIn(self.UNKNOWN, err)
+
+    def test_a_middle_run_with_no_chain_total_leaves_the_next_unknown(self):
+        self.at("0.5")
+        original = self.resumed_report_no_cost()
+        self.at("0.8")
+        self.assertIsNone(self.last()["resume"]["session_cost_usd"])
+        setattr(MockProvider, "_launch", original)
+        err = self.at("1.0")
+        third = self.last()
+        self.assertEqual(third["resume"]["mode"], "resumed")
+        # Not the first run's 0.5, and not the middle run's (None) cost_usd.
+        self.assertIsNone(third["cost_usd"])
+        self.assertIn(self.UNKNOWN, err)
+
+    def test_a_non_cumulative_adapter_keeps_the_reported_cost(self):
+        self.addCleanup(setattr, MockProvider, "resume_cost_cumulative", MockProvider.resume_cost_cumulative)
+        MockProvider.resume_cost_cumulative = False
+        self.at("0.5")
+        err = self.at("0.8")
+        event = self.last()
+        self.assertEqual(event["resume"]["mode"], "resumed")
+        self.assertEqual(event["cost_usd"], 0.8)
+        # Its figure is the run's own, not a chain total for the next to subtract.
+        self.assertNotIn("session_cost_usd", event["resume"])
+        self.assertAlmostEqual(self.resumed_account()["cost_usd"], 0.8)
+        self.assertNotIn(self.UNKNOWN, err)
+
+    def test_the_chain_cost_of_a_session_with_no_architect_event_is_unknown(self):
+        # `--resume` picks its session from the last architect event, so the
+        # CLI cannot reach this; `_chain_cost` is asked directly.
+        events = [
+            {"stage": "architect", "session_id": "a", "cost_usd": 0.5},
+            {"stage": "implementer", "session_id": "b", "cost_usd": 0.7},
+        ]
+        self.assertEqual(cli_run._chain_cost(events, "a"), 0.5)
+        self.assertIsNone(cli_run._chain_cost(events, "b"))
+        self.assertIsNone(cli_run._chain_cost(events, "c"))
+        self.assertIsNone(cli_run._chain_cost([], "a"))
+
+    def test_a_resumed_run_records_only_its_own_cost(self):
+        self.at("0.5")
+        err = self.at("0.8")
+        event = self.last()
+        self.assertEqual(event["resume"]["mode"], "resumed")
+        self.assertAlmostEqual(event["cost_usd"], 0.3)
+        self.assertEqual(event["resume"]["session_cost_usd"], 0.8)
+        self.assertAlmostEqual(self.resumed_account()["cost_usd"], 0.3)
+        self.assertNotIn(self.UNKNOWN, err)
+
+    def test_a_resume_of_a_resume_subtracts_the_parents_chain(self):
+        self.at("0.5")
+        self.at("0.8")
+        self.at("1.2")
+        third = self.last()
+        self.assertEqual(third["resume"]["mode"], "resumed")
+        self.assertAlmostEqual(third["cost_usd"], 0.4)
+        self.assertAlmostEqual(self.tokens()["by_stage"]["architect"]["cost_usd"], 1.2)
+
+    def test_an_unpriced_parent_leaves_the_cost_unknown(self):
+        self.at("0.5")
+        self.edit_last(cost_usd=None)
+        priced = self.tokens()["by_stage"]["architect"]["priced_runs"]
+        err = self.at("0.8")
+        self.assertIsNone(self.last()["cost_usd"])
+        self.assertEqual(self.last()["resume"]["session_cost_usd"], 0.8)
+        self.assertEqual(self.tokens()["by_stage"]["architect"]["priced_runs"], priced)
+        self.assertIn(self.UNKNOWN, err)
+
+    def test_a_parent_recorded_before_the_fix_is_read_as_cumulative(self):
+        self.at("0.5")
+        self.edit_last(
+            cost_usd=0.8,
+            resume={
+                "requested": True,
+                "mode": "resumed",
+                "resumed_from": None,
+                "reason": None,
+                "outcome": "ok",
+            },
+        )
+        self.at("1.0")
+        self.assertAlmostEqual(self.last()["cost_usd"], 0.2)
+
+    def test_a_cumulative_figure_below_the_parent_is_unknown(self):
+        self.at("0.8")
+        err = self.at("0.5")
+        self.assertIsNone(self.last()["cost_usd"])
+        self.assertIn(self.UNKNOWN, err)
+
+    def test_a_parent_figure_that_cannot_be_a_cost_leaves_the_cost_unknown(self):
+        for bad in (-0.5, float("-inf"), float("inf"), float("nan")):
+            with self.subTest(parent=bad):
+                self.assertIsNone(cli_run._own_cost(0.8, bad))
+                events = [{"stage": "architect", "session_id": "a", "cost_usd": bad}]
+                self.assertIsNone(cli_run._chain_cost(events, "a"))
+        self.assertIsNone(cli_run._own_cost(float("inf"), 0.5))
+        self.assertIsNone(cli_run._own_cost(10**400, 0.5))
+
+    def test_a_negative_parent_in_state_is_not_subtracted(self):
+        self.at("0.5")
+        self.edit_last(cost_usd=-0.5)
+        err = self.at("0.8")
+        self.assertIsNone(self.last()["cost_usd"])
+        self.assertIn(self.UNKNOWN, err)
+
+    def test_float_noise_below_zero_is_recorded_as_zero(self):
+        own = cli_run._own_cost(0.3, 0.1 + 0.2)
+        assert own is not None
+        self.assertEqual(own, 0.0)
+        self.assertEqual(math.copysign(1.0, own), 1.0)
+
+    def test_a_rejected_resume_records_the_cost_as_reported(self):
+        self.at("0.5")
+        os.environ["DEV_ORCHESTRA_MOCK_RESUME"] = "reject"
+        err = self.at("0.7")
+        rejected, retried = self.events()[-2:]
+        self.assertEqual(rejected["resume"]["outcome"], "rejected")
+        self.assertEqual(rejected["cost_usd"], 0.0)
+        self.assertNotIn("session_cost_usd", rejected["resume"])
+        self.assertEqual(retried["resume"]["mode"], "fresh")
+        self.assertEqual(retried["cost_usd"], 0.7)
+        self.assertNotIn("session_cost_usd", retried["resume"])
+        self.assertNotIn(self.UNKNOWN, err)
+
+    def test_a_detached_revision_records_its_own_cost(self):
+        self.at("0.5")
+        os.environ["DEV_ORCHESTRA_MOCK_COST_USD"] = "0.8"
+        code, out, err = self.revise("--detach", "--json")
+        self.assertEqual(code, 0, err)
+        _, waited, _ = run_cli("jobs", "wait", json.loads(out)["id"], "--timeout", "60", "--json")
+        self.assertEqual(json.loads(waited)["status"], "succeeded")
+        event = self.last()
+        self.assertEqual(event["resume"]["mode"], "resumed")
+        self.assertAlmostEqual(event["cost_usd"], 0.3)
+        self.assertEqual(event["resume"]["session_cost_usd"], 0.8)
+
+    def test_fresh_runs_keep_their_cost(self):
+        os.environ["DEV_ORCHESTRA_MOCK_COST_USD"] = "0.5"
+        self.revise(resume=False)
+        event = self.last()
+        self.assertEqual(event["cost_usd"], 0.5)
+        self.assertNotIn("resume", event)
+        # A --resume that runs fresh keeps the cost it reported.
+        self.edit_last(session_id=None)
+        self.at("0.6")
+        self.assertEqual(self.last()["resume"]["mode"], "fresh")
+        self.assertEqual(self.last()["cost_usd"], 0.6)
+
+    def test_tokens_are_untouched_on_resume(self):
+        self.at("0.5")
+        self.at("0.8")
+        self.at("2.0")
+        first, second = self.events()[-2:]
+        self.assertAlmostEqual(second["cost_usd"], 1.2)
+        # The mock's counts come from the prompt and response alone.
+        for key in ("billed_tokens", "cache_read_tokens"):
+            self.assertEqual(second[key], first[key])
+        self.assertEqual(self.resumed_account()["input_tokens"], 2 * max(len(RESUME) // 4, 1))
 
 
 class TestTheReport(ResumeCase):

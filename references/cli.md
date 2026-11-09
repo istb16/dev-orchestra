@@ -563,6 +563,17 @@ prompts are copied into the job, so an edit to either file after the command
 returned does not reach the run, and the job record carries `force`,
 `resume_prompt_file`, `session_id` and `resume`.
 
+A continued Claude run's `cost_usd` (in the end event, the ledger and the
+report) is that run's own cost. The CLI reports the whole resumed chain's
+cost, so the parent session's figure is subtracted; that figure is kept on the
+continued run's end event as `resume.session_cost_usd`, for the next revision
+to subtract in turn. When the run's own cost cannot be worked out (the parent
+recorded none, or the CLI's figure is below it) it is recorded as unknown
+(`null`, so `tokens show` does not count it as priced), with `note: this
+continued run's own cost is unknown; recorded without one` on stderr. A
+rejected resume and a run that went fresh keep the cost the CLI reported.
+Events recorded before this change keep the chain total they were given.
+
 ```bash
 dev-orchestra run architect --prompt-file .ai/execution/design-request.md --output .ai/plan.md
 dev-orchestra run architect --resume \

@@ -150,6 +150,21 @@ class TestClaudeUsage(unittest.TestCase):
         assert usage is not None
         self.assertEqual(usage.input_tokens, 8200)
 
+    def test_the_cost_is_read_as_reported_and_declared_cumulative(self):
+        """``total_cost_usd`` covers the resumed chain (#381); the orchestrator subtracts.
+
+        The subtraction, and the non-cumulative path that keeps the figure, are
+        covered in ``test_architect_resume``.
+        """
+        from orchestrator.providers.base import Provider
+        from orchestrator.providers.claude import ClaudeProvider
+
+        self.assertTrue(ClaudeProvider.resume_cost_cumulative)
+        self.assertFalse(Provider.resume_cost_cumulative)
+        usage = parse_stream_usage(stream(RESULT))
+        assert usage is not None
+        self.assertAlmostEqual(present(usage.cost_usd), 0.0421)
+
 
 # --------------------------------------------------------------------------- codex
 
