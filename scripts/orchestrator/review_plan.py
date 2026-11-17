@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import posixpath
 import re
-from typing import List, NamedTuple, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from .plan_text import HEADING_TEXT_RE, INSIDE, fenced_lines, heading_title
 
@@ -18,8 +18,32 @@ def added_in_revision(plan_text: str) -> Optional[str]:
 
     None when the plan has no such heading outside a fenced block; the body
     runs to the next heading of the same level or higher, stripped, so
-    ``###`` items under a ``##`` heading stay inside it.
+    ``###`` items under a ``##`` heading stay inside it. A heading that goes
+    on past the name (``## Added in this revision (round 2)``) counts.
     """
+    return plan_section(plan_text, "Added in this revision", prefix=True)
+
+
+_SECTION_NUMBER_RE = re.compile(r"^\d+[.)]?\s*")
+
+
+def plan_section(plan_text: str, name: str, prefix: bool = False) -> Optional[str]:
+    """The body of the plan's ``## <name>`` or ``### <name>`` section.
+
+    ``added_in_revision`` for any section: a numbered heading
+    (``## 11. Risks``) counts, the name is matched whole and without regard
+    to case, and a heading inside a fenced block is not one. None when the
+    plan has no such heading; the body runs to the next heading of the same
+    level or higher, stripped. With ``prefix`` the heading may go on past
+    the name, as long as the name ends on a word boundary. A colon after the
+    name (``## Risks:``) is not part of it.
+
+    A ``##`` match wins over a ``###`` one wherever the two stand, so a
+    unit's own ``### Risks`` does not hide the plan's ``## Risks``; between
+    two at one level the first wins.
+    """
+    wanted = name.strip().lower()
+    found: Dict[int, List[str]] = {}
     body: Optional[List[str]] = None
     level = 0
     for fenced in fenced_lines(plan_text.splitlines()):
@@ -28,19 +52,24 @@ def added_in_revision(plan_text: str) -> Optional[str]:
             if body is not None:
                 body.append(line)
             continue
+        heading = HEADING_TEXT_RE.match(line)
         if body is not None:
-            heading = HEADING_RE.match(line)
             if heading and len(heading.group(1)) <= level:
-                break
-        else:
-            added = ADDED_HEADING_RE.match(line)
-            if added:
-                body = []
-                level = len(added.group(1))
+                body = None
+            else:
+                body.append(line)
                 continue
-        if body is not None:
-            body.append(line)
-    return None if body is None else "\n".join(body).strip()
+        if heading and len(heading.group(1)) in (2, 3) and len(heading.group(1)) not in found:
+            title = _SECTION_NUMBER_RE.sub("", heading_title(heading.group(2)))
+            title = title.rstrip(":").rstrip().lower()
+            if title == wanted or (prefix and re.match(r"%s\b" % re.escape(wanted), title)):
+                body = []
+                level = len(heading.group(1))
+                found[level] = body
+    for wanted_level in (2, 3):
+        if wanted_level in found:
+            return "\n".join(found[wanted_level]).strip()
+    return None
 
 
 FILES_HEADING_RE = re.compile(r"^(?:\d+[.)]\s*)?files to modify\b", re.IGNORECASE)

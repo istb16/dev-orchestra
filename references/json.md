@@ -370,9 +370,10 @@ Object: the consolidated report, as `consolidated.json` holds it.
 | `snapshot` | object | What was reviewed: `sha256`, `files`, `round_id`, `over_budget`, `budget_chars`, and `scope` and `recheck` when the snapshot recorded them. |
 | `coverage` | object | `round` and `change`, each `complete`, `unverified` or `none`; `unverified_since`, `change_chars`, `inline_chars` -- see [Coverage](reviews.md#coverage). |
 | `reviewers` | list | Every reviewer's entry, as in `review run`. |
-| `counts` | object | `findings_total`, `by_severity`, `duplicates_merged`, `duplicate_candidates`, `reviewers_total`, `reviewers_ok`, `reviewers_partial`, `reviewers_failed`, and the same four with a `snapshot_` prefix. |
+| `counts` | object | `findings_total`, `by_severity`, `duplicates_merged`, `duplicate_candidates`, `reviewers_total`, `reviewers_ok`, `reviewers_partial`, `reviewers_failed`, and the same four with a `snapshot_` prefix. Findings under `pre_existing` are not counted. |
 | `duplicate_candidates` | list | Pairs of findings that may be the same. |
-| `findings` | list | One entry per finding: `id`, `key`, `severity` (`critical`, `high`, `medium` or `low`), `file`, `line`, `category`, `problem`, `impact`, `evidence`, `recommended_fix`, `reported_by`, `duplicate_count`, `triage` (`needs-triage`, `accepted`, `rejected`, `duplicate` or `needs-investigation`), `triage_note`, and `triage_set_at` once triaged. |
+| `findings` | list | One entry per finding: `id`, `key`, `severity` (`critical`, `high`, `medium` or `low`), `file`, `line`, `category`, `problem`, `impact`, `evidence`, `recommended_fix`, `reported_by`, `duplicate_count`, `triage` (`needs-triage`, `accepted`, `rejected`, `duplicate` or `needs-investigation`), `triage_note`, and `triage_set_at` once triaged; `merged_reports` on a merged finding, each report's `reviewer`, `severity`, `category`, `line` and text fields. Medium and low pre-existing findings are not here; they are under `pre_existing`. One merged with a report that is not pre-existing, one whose severity is critical, high or in `review.blocking_severities`, one that carries an earlier round's triage other than `rejected`, and any finding of a design round, is here with its `category`. |
+| `pre_existing` | list | Medium and low findings of a code round every report of which says `Category: pre-existing`, other than those kept in `findings` above: as `findings` without triage fields; ids `P1..`; absent from reports written before this version. See [Triage](reviews.md#triage). |
 | `surrounding` | object | Only when the round carried surrounding context. |
 | `measurement` | object | Only after a `review run --surrounding`: with `triage_at_build`. |
 
@@ -392,6 +393,7 @@ Object: the consolidated report, as for `review consolidate`; with
 | `counts` | object | As in `review consolidate`. |
 | `duplicate_candidates` | list | As in `review consolidate`. |
 | `findings` | list | As in `review consolidate`. |
+| `pre_existing` | list | As in `review consolidate`; `--accepted` leaves it as it is. |
 | `surrounding` | object | Only when the round carried surrounding context. |
 | `measurement` | object | Only after a `review run --surrounding`. |
 

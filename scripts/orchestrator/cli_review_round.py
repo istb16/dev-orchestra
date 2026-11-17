@@ -381,8 +381,13 @@ def _run_panel(
     extra_context: str = "",
     prompt_for: Optional[Callable[[Dict[str, Any], str], review_mod.BuiltPrompt]] = None,
     surrounding: Optional[context_mod.Adoption] = None,
+    decisions: str = "",
 ) -> Union[int, _PanelRun]:
-    """Open the round's ledger entry and run the panel, or the exit code of a round that could not."""
+    """Open the round's ledger entry and run the panel, or the exit code of a round that could not.
+
+    ``decisions`` is the code round's "Decisions already made" section; the
+    design path leaves it "".
+    """
     args, settings, book = ctx.args, ctx.settings, ctx.book
     batch_timeout = args.timeout or config_mod.review_timeout(ctx.loaded).seconds
     token = book.begin(
@@ -439,6 +444,7 @@ def _run_panel(
                     refusals=_reviewer_refusals(ctx.loaded, reviewers, ctx.kind.panel),
                     activity_for=echo.sink_for if echo is not None else None,
                     instructions_for=instructions_for,
+                    decisions="" if design else decisions,
                 ),
             )
     except review_mod.ReviewError as exc:
@@ -574,6 +580,7 @@ def _consolidate_round(
     completed_round: Optional[str] = None,
     unreviewed_round: Optional[str] = None,
     amend: Optional[Callable[[Dict[str, Any]], None]] = None,
+    blocking: Sequence[str] = (),
 ) -> Tuple[Dict[str, Any], List[str]]:
     """Build the round's report from the panel's reports and save it.
 
@@ -591,6 +598,8 @@ def _consolidate_round(
     ``run_dicts`` is the runs this round recorded, merged into the last
     report's table (``_merge_runs``); None rebuilds without a run, and keeps
     that table as it stands. ``amend`` sees the report before it is saved.
+    ``blocking`` is ``review.blocking_severities``, which keeps a pre-existing
+    finding at one of them in triage.
     """
     ids = [str(r.get("id")) for r in panel if str(r.get("id")) not in excluded]
     findings, stale = review_mod.read_reports(workspace, ids, review_mod.current_snapshot_stamp(workspace))
@@ -611,6 +620,7 @@ def _consolidate_round(
             lineage,
             completed_round=completed_round,
             unreviewed_round=unreviewed_round,
+            blocking=blocking,
         )
         if amend is not None:
             amend(data)

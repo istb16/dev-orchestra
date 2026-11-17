@@ -1,4 +1,4 @@
-<!-- translated-from: references/json.md sha256:e1a84ba0d7ec1704a4dc2e0187f3bb26e21fbc1df2b9e171db3a25d9f07b8059 -->
+<!-- translated-from: references/json.md sha256:2d18f3163cb539d747382f966d55138d766c1488c8cc029f07f8bd2f8f2abe8b -->
 
 > この文書は [references/json.md](../../../references/json.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -375,9 +375,10 @@ Object. `consolidated.json` が持つとおりの、まとめたレポートで�
 | `snapshot` | object | レビューしたもの。`sha256`、`files`、`round_id`、`over_budget`、`budget_chars`、そしてスナップショットが記録していれば `scope` と `recheck`。 |
 | `coverage` | object | `round` と `change`（それぞれ `complete`、`unverified`、`none`）、`unverified_since`、`change_chars`、`inline_chars`。[カバレッジ](reviews.md#coverage) を参照。 |
 | `reviewers` | list | 各レビュアーのエントリ。`review run` と同じ。 |
-| `counts` | object | `findings_total`、`by_severity`、`duplicates_merged`、`duplicate_candidates`、`reviewers_total`、`reviewers_ok`、`reviewers_partial`、`reviewers_failed`、そしてその 4 つに `snapshot_` を付けたもの。 |
+| `counts` | object | `findings_total`、`by_severity`、`duplicates_merged`、`duplicate_candidates`、`reviewers_total`、`reviewers_ok`、`reviewers_partial`、`reviewers_failed`、そしてその 4 つに `snapshot_` を付けたもの。`pre_existing` にある指摘は数えません。 |
 | `duplicate_candidates` | list | 同じかもしれない指摘の組。 |
-| `findings` | list | 指摘ごとに 1 つのエントリ。`id`、`key`、`severity`（`critical`、`high`、`medium`、`low`）、`file`、`line`、`category`、`problem`、`impact`、`evidence`、`recommended_fix`、`reported_by`、`duplicate_count`、`triage`（`needs-triage`、`accepted`、`rejected`、`duplicate`、`needs-investigation`）、`triage_note`、トリアージしたあとは `triage_set_at`。 |
+| `findings` | list | 指摘ごとに 1 つのエントリ。`id`、`key`、`severity`（`critical`、`high`、`medium`、`low`）、`file`、`line`、`category`、`problem`、`impact`、`evidence`、`recommended_fix`、`reported_by`、`duplicate_count`、`triage`（`needs-triage`、`accepted`、`rejected`、`duplicate`、`needs-investigation`）、`triage_note`、トリアージしたあとは `triage_set_at`。まとめられた指摘には `merged_reports` があり、報告ごとの `reviewer`、`severity`、`category`、`line` と本文の項目を持ちます。中・低の既存の問題の指摘はここになく、`pre_existing` にあります。既存の問題ではない報告とまとめられたもの、重大度が critical・high または `review.blocking_severities` にあるもの、前のラウンドの `rejected` 以外のトリアージを引き継ぐもの、そして設計ラウンドの指摘はすべて、`category` を付けてここにあります。 |
+| `pre_existing` | list | コードのラウンドで、まとめられた報告がどれも `Category: pre-existing` である中・低の指摘（上で `findings` に残るものを除く）。`findings` と同じ形で、トリアージの項目はありません。ID は `P1..`。このバージョンより前に書かれたレポートにはありません。[トリアージ](reviews.md#triage) を参照。 |
 | `surrounding` | object | Only: ラウンドが周りの文脈を運んだときだけ。 |
 | `measurement` | object | Only: `review run --surrounding` のあとだけ。`triage_at_build` を含みます。 |
 
@@ -398,6 +399,7 @@ Object. `review consolidate` と同じ、まとめたレポートです。`--acc
 | `counts` | object | `review consolidate` と同じ。 |
 | `duplicate_candidates` | list | `review consolidate` と同じ。 |
 | `findings` | list | `review consolidate` と同じ。 |
+| `pre_existing` | list | `review consolidate` と同じ。`--accepted` でもそのままです。 |
 | `surrounding` | object | Only: ラウンドが周りの文脈を運んだときだけ。 |
 | `measurement` | object | Only: `review run --surrounding` のあとだけ。 |
 

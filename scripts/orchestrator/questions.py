@@ -393,6 +393,16 @@ def decisions_text(state: Dict[str, Any]) -> str:
     return _body(data)
 
 
+def answered_text(state: Dict[str, Any]) -> str:
+    """``decisions_text`` of the answered questions alone; "" when none was answered.
+
+    For a reader told to take what it is given as decided: an open question
+    is not a decision.
+    """
+    answered = [q for q in read(state)["questions"] if isinstance(q.get("answer"), dict)]
+    return _body({"questions": answered}) if answered else ""
+
+
 def decisions_digest(state: Dict[str, Any]) -> Optional[str]:
     """sha256 of every answer as given, or None when no question was asked.
 

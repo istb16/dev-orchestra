@@ -30,7 +30,13 @@ def render_round_context(workspace: ws.Workspace, meta: Dict[str, Any]) -> str:
     units = render_units(meta)
     if not meta.get("incremental_from"):
         return units
-    lines = ["Re-review. The diff above is the fix only, not the whole change."]
+    lines = [
+        "Re-review. The diff above is the fix only, not the whole change.",
+        # The Category line's "this change" would otherwise read as the fix
+        # diff, and the original change's own bug would look pre-existing.
+        'For "Category: pre-existing", "this change" means the whole change, not this fix: '
+        "a problem the change brought in is never pre-existing, fixed or not.",
+    ]
     if meta.get("full_diff"):
         lines.append("Whole change frozen at %s -- read it if you need the context." % meta["full_diff"])
     accepted = carried_findings(workspace, meta)
@@ -77,7 +83,7 @@ def render_units(meta: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _one_line(text: str) -> str:
+def one_line(text: str) -> str:
     """``text`` with each character that is not printable written as its escape, as ``repr`` does."""
     return "".join(char if char.isprintable() else repr(char)[1:-1] for char in text)
 
@@ -88,7 +94,7 @@ def _unit_file(path: Any, name: str) -> str:
     A unit chose the name, and a line break in it would put the rest of the
     name into the reviewer's instructions.
     """
-    return "- %s (unit %s)" % (_one_line(str(path)), _one_line(name))
+    return "- %s (unit %s)" % (one_line(str(path)), one_line(name))
 
 
 def carried_findings(workspace: ws.Workspace, meta: Dict[str, Any]) -> List[Dict[str, Any]]:

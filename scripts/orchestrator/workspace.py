@@ -44,6 +44,25 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def parse_stamp(value: Any) -> Optional[datetime]:
+    """A timestamp as ``utcnow()`` writes it, in UTC, or None for anything else.
+
+    Any ISO 8601 form is read, offsets and fractional seconds included; a
+    time with no offset is UTC, as every one this tool writes is. One that
+    cannot be read, or that falls outside the range ``datetime`` can hold once
+    moved to UTC, is None rather than an exception in every reader.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        stamp = datetime.fromisoformat(value)
+        if stamp.tzinfo is None:
+            return stamp.replace(tzinfo=timezone.utc)
+        return stamp.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
+        return None
+
+
 def is_int(value: Any) -> TypeGuard[int]:
     """Whether a recorded value is an integer. ``True`` is an ``int``, and is not."""
     return isinstance(value, int) and not isinstance(value, bool)

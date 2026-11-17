@@ -13,6 +13,45 @@ authors can find it.
 
 ## [Unreleased]
 
+### Added
+
+- **Code reviewers are told what was already decided.** Every code round's
+  prompt now ends with a "Decisions already made" section: the user's answers
+  in `decisions.md` (questions not answered yet left out), the plan's `Risks`
+  and `Decisions` sections (a `##` heading preferred over a `###` one), and the
+  findings rejected in earlier rounds of the same review, with their triage
+  note and without who reported them (#385). Reviewers are told to treat the
+  first two as premises, and to report and cite one when the code contradicts
+  it or it looks wrong; the rejected findings are labelled as context rather
+  than authority or premises, never excuse a critical or high issue, and any
+  other problem at the same location is still to be
+  reported. A finding is listed only when its latest round in the review is
+  on another snapshot and rejected it. The section is at most 6,000 characters per reviewer
+  prompt and is cut at a line boundary, rejections first, with a note naming
+  what was cut. A round with nothing to add gets the same prompt as before,
+  apart from the Category line below.
+- **Medium and low pre-existing findings stay out of triage.** A code
+  reviewer can mark a finding `Category: pre-existing` for a problem that was
+  there before the change and that the change does not make worse; one the
+  change makes worse, or newly exposes, is still a normal finding (#385).
+  Medium and low such findings are numbered `P1…`, listed in
+  `consolidated.md` under "Pre-existing, not triaged" and in `--json` under
+  `pre_existing`, and are not in `findings`, `counts`, the fix brief or the
+  loop's decision, so a round with only those is clean. Reports are merged
+  before they are set apart, and a finding is set apart only when every
+  report merged into it says pre-existing. A critical or high one, or one at
+  a severity in `review.blocking_severities`,
+  stays in `findings` and is triaged like any other, as does one that the
+  last report may already hold and triage has not rejected: in the same words,
+  which keeps its triage, or at the same place (same file, line numbers on
+  both within 10), which stays as `needs-triage` for triage to decide. A
+  rejection is carried only when every report merged into the finding,
+  whichever gave it its wording, matches a rejected one; reports that match
+  both a rejected and a not-rejected finding leave it to triage. A design round sets nothing apart. On
+  a fix-only re-review, reviewers are told that "this change"
+  means the whole change, not the fix. `P` ids cannot be triaged. Reports
+  written before this have no `pre_existing` and render as before.
+
 ## [1.3.2] - 2026-11-09
 
 ### Fixed

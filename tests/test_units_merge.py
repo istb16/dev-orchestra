@@ -640,6 +640,8 @@ class TestRoundContext(MergeCase):
         self.assertEqual(
             review_round_context.render_round_context(self.workspace, incremental),
             "Re-review. The diff above is the fix only, not the whole change.\n"
+            'For "Category: pre-existing", "this change" means the whole change, not this fix: '
+            "a problem the change brought in is never pre-existing, fixed or not.\n"
             "Whole change frozen at .ai/full.diff -- read it if you need the context.",
         )
         self.assertEqual(
