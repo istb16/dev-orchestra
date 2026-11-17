@@ -1195,7 +1195,7 @@ class TestTheConsolidatedReport(IsolatedCase):
         run: Dict[str, Any] = {"id": "r1", "status": "ok", "delivery": "inline", "snapshot": "abcdef012345"}
         data = self.build([dict(run, surrounding=context_record())], completed_round="round-1")
         head = ["generated_at", "iteration", "lineage", "snapshot", "coverage"]
-        tail = ["reviewers", "counts", "duplicate_candidates", "findings"]
+        tail = ["reviewers", "counts", "duplicate_candidates", "findings", "pre_existing"]
         self.assertEqual(list(data), [*head, "surrounding", *tail])
         snapshot = ["sha256", "files", "over_budget", "budget_chars"]
         self.assertEqual(list(data["snapshot"]), [*snapshot, "round_id"])
