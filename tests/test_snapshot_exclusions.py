@@ -506,7 +506,7 @@ class TestControlCharactersInEveryName(IsolatedCase):
     """Every name a snapshot records or prints: a rename's old name too, C1
     controls and DEL as well as C0, and an incremental round's prompt."""
 
-    CONTROLS = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+    CONTROLS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
     def setUp(self):
         super().setUp()
