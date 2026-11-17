@@ -49,14 +49,15 @@ def render_code_decisions(
     """The section a code review prompt ends with; "" when there is nothing to put in it.
 
     Its parts, in this order, which is also the order a cut drops them from
-    the end: the user's answers to the design questions, the plan's Risks
+    the end: the user's answers to the design questions (an open question
+    is not a decision and is left out), the plan's Risks
     and Decisions sections, and the findings rejected in earlier rounds of
     this review (``_rejected_lines``). Each is fenced under its own label.
     The section is cut at a line boundary at ``cap`` chars, and a note after
     it names what was cut.
     """
     parts: List[_Part] = []
-    user = questions_mod.decisions_text(workspace.read_state())
+    user = questions_mod.answered_text(workspace.read_state())
     if user.strip():
         source = workspace.relative(workspace.decisions_path)
         parts.append(_Part(CODE_DECISIONS_USER_LABEL, user.strip().splitlines(), source, "markdown"))

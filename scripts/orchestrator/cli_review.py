@@ -826,6 +826,7 @@ def _consolidate_code_round(
         lineage,
         completed_round=meta.get("round_id"),
         amend=lambda built: _record_triage_at_build(built, override, rerun),
+        blocking=ctx.loaded.blocking_severities(),
     )
     detail = _round_detail(ctx, meta, data, run_dicts, plan.to_dict(), rerun)
     measurement = None
@@ -936,7 +937,13 @@ def cmd_review_consolidate(args: argparse.Namespace) -> int:
     excluded = _condition_excluded(workspace, _DESIGN.stage if design else _CODE.stage)
     lineage = _lineage(args, workspace)
     data, stale = _consolidate_round(
-        workspace, panel, excluded, None, _iteration(args, workspace, lineage), lineage
+        workspace,
+        panel,
+        excluded,
+        None,
+        _iteration(args, workspace, lineage),
+        lineage,
+        blocking=loaded.blocking_severities(),
     )
     for reviewer_id in stale:
         _err("note: %s's report predates the current snapshot and was ignored" % reviewer_id)

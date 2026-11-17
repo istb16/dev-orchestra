@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import posixpath
 import re
-from typing import List, NamedTuple, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from .plan_text import HEADING_TEXT_RE, INSIDE, fenced_lines, heading_title
 
@@ -35,9 +35,15 @@ def plan_section(plan_text: str, name: str, prefix: bool = False) -> Optional[st
     to case, and a heading inside a fenced block is not one. None when the
     plan has no such heading; the body runs to the next heading of the same
     level or higher, stripped. With ``prefix`` the heading may go on past
-    the name, as long as the name ends on a word boundary.
+    the name, as long as the name ends on a word boundary. A colon after the
+    name (``## Risks:``) is not part of it.
+
+    A ``##`` match wins over a ``###`` one wherever the two stand, so a
+    unit's own ``### Risks`` does not hide the plan's ``## Risks``; between
+    two at one level the first wins.
     """
     wanted = name.strip().lower()
+    found: Dict[int, List[str]] = {}
     body: Optional[List[str]] = None
     level = 0
     for fenced in fenced_lines(plan_text.splitlines()):
@@ -49,16 +55,21 @@ def plan_section(plan_text: str, name: str, prefix: bool = False) -> Optional[st
         heading = HEADING_TEXT_RE.match(line)
         if body is not None:
             if heading and len(heading.group(1)) <= level:
-                break
-            body.append(line)
-            continue
-        if heading and len(heading.group(1)) in (2, 3):
+                body = None
+            else:
+                body.append(line)
+                continue
+        if heading and len(heading.group(1)) in (2, 3) and len(heading.group(1)) not in found:
             title = _SECTION_NUMBER_RE.sub("", heading_title(heading.group(2)))
-            title = title.lower()
+            title = title.rstrip(":").rstrip().lower()
             if title == wanted or (prefix and re.match(r"%s\b" % re.escape(wanted), title)):
                 body = []
                 level = len(heading.group(1))
-    return None if body is None else "\n".join(body).strip()
+                found[level] = body
+    for wanted_level in (2, 3):
+        if wanted_level in found:
+            return "\n".join(found[wanted_level]).strip()
+    return None
 
 
 FILES_HEADING_RE = re.compile(r"^(?:\d+[.)]\s*)?files to modify\b", re.IGNORECASE)

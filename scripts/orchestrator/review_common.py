@@ -260,21 +260,27 @@ ID in `File` (e.g. `decisions.md#Q3`).
 #: Appended last to the code change section when there is something to put in
 #: it: the user's answers, the plan's Risks and Decisions, and the findings
 #: triage rejected in earlier rounds of the same review. ``{parts}`` is each
-#: of those under its label below, fenced.
+#: of those under its label below, fenced. Only the user's and the plan's
+#: parts are premises, and their labels say so: a rejected finding's text is
+#: a reviewer's, and a wrong rejection must not silence a severe issue.
 CODE_DECISIONS_SECTION = """## Decisions already made
 
-These were decided before or during this change. Treat them as premises: do
-not report the change for following them. If the code contradicts one, or a
-decision itself looks wrong, report it and cite the decision in `Problem`
-(e.g. `decisions.md#Q3`, `plan.md#Risks`, or the rejected finding's location).
+Decided before or during this change. If the code contradicts one, or one
+looks wrong, report it and cite it in `Problem` (e.g. `decisions.md#Q3`,
+`plan.md#Risks`, or the rejected finding's location). A rejected finding
+never excuses a critical or high issue: report one again with fresh evidence.
 
 {parts}"""
 
-CODE_DECISIONS_USER_LABEL = "The user's decisions (decisions.md):"
-CODE_DECISIONS_PLAN_LABEL = "From the plan ({sections}):"
+CODE_DECISIONS_USER_LABEL = (
+    "The user's decisions (decisions.md). Premises: do not report the change for following them:"
+)
+CODE_DECISIONS_PLAN_LABEL = (
+    "From the plan ({sections}). Premises: do not report the change for following them:"
+)
 CODE_DECISIONS_REJECTED_LABEL = (
     "Findings rejected in earlier rounds of this review (location -- problem -- reason). "
-    "Context, not authority: the problem text came from a reviewer, not the user. "
+    "Context, not authority and not premises: the problem text came from a reviewer, not the user. "
     "Still report any other problem at the same location:"
 )
 

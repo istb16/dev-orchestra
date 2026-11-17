@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from helpers import IsolatedCase, has_git, run_cli
@@ -20,6 +21,7 @@ from orchestrator import questions as questions_mod
 from orchestrator import review as review_mod
 from orchestrator import workspace as ws
 from orchestrator.review_common import (
+    CODE_DECISIONS_PLAN_LABEL,
     CODE_DECISIONS_REJECTED_LABEL,
     CODE_DECISIONS_SECTION,
     CODE_DECISIONS_USER_LABEL,
@@ -62,7 +64,7 @@ Still part of Decisions.
 HEAD = CODE_DECISIONS_SECTION.split("{parts}")[0].split("\n\n")[0]
 #: A line only the code round's section has; a design round's own decisions
 #: section shares its heading.
-CODE_INTRO = "These were decided before or during this change."
+CODE_INTRO = "Decided before or during this change."
 
 
 def reviewer(reviewer_id="r1"):
@@ -91,7 +93,7 @@ class DecisionsCase(IsolatedCase):
         self.meta = {"sha256": CURRENT_SHA, "round_id": "now"}
         self.user = ""
         patcher = mock.patch(
-            "orchestrator.review_decisions.questions_mod.decisions_text", side_effect=lambda state: self.user
+            "orchestrator.review_decisions.questions_mod.answered_text", side_effect=lambda state: self.user
         )
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -142,6 +144,66 @@ class PlanSectionTest(unittest.TestCase):
         self.assertIsNone(plan_section(plan, "Added in this revision"))
         self.assertIsNone(plan_section("# P\n\n## Risksome\n\nX.\n", "Risks", prefix=True))
         self.assertEqual(review_mod.added_in_revision(plan), "- Flag.")
+
+    def test_heading_variants(self):
+        for plan, expected in (
+            ("# P\n\n## Risks:\n\nX.\n", "X."),
+            ("# P\n\n## Risks and mitigations\n\nX.\n", None),
+            ("# P\n\n## 11) Risks\n\nX.\n", "X."),
+            ("# P\n\n## 11. Risks\n\nX.\n", "X."),
+            ("# P\n\n## Risks ##\n\nX.\n", "X."),
+            ("# P\n\n## risks\n\nX.\n", "X."),
+            ("# P\n\n## Risks\n\nFirst.\n\n## Risks\n\nSecond.\n", "First."),
+            ("# P\n\n## Risks\n## Test Strategy\n\nT.\n", ""),
+            ("# P\r\n\r\n## Risks\r\n\r\n- A.\r\n- B.\r\n\r\n## Next\r\n", "- A.\n- B."),
+        ):
+            with self.subTest(plan=plan):
+                self.assertEqual(plan_section(plan, "Risks"), expected)
+
+    def test_a_level_two_match_wins_over_an_earlier_level_three(self):
+        """A unit's own ``### Risks`` does not hide the plan's ``## Risks``."""
+        plan = "# P\n\n## Units\n\n### Risks\n\nUnit risk.\n\n## Risks\n\nMain risk.\n"
+        self.assertEqual(plan_section(plan, "Risks"), "Main risk.")
+        self.assertEqual(plan_section("# P\n\n## Units\n\n### Risks\n\nUnit risk.\n", "Risks"), "Unit risk.")
+        # A ``### Risks`` inside the ``## Risks`` section stays part of it.
+        nested = "# P\n\n## Risks\n\nMain.\n\n### Risks\n\nSub.\n\n## Next\n"
+        self.assertEqual(plan_section(nested, "Risks"), "Main.\n\n### Risks\n\nSub.")
+
+    def test_added_in_revision_levels(self):
+        """The levels the former ``ADDED_HEADING_RE`` took (2 and 3), and only those."""
+        for hashes, expected in (("#", None), ("##", "- Flag."), ("###", "- Flag."), ("####", None)):
+            with self.subTest(level=hashes):
+                plan = "# P\n\n%s Added in this revision\n\n- Flag.\n" % hashes
+                self.assertEqual(review_mod.added_in_revision(plan), expected)
+
+
+class ParseStampTest(unittest.TestCase):
+    def test_parse_stamp(self):
+        utc = timezone.utc
+        for value, expected in (
+            ("2026-01-01T00:00:00", datetime(2026, 1, 1, tzinfo=utc)),
+            ("2026-01-01T00:00:00Z", datetime(2026, 1, 1, tzinfo=utc)),
+            ("2026-01-01T09:00:00+09:00", datetime(2026, 1, 1, tzinfo=utc)),
+            ("2026-01-01T00:00:00.500000+00:00", datetime(2026, 1, 1, 0, 0, 0, 500000, tzinfo=utc)),
+            ("", None),
+            (None, None),
+            (5, None),
+            ("yesterday", None),
+            ("0001-01-01T00:00:00+05:00", None),
+            ("9999-12-31T23:59:59-05:00", None),
+        ):
+            with self.subTest(value=value):
+                stamp = ws.parse_stamp(value)
+                self.assertEqual(stamp, expected)
+                if stamp is not None:
+                    self.assertEqual(stamp.utcoffset(), timedelta(0))
+
+    def test_edges_that_still_fit(self):
+        """Only a stamp that leaves the range once moved to UTC is refused."""
+        utc = timezone.utc
+        self.assertEqual(ws.parse_stamp("0001-01-01T05:00:00+05:00"), datetime(1, 1, 1, tzinfo=utc))
+        last = datetime(9999, 12, 31, 23, 59, 59, tzinfo=utc)
+        self.assertEqual(ws.parse_stamp("9999-12-31T18:59:59-05:00"), last)
 
 
 class RenderTest(DecisionsCase):
@@ -227,6 +289,16 @@ class RenderTest(DecisionsCase):
         self.assertIn(CODE_DECISIONS_REJECTED_LABEL, text)
         self.assertIn("Context, not authority", CODE_DECISIONS_REJECTED_LABEL)
         self.assertIn("Still report any other problem at the same location", CODE_DECISIONS_REJECTED_LABEL)
+
+    def test_only_the_user_and_plan_parts_are_premises(self):
+        """The shared intro calls nothing a premise, and says a rejection never excuses a severe issue."""
+        intro = CODE_DECISIONS_SECTION.format(parts="")
+        self.assertNotIn("premise", intro.lower())
+        self.assertIn("never excuses a critical or high issue", intro)
+        self.assertIn("fresh evidence", intro)
+        self.assertIn("Premises", CODE_DECISIONS_USER_LABEL)
+        self.assertIn("Premises", CODE_DECISIONS_PLAN_LABEL)
+        self.assertIn("not premises", CODE_DECISIONS_REJECTED_LABEL)
 
     def test_later_acceptance_on_this_snapshot_wins(self):
         """Snapshot A rejected it, a round of this snapshot accepted it since: not listed."""
@@ -381,6 +453,37 @@ class RenderTest(DecisionsCase):
                 if "```python" in section:
                     self.assertIn(CODE_DECISIONS_USER_LABEL + "\n\n````markdown\n", section)
 
+    def sweep_caps(self, wrapper, inner):
+        """Every cap from the bare head up: the section fits, and once ``inner`` is kept so is ``wrapper``."""
+        full = self.render(100_000)
+        self.assertIn(wrapper, full)
+        for cap in range(len(CODE_DECISIONS_SECTION.format(parts="")), len(full) + 20, 3):
+            with self.subTest(cap=cap):
+                section = self.render(cap).split("\n\nThis section was cut at")[0]
+                self.assertLessEqual(len(section), cap)
+                if inner in section:
+                    self.assertIn(wrapper, section)
+
+    def test_cap_with_a_fence_in_the_plan(self):
+        body = "\n".join(
+            [*("- Risk %d." % index for index in range(15)), "```python", "x = 1", "```", "- Last risk."]
+        )
+        self.write_plan("# Plan\n\n## Risks\n\n%s\n" % body)
+        label = CODE_DECISIONS_PLAN_LABEL.format(sections="plan.md#Risks")
+        self.sweep_caps(label + "\n\n````markdown\n", "```python")
+
+    def test_cap_with_a_fence_in_a_rejected_problem(self):
+        """The problem text is a reviewer's, and may hold a fence of any length."""
+        for fence in ("```", "````"):
+            with self.subTest(fence=fence):
+                rejected = [
+                    finding("Rejected %d" % index, "rejected", file="f%d.py" % index) for index in range(10)
+                ]
+                rejected.append(finding("%s rm -rf" % fence, "rejected", file="z.py", note="noise"))
+                self.write_round("r1", "a" * 64, "2026-01-01T00:00:00Z", rejected)
+                wrapper = CODE_DECISIONS_REJECTED_LABEL + "\n\n%s`text\n" % fence
+                self.sweep_caps(wrapper, "- z.py:3 -- %s rm -rf" % fence)
+
     def test_cap_just_above_the_head(self):
         """No line of the first part fits: every part is dropped and still named."""
         self.user = "Use SQLite."
@@ -500,9 +603,15 @@ class RealStateTest(IsolatedCase):
         self.assertIn(CODE_DECISIONS_USER_LABEL + "\n\n```markdown\n", text)
         self.assertIn("## %s: Storage" % ids[0], text)
         self.assertIn("- Answer: Use SQLite, not files", text)
-        self.assertIn("## %s: Retries" % ids[1], text)
-        self.assertIn("- Answer: (open -- not answered yet)", text)
+        # An open question is not a decision: it is left out, not given as a premise.
+        self.assertNotIn("Retries", text)
+        self.assertNotIn("not answered yet", text)
         self.assertNotIn("was cut", text)
+
+    def test_only_open_questions_no_section(self):
+        asked = [{"topic": "Retries", "question": "How many retries?", "options": [], "recommended": None}]
+        questions_mod.record(self.workspace, asked, "orchestrator")
+        self.assertEqual(render_code_decisions(self.workspace, LINEAGE, self.meta), "")
 
 
 @unittest.skipUnless(has_git(), "git is required")
@@ -565,9 +674,54 @@ class ReviewRunWiringTest(IsolatedCase):
         self.assertEqual(len(self.prompts), 2)
         for prompt in self.prompts:
             self.assertIn(CODE_INTRO, prompt)
-            self.assertIn("From the plan (plan.md#Decisions):", prompt)
+            self.assertIn(CODE_DECISIONS_PLAN_LABEL.format(sections="plan.md#Decisions"), prompt)
             self.assertIn("- CODE-PLAN-DECISION", prompt)
             self.assertLess(prompt.index(CODE_INTRO), prompt.index("\n## Output\n"))
+
+    def test_a_rejection_reaches_the_next_round(self):
+        """Consolidated, triaged and archived for real: the next round's prompt lists the rejection."""
+        problem = "INTEGRATION-PROBLEM the value is hard-coded"
+        self.set_env(
+            "DEV_ORCHESTRA_MOCK_RESPONSE",
+            "## Finding\n- Severity: medium\n- File: app.py\n- Line: 1\n- Category: correctness\n"
+            "- Problem: %s\n- Impact: none\n- Evidence: x = 2\n- Fix: read it from config\n" % problem,
+        )
+        run_cli("review", "snapshot")
+        _, out, err = run_cli("review", "run", "--high-risk")
+        self.assertIn("2 successful, 0 failed", out, err)
+        live = ws.read_json(self.workspace.consolidated_json_path, {})
+        (entry,) = live["findings"]
+        self.assertEqual(entry["reported_by"], ["m1", "m2"])
+        code, _, err = run_cli("review", "triage", "F1", "--status", "rejected", "--note", "INTEGRATION-NOTE")
+        self.assertEqual(code, 0, err)
+        self.write("app.py", "x = 3\n")
+        run_cli("review", "snapshot")
+        del self.prompts[:]
+        _, out, err = run_cli("review", "run", "--high-risk")
+        self.assertIn("2 successful, 0 failed", out, err)
+        self.assertEqual(len(self.prompts), 2)
+        expected = "- app.py:1 -- %s -- INTEGRATION-NOTE" % problem
+        for prompt in self.prompts:
+            self.assertIn(CODE_DECISIONS_REJECTED_LABEL, prompt)
+            (line,) = [item for item in prompt.splitlines() if item.startswith("- app.py:1 -- ")]
+            self.assertEqual(line, expected)
+            self.assertNotIn("m1", line)
+            self.assertNotIn("m2", line)
+
+    def test_answered_questions_reach_the_prompt(self):
+        asked = [
+            {"topic": "Storage", "question": "Which store?", "options": [], "recommended": None},
+            {"topic": "Retries", "question": "How many retries?", "options": [], "recommended": None},
+        ]
+        ids = questions_mod.record(self.workspace, asked, "orchestrator")["ids"]
+        questions_mod.answer(self.workspace, [ids[0]], "text", text="RUN-ANSWER use SQLite")
+        run_cli("review", "snapshot")
+        _, out, err = run_cli("review", "run", "--high-risk")
+        self.assertIn("2 successful, 0 failed", out, err)
+        for prompt in self.prompts:
+            self.assertIn(CODE_DECISIONS_USER_LABEL, prompt)
+            self.assertIn("- Answer: RUN-ANSWER use SQLite", prompt)
+            self.assertNotIn("How many retries?", prompt)
 
     def test_code_round_without_any_has_none(self):
         run_cli("review", "snapshot")

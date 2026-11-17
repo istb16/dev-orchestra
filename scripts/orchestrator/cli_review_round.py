@@ -580,6 +580,7 @@ def _consolidate_round(
     completed_round: Optional[str] = None,
     unreviewed_round: Optional[str] = None,
     amend: Optional[Callable[[Dict[str, Any]], None]] = None,
+    blocking: Sequence[str] = (),
 ) -> Tuple[Dict[str, Any], List[str]]:
     """Build the round's report from the panel's reports and save it.
 
@@ -597,6 +598,8 @@ def _consolidate_round(
     ``run_dicts`` is the runs this round recorded, merged into the last
     report's table (``_merge_runs``); None rebuilds without a run, and keeps
     that table as it stands. ``amend`` sees the report before it is saved.
+    ``blocking`` is ``review.blocking_severities``, which keeps a pre-existing
+    finding at one of them in triage.
     """
     ids = [str(r.get("id")) for r in panel if str(r.get("id")) not in excluded]
     findings, stale = review_mod.read_reports(workspace, ids, review_mod.current_snapshot_stamp(workspace))
@@ -617,6 +620,7 @@ def _consolidate_round(
             lineage,
             completed_round=completed_round,
             unreviewed_round=unreviewed_round,
+            blocking=blocking,
         )
         if amend is not None:
             amend(data)

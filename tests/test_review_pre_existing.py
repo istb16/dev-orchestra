@@ -18,7 +18,7 @@ import json
 import unittest
 from typing import Any, Dict, List
 
-from helpers import IsolatedCase, run_cli
+from helpers import IsolatedCase, has_git, run_cli
 
 from orchestrator import review_consolidation, review_loop
 from orchestrator import workspace as ws
@@ -383,6 +383,195 @@ class TestMixedAtOneLocation(unittest.TestCase):
         )
 
 
+class TestOneIssueTwoLabels(unittest.TestCase):
+    """The same words at the same place are one entry, whichever side of the split it lands."""
+
+    def test_pre_existing_and_normal_merge_into_a_finding(self):
+        pre = by_file("util.py")
+        normal = dict(pre, reviewer="r2", category="correctness")
+        data = build([pre, normal])
+        self.assertEqual(data["pre_existing"], [])
+        (entry,) = data["findings"]
+        self.assertEqual(entry["reported_by"], ["r1", "r2"])
+        self.assertEqual(data["counts"]["duplicates_merged"], 1)
+        self.assertEqual(
+            [report["category"] for report in entry["merged_reports"]], ["pre_existing", "correctness"]
+        )
+
+    def test_high_and_medium_pre_existing_merge_into_a_finding(self):
+        medium = by_file("util.py")
+        high = dict(medium, reviewer="r2", severity="high")
+        data = build([medium, high])
+        self.assertEqual(data["pre_existing"], [])
+        (entry,) = data["findings"]
+        self.assertEqual(entry["severity"], "high")
+        self.assertEqual(sorted(entry["reported_by"]), ["r1", "r2"])
+
+    def test_medium_and_low_pre_existing_merge_apart(self):
+        medium = by_file("util.py")
+        low = dict(medium, reviewer="r2", severity="low")
+        data = build([medium, low])
+        self.assertEqual(data["findings"], [])
+        (entry,) = data["pre_existing"]
+        self.assertEqual(entry["id"], "P1")
+        self.assertEqual(entry["severity"], "medium")
+        self.assertEqual(entry["reported_by"], ["r1", "r2"])
+
+
+class TestDesignRound(unittest.TestCase):
+    """The design prompt does not offer the category, and a design round sets nothing apart."""
+
+    def test_design_report_saying_pre_existing_is_triaged(self):
+        report = (
+            "## Finding\n- Severity: medium\n- File: plan.md#Proposed Change\n- Line: n/a\n"
+            "- Category: pre-existing\n- Problem: the plan keeps the old cache\n- Impact: stale reads\n"
+            "- Evidence: keep the cache\n- Fix: drop it\n"
+        )
+        meta = {"sha256": "abc", "files": ["plan.md"], "strategy": "plan"}
+        data = review_consolidation.consolidation_from(meta, {}, [], parse_findings(report, "d1"))
+        self.assertEqual(data["pre_existing"], [])
+        (entry,) = data["findings"]
+        self.assertEqual(entry["id"], "F1")
+        self.assertEqual(entry["triage"], "needs-triage")
+        self.assertEqual(data["counts"]["findings_total"], 1)
+
+
+class TestConfiguredBlocking(unittest.TestCase):
+    """A severity ``review.blocking_severities`` names is not set apart on the label alone."""
+
+    def test_medium_blocking_keeps_medium(self):
+        meta = {"sha256": "abc", "files": [], "scope": "whole"}
+        data = review_consolidation.consolidation_from(
+            meta, {}, [], mild_pre_existing(), blocking=("critical", "high", "medium")
+        )
+        self.assertEqual([f["file"] for f in data["findings"]], ["util.py"])
+        self.assertEqual([f["file"] for f in data["pre_existing"]], ["names.py"])
+        blocking = ("critical", "high", "medium")
+        self.assertEqual(len(review_consolidation.unresolved_blocking(data, blocking)), 1)
+
+    def test_default_sets_medium_apart(self):
+        self.assertEqual(len(build(mild_pre_existing())["pre_existing"]), 2)
+
+
+class TestNearEdges(unittest.TestCase):
+    """``_near``'s 10 lines, at the edge, with ranges and with a line on one side only."""
+
+    def last_at(self, line: str) -> Dict[str, Any]:
+        last = build([dict(by_file("util.py"), category="correctness", line=line)])
+        review_consolidation.set_triage(last, "F1", "accepted")
+        return last
+
+    def test_edges(self):
+        for old, new, kept in (
+            ("7", "17", True),
+            ("7", "18", False),
+            ("17", "7", True),
+            ("7", "5-9", True),
+            ("5-9", "7", True),
+            ("7", "16-20", True),
+            ("7", "18-20", False),
+            ("7", "n/a", False),
+            ("n/a", "7", False),
+        ):
+            with self.subTest(old=old, new=new):
+                reworded = dict(by_file("util.py"), line=new, problem=REWORDED)
+                data = build([reworded], last=self.last_at(old))
+                if kept:
+                    (entry,) = data["findings"]
+                    self.assertEqual(entry["triage"], "needs-triage")
+                    self.assertEqual(data["pre_existing"], [])
+                else:
+                    self.assertEqual(data["findings"], [])
+                    self.assertEqual(len(data["pre_existing"]), 1)
+
+
+class TestPriorRejection(unittest.TestCase):
+    """A rejection is carried by a merged wording only when every merged report was rejected."""
+
+    PROBLEM = "the session token is written to the debug log"
+
+    def last_rejected(self) -> Dict[str, Any]:
+        old = dict(by_file("util.py"), category="security", problem=self.PROBLEM)
+        last = build([old])
+        review_consolidation.set_triage(last, "F1", "rejected", "debug only")
+        return last
+
+    def test_new_report_merged_with_a_rejected_one_is_not_rejected(self):
+        again = dict(by_file("util.py"), category="security", problem=self.PROBLEM)
+        new = dict(again, reviewer="r2", severity="high", problem=self.PROBLEM + " in production builds too")
+        data = build([again, new], last=self.last_rejected())
+        (entry,) = data["findings"]
+        self.assertEqual(entry["problem"], new["problem"])
+        self.assertEqual(entry["triage"], "needs-triage")
+        self.assertEqual(entry["triage_note"], "")
+        self.assertEqual(review_consolidation.unresolved_blocking(data, BLOCKING), [entry])
+
+    def test_every_report_rejected_stays_rejected(self):
+        key = review_consolidation.finding_key
+        first = {"file": "util.py", "problem": self.PROBLEM}
+        second = {"file": "util.py", "problem": self.PROBLEM + " in production builds too"}
+        previous = {
+            key(first): dict(first, triage="rejected", triage_note="debug only"),
+            key(second): dict(second, triage="rejected", triage_note="debug only"),
+        }
+        merged = [{"problem": first["problem"]}, {"problem": second["problem"]}]
+        # Its own wording a key of neither, every merged wording rejected: still rejected.
+        unseen = key({"file": "util.py", "problem": "unseen"})
+        entry = {"file": "util.py", "key": unseen, "merged_reports": merged}
+        found = review_consolidation._prior_triage(entry, previous)
+        assert found is not None
+        self.assertEqual(found["triage"], "rejected")
+        # One more report in words never seen: not rejected.
+        entry["merged_reports"] = [*merged, {"problem": "unseen"}]
+        self.assertIsNone(review_consolidation._prior_triage(entry, previous))
+
+
+class TestOpenMatchInteractions(unittest.TestCase):
+    def test_own_rejected_wording_beside_an_open_finding_is_set_apart(self):
+        """Its own wording rejected, it is not looked for by place, even beside an accepted finding."""
+        rejected = dict(by_file("util.py"), category="correctness")
+        accepted = dict(rejected, line="12", problem="the retry count is never reset")
+        last = build([rejected, dict(accepted, reviewer="r1")])
+        ids = {f["problem"]: f["id"] for f in last["findings"]}
+        review_consolidation.set_triage(last, ids[rejected["problem"]], "rejected", "noise")
+        review_consolidation.set_triage(last, ids[accepted["problem"]], "accepted")
+        data = build([by_file("util.py")], last=last)
+        self.assertEqual(data["findings"], [])
+        self.assertEqual([f["file"] for f in data["pre_existing"]], ["util.py"])
+
+    def test_duplicate_candidates_never_pair_a_p_with_an_f(self):
+        pre = dict(by_file("util.py"), evidence="`helper_call()` swallows")
+        normal = dict(
+            pre,
+            reviewer="r2",
+            severity="high",
+            category="correctness",
+            line="9",
+            problem="retries never stop",
+            evidence="`helper_call()` loops",
+        )
+        data = build([pre, normal])
+        self.assertEqual([f["id"] for f in data["findings"]], ["F1"])
+        self.assertEqual([f["id"] for f in data["pre_existing"]], ["P1"])
+        self.assertEqual(data["duplicate_candidates"], [])
+        self.assertNotIn("possible_duplicates", data["findings"][0])
+
+    def test_reviewer_with_only_pre_existing_findings(self):
+        runs = [
+            {"id": "r1", "status": "ok", "findings": 2, "snapshot": "abc"},
+            {"id": "r2", "status": "ok", "findings": 0, "snapshot": "abc"},
+        ]
+        meta = {"sha256": "abc", "files": [], "scope": "whole"}
+        data = review_consolidation.consolidation_from(meta, {}, runs, mild_pre_existing())
+        self.assertEqual(data["reviewers"], runs)
+        self.assertEqual(data["counts"]["findings_total"], 0)
+        self.assertEqual(data["counts"]["reviewers_ok"], 2)
+        self.assertEqual(data["counts"]["reviewers_total"], 2)
+        self.assertEqual(len(data["pre_existing"]), 2)
+        text = review_consolidation.render_consolidation(data)
+        self.assertIn("ok [None] r1 / None / unknown model -- 2 finding(s)", text)
+
+
 class TestNotTriageMaterial(unittest.TestCase):
     def test_not_triage_material(self):
         data = build(mild_pre_existing())
@@ -514,6 +703,35 @@ class TestCli(IsolatedCase):
         stored = self.stored()
         self.assertEqual(stored["findings"][0]["triage"], "rejected")
         self.assertNotIn("pre_existing", stored)
+
+
+@unittest.skipUnless(has_git(), "git is required")
+class TestConsolidateCli(IsolatedCase):
+    """``review consolidate --json`` over a real report: ``pre_existing`` beside ``findings``."""
+
+    def test_consolidate_json(self):
+        self.init_git_repo()
+        self.write("app.py", "x = 1\n")
+        self.commit_all("init")
+        self.write("app.py", "x = 2\n")
+        run_cli("config", "setup", "--defaults")
+        for seat in ("claude-general", "codex-general", "claude-security", "claude-test"):
+            run_cli("reviewer", "remove", seat)
+        run_cli("reviewer", "add", "--provider", "mock", "--id", "m1", "--role", "general")
+        code, _, err = run_cli("review", "snapshot")
+        self.assertEqual(code, 0, err)
+        workspace = self.cli_workspace()
+        ws.write_text(workspace.reviewer_report_path("m1"), REPORT)
+        code, out, err = run_cli("review", "consolidate", "--json")
+        self.assertEqual(code, 0, err)
+        data = json.loads(out)
+        self.assertEqual({f["file"] for f in data["findings"]}, {"app.py", "db.py", "auth.py"})
+        self.assertEqual(
+            [(f["id"], f["file"]) for f in data["pre_existing"]], [("P1", "util.py"), ("P2", "names.py")]
+        )
+        self.assertEqual(data["counts"]["findings_total"], 3)
+        stored = ws.read_json(workspace.consolidated_json_path, {})
+        self.assertEqual(stored["pre_existing"], data["pre_existing"])
 
 
 if __name__ == "__main__":

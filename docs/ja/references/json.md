@@ -1,4 +1,4 @@
-<!-- translated-from: references/json.md sha256:96d784ccd246c6525900fe5164c7ffbb9ad0cac9f28787ff2dbf78ed9ad31b7a -->
+<!-- translated-from: references/json.md sha256:2d18f3163cb539d747382f966d55138d766c1488c8cc029f07f8bd2f8f2abe8b -->
 
 > この文書は [references/json.md](../../../references/json.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -377,8 +377,8 @@ Object. `consolidated.json` が持つとおりの、まとめたレポートで�
 | `reviewers` | list | 各レビュアーのエントリ。`review run` と同じ。 |
 | `counts` | object | `findings_total`、`by_severity`、`duplicates_merged`、`duplicate_candidates`、`reviewers_total`、`reviewers_ok`、`reviewers_partial`、`reviewers_failed`、そしてその 4 つに `snapshot_` を付けたもの。`pre_existing` にある指摘は数えません。 |
 | `duplicate_candidates` | list | 同じかもしれない指摘の組。 |
-| `findings` | list | 指摘ごとに 1 つのエントリ。`id`、`key`、`severity`（`critical`、`high`、`medium`、`low`）、`file`、`line`、`category`、`problem`、`impact`、`evidence`、`recommended_fix`、`reported_by`、`duplicate_count`、`triage`（`needs-triage`、`accepted`、`rejected`、`duplicate`、`needs-investigation`）、`triage_note`、トリアージしたあとは `triage_set_at`。中・低の既存の問題の指摘はここになく、`pre_existing` にあります。重大・高のもの、および前のラウンドの `rejected` 以外のトリアージを引き継ぐものは、`category` を付けてここにあります。 |
-| `pre_existing` | list | `Category: pre-existing` として報告された中・低の指摘（前のラウンドのトリアージを引き継ぐものを除く）。`findings` と同じ形で、トリアージの項目はありません。ID は `P1..`。このバージョンより前に書かれたレポートにはありません。[トリアージ](reviews.md#triage) を参照。 |
+| `findings` | list | 指摘ごとに 1 つのエントリ。`id`、`key`、`severity`（`critical`、`high`、`medium`、`low`）、`file`、`line`、`category`、`problem`、`impact`、`evidence`、`recommended_fix`、`reported_by`、`duplicate_count`、`triage`（`needs-triage`、`accepted`、`rejected`、`duplicate`、`needs-investigation`）、`triage_note`、トリアージしたあとは `triage_set_at`。まとめられた指摘には `merged_reports` があり、報告ごとの `reviewer`、`severity`、`category`、`line` と本文の項目を持ちます。中・低の既存の問題の指摘はここになく、`pre_existing` にあります。既存の問題ではない報告とまとめられたもの、重大度が critical・high または `review.blocking_severities` にあるもの、前のラウンドの `rejected` 以外のトリアージを引き継ぐもの、そして設計ラウンドの指摘はすべて、`category` を付けてここにあります。 |
+| `pre_existing` | list | コードのラウンドで、まとめられた報告がどれも `Category: pre-existing` である中・低の指摘（上で `findings` に残るものを除く）。`findings` と同じ形で、トリアージの項目はありません。ID は `P1..`。このバージョンより前に書かれたレポートにはありません。[トリアージ](reviews.md#triage) を参照。 |
 | `surrounding` | object | Only: ラウンドが周りの文脈を運んだときだけ。 |
 | `measurement` | object | Only: `review run --surrounding` のあとだけ。`triage_at_build` を含みます。 |
 
