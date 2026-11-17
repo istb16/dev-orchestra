@@ -809,7 +809,10 @@ Rules:
 - Read only what a step needs: start from the files and lines the plan names,
   and read a large file by the range you need.
 - Run lint and type checks once per step, not after every edit.
-- Run those tests and report the result.
+- Run only the tests related to the change -- the ones you added or changed
+  and the ones that cover the code you touched -- and report the result. Do
+  not run the whole suite: it runs once at the Test stage, unless the
+  project instructions ask for it here.
 - If the plan is wrong or impossible, STOP and explain why. Do not redesign.
 
 Report: files changed, tests added/updated, test output, anything you could not do.
@@ -818,6 +821,14 @@ Report: files changed, tests added/updated, test output, anything you could not 
 ```bash
 dev-orchestra run implementer --prompt-file .ai/execution/implement-request.md
 ```
+
+**Only the related tests run here.** The implementer and the review fixer
+run the tests their change touches, not the whole suite: the suite runs once
+in [Test](#test), and running it inside every implement and fix run is where
+much of their time went. A project that wants the whole suite run here says
+so in its instructions (`instructions.implementer`, `instructions.review_fixer`;
+[standing instructions](#implementation)), which the CLI puts in front of the
+request.
 
 **A long plan runs in parts.** A run costs more per tool call the longer it
 gets, because every call re-reads what the run has read so far: on this
@@ -1017,7 +1028,9 @@ For each finding below:
 4. Where a test can show the defect, add one that fails on the code as it
    was and passes after the fix; where none can (wording, documentation,
    a design choice), say why.
-5. Run the relevant tests plus lint/type checks, and report the output.
+5. Run only the tests related to the fix, plus lint/type checks, and report
+   the output. Do not run the whole suite unless the project instructions ask
+   for it.
 
 Do not fix anything that is not listed here.
 ```

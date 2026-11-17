@@ -82,6 +82,14 @@ authors can find it.
   `optimization.narrow_re_reviews: false` turns the cut off; a project file
   that turns it back on over a `false` is reported as loosening.
 
+### Changed
+
+- **The implementer and the review fixer run only the related tests.** The
+  implementation and fix request templates, and the skill, now ask for the
+  tests the change touches rather than the whole suite, which runs once at the
+  Test stage (#387). A project that wants the whole suite run in those runs
+  says so in `instructions.implementer` / `instructions.review_fixer`.
+
 ## [1.3.2] - 2026-11-09
 
 ### Fixed

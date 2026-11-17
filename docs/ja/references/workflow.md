@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:cde1a320903d2ecfaf8982de0982f0281b92b44827071e9834c123a2ed8ca673 -->
+<!-- translated-from: references/workflow.md sha256:061d83af69ce19a41ee2703ad070121ae50711246e9454fe51903f2eb2b82333 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -793,7 +793,10 @@ Rules:
 - Read only what a step needs: start from the files and lines the plan names,
   and read a large file by the range you need.
 - Run lint and type checks once per step, not after every edit.
-- Run those tests and report the result.
+- Run only the tests related to the change -- the ones you added or changed
+  and the ones that cover the code you touched -- and report the result. Do
+  not run the whole suite: it runs once at the Test stage, unless the
+  project instructions ask for it here.
 - If the plan is wrong or impossible, STOP and explain why. Do not redesign.
 
 Report: files changed, tests added/updated, test output, anything you could not do.
@@ -802,6 +805,14 @@ Report: files changed, tests added/updated, test output, anything you could not 
 ```bash
 dev-orchestra run implementer --prompt-file .ai/execution/implement-request.md
 ```
+
+**ここで走らせるのは関係するテストだけです。** 実装役と修正役は、変更に関係する
+テストだけを走らせ、テスト全体は走らせません。テスト全体は [Test](#test) で 1 回
+走らせます。実装や修正の実行のたびにテスト全体を走らせることに、その時間の多くが
+使われていました。ここでもテスト全体を走らせたいプロジェクトは、プロジェクトの指示
+（`instructions.implementer`、`instructions.review_fixer`。
+[Standing instructions](#implementation)）にそう書きます。CLI がその指示を依頼の前に
+付けます。
 
 **長い計画は分けて走らせます。** 実行は長くなるほど、ツール呼び出し 1 回あたりの費用が
 上がります。呼び出すたびに、それまでに読んだものをすべて読み直すためです。このプロジェクト
@@ -988,7 +999,9 @@ For each finding below:
 4. Where a test can show the defect, add one that fails on the code as it
    was and passes after the fix; where none can (wording, documentation,
    a design choice), say why.
-5. Run the relevant tests plus lint/type checks, and report the output.
+5. Run only the tests related to the fix, plus lint/type checks, and report
+   the output. Do not run the whole suite unless the project instructions ask
+   for it.
 
 Do not fix anything that is not listed here.
 ```
