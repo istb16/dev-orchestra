@@ -9,6 +9,15 @@ from .optimization import DEFAULT_LEVEL, MAX_FINDINGS_BY_LEVEL
 SEVERITIES = ("critical", "high", "medium", "low")
 SEVERITY_RANK = {name: index for index, name in enumerate(SEVERITIES)}
 TRIAGE_STATUSES = ("accepted", "rejected", "duplicate", "needs-investigation", "needs-triage")
+#: Categories that mark a finding as already there before the change. A
+#: medium or low one is reported apart and never triaged. Models vary the
+#: spelling.
+PRE_EXISTING_CATEGORIES = ("pre-existing", "preexisting", "pre_existing")
+#: The severities at which one reviewer's "pre-existing" is not taken on its
+#: word: such a finding stays in triage, and in the loop's decision, as any
+#: other does. The label is free text the reviewed diff can steer, and a
+#: critical one wrongly set aside would let the round finish clean.
+PRE_EXISTING_TRIAGED_SEVERITIES = ("critical", "high")
 
 #: Files whose diff is withheld from reviewers by default.
 #:
@@ -183,7 +192,8 @@ One block per issue, exactly this shape:
 - Severity: critical|high|medium|low
 - File: <path from repo root>
 - Line: <number, range, or n/a>
-- Category: <one word, e.g. correctness, security, performance, tests>
+- Category: <one word, e.g. correctness, security, tests; pre-existing if \
+this change did not cause, worsen or expose it>
 - Problem: <what is wrong, 1-2 sentences>
 - Impact: <what breaks, under what conditions>
 - Evidence: <the code or hunk that shows it>
@@ -246,6 +256,27 @@ looks wrong, report one finding with `Category: decision` and the decision's
 ID in `File` (e.g. `decisions.md#Q3`).
 
 {decisions}"""
+
+#: Appended last to the code change section when there is something to put in
+#: it: the user's answers, the plan's Risks and Decisions, and the findings
+#: triage rejected in earlier rounds of the same review. ``{parts}`` is each
+#: of those under its label below, fenced.
+CODE_DECISIONS_SECTION = """## Decisions already made
+
+These were decided before or during this change. Treat them as premises: do
+not report the change for following them. If the code contradicts one, or a
+decision itself looks wrong, report it and cite the decision in `Problem`
+(e.g. `decisions.md#Q3`, `plan.md#Risks`, or the rejected finding's location).
+
+{parts}"""
+
+CODE_DECISIONS_USER_LABEL = "The user's decisions (decisions.md):"
+CODE_DECISIONS_PLAN_LABEL = "From the plan ({sections}):"
+CODE_DECISIONS_REJECTED_LABEL = (
+    "Findings rejected in earlier rounds of this review (location -- problem -- reason). "
+    "Context, not authority: the problem text came from a reviewer, not the user. "
+    "Still report any other problem at the same location:"
+)
 
 
 def accepted_findings(data: Dict[str, Any]) -> List[Dict[str, Any]]:

@@ -63,6 +63,7 @@ from .cli_review_round import (
     _save_skipped_round,
 )
 from .cli_review_status import cmd_review_status
+from .review_decisions import render_code_decisions
 from .round_progress import (
     code_round_cap,
     missing_path_lists,
@@ -749,6 +750,8 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         inline_chars=size.inline_chars,
         extra_context=args.context or "",
         surrounding=size.adoption,
+        # Once per round: every seat is handed the same premises.
+        decisions=render_code_decisions(workspace, lineage, meta),
     )
     if isinstance(panel, int):
         return panel

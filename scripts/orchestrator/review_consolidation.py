@@ -9,7 +9,14 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, cast
 
 from . import context as context_mod
 from . import workspace as ws
-from .review_common import SEVERITIES, SEVERITY_RANK, TRIAGE_STATUSES, accepted_findings
+from .review_common import (
+    PRE_EXISTING_CATEGORIES,
+    PRE_EXISTING_TRIAGED_SEVERITIES,
+    SEVERITIES,
+    SEVERITY_RANK,
+    TRIAGE_STATUSES,
+    accepted_findings,
+)
 from .review_coverage import coverage_headline
 from .review_fanout import ReviewerRun
 from .review_parsing import _HEADER_MARKER, parse_findings
@@ -44,7 +51,7 @@ def _same_locus(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
     file and has no line -- but one with a line and one without are not, and
     such a pair is left to ``duplicate_candidates`` to suggest.
     """
-    if left["file"] != right["file"]:
+    if left.get("file") != right.get("file"):
         return False
     lnum, rnum = _line_number(left.get("line", "")), _line_number(right.get("line", ""))
     if lnum is None or rnum is None:
@@ -394,11 +401,12 @@ def consolidation_from(
     # ordered) and get reassigned every round, so an id-keyed lookup silently
     # drops a decision -- or applies it to a different finding -- as soon as the
     # finding set changes, which is exactly what fixing things does.
-    previous = {finding_key(entry): entry for entry in last.get("findings", [])}
-    consolidated = consolidate_findings(findings)
+    previous = _previous_by_key(last)
+    normal, pre_existing, held = _split_pre_existing(findings, previous)
+    consolidated = consolidate_findings(normal)
     for entry in consolidated:
         entry["key"] = finding_key(entry)
-        old = previous.get(entry["key"])
+        old = _prior_triage(entry, previous, held)
         if old:
             entry["triage"] = old.get("triage", entry["triage"])
             entry["triage_note"] = old.get("triage_note", "")
@@ -467,9 +475,116 @@ def consolidation_from(
             "counts": counts,
             "duplicate_candidates": candidates,
             "findings": consolidated,
+            "pre_existing": _consolidate_pre_existing(pre_existing),
         }
     )
     return data
+
+
+def _split_pre_existing(
+    findings: Sequence[Dict[str, Any]],
+    previous: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """``(normal, pre_existing, held)``: the findings to triage, those that were there before,
+    and the earlier finding each one kept in triage by ``previous`` matched, by its key.
+
+    Only a medium or low finding is set apart on a reviewer's "pre-existing".
+    A critical or high one stays in triage -- one reviewer's free-text label,
+    which the reviewed diff can steer, must not take a severe finding out of
+    the loop's decision. So does one the last report already holds and has
+    not rejected (``_open_match``): on a fix-only round the original change's
+    bug looks pre-existing beside the fix, and setting it apart would drop
+    its ``accepted`` and call the round clean with the bug still in.
+    """
+    previous = previous or {}
+    normal: List[Dict[str, Any]] = []
+    pre_existing: List[Dict[str, Any]] = []
+    held: Dict[str, Dict[str, Any]] = {}
+    for finding in findings:
+        category = str(finding.get("category") or "").strip().lower()
+        severity = str(finding.get("severity") or "medium").strip().lower()
+        if category not in PRE_EXISTING_CATEGORIES or severity in PRE_EXISTING_TRIAGED_SEVERITIES:
+            normal.append(finding)
+            continue
+        match = _open_match(finding, previous)
+        if match is None:
+            pre_existing.append(finding)
+        else:
+            held.setdefault(finding_key(finding), match)
+            normal.append(finding)
+    return normal, pre_existing, held
+
+
+def _open_match(finding: Dict[str, Any], previous: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The last report's not-rejected finding this one is, or None.
+
+    By wording first: one whose wording the last report rejected is not
+    looked for elsewhere. Then by place -- the same file, lines within 10 --
+    since a reviewer seldom repeats its words between rounds.
+    """
+    old = previous.get(finding_key(finding))
+    if old is not None:
+        return None if old.get("triage") == "rejected" else old
+    for entry in previous.values():
+        if entry.get("triage") != "rejected" and _same_locus(finding, entry):
+            return entry
+    return None
+
+
+def _prior_triage(
+    entry: Dict[str, Any],
+    previous: Dict[str, Dict[str, Any]],
+    held: Dict[str, Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """The earlier finding whose triage ``entry`` carries, or None.
+
+    Looked up by every report merged into it, not only by its final, longest
+    wording: a report recognised under its own words keeps that finding's
+    triage when another reviewer's new wording is merged with it. A match not
+    rejected wins over a rejected one.
+    """
+    keys = [entry["key"]]
+    for report in entry.get("merged_reports") or []:
+        if isinstance(report, dict):
+            keys.append(finding_key({"file": entry.get("file", ""), "problem": report.get("problem", "")}))
+    matches = [found for found in (previous.get(key) or held.get(key) for key in keys) if found]
+    for found in matches:
+        if found.get("triage") != "rejected":
+            return found
+    return matches[0] if matches else None
+
+
+def _previous_by_key(last: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """The last report's findings by ``finding_key``, for carrying their triage.
+
+    A merged finding is keyed on its longest wording, so the wording of each
+    report merged into it is a key to it too: a reviewer re-reporting it may
+    use any of them. A finding's own key wins over another's merged wording.
+    """
+    entries = [entry for entry in last.get("findings") or [] if isinstance(entry, dict)]
+    previous = {finding_key(entry): entry for entry in entries}
+    for entry in entries:
+        for report in entry.get("merged_reports") or []:
+            if isinstance(report, dict):
+                key = finding_key({"file": entry.get("file", ""), "problem": report.get("problem", "")})
+                previous.setdefault(key, entry)
+    return previous
+
+
+def _consolidate_pre_existing(findings: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Pre-existing medium and low findings, merged as normal ones are, ids ``P1..Pn`` and no triage.
+
+    They are not the change's to fix, so they are kept out of ``findings`` --
+    and with it out of the counts, the signature, the fix brief and the loop --
+    and listed for the user to file as follow-ups.
+    """
+    merged = consolidate_findings(findings)
+    for index, entry in enumerate(merged, 1):
+        entry["id"] = "P%d" % index
+        entry["key"] = finding_key(entry)
+        entry.pop("triage", None)
+        entry.pop("triage_note", None)
+    return merged
 
 
 def _surrounding(current: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -778,7 +893,34 @@ def render_consolidation(data: Dict[str, Any]) -> str:
         lines.append("No findings were reported.")
     for finding in data.get("findings", []):
         lines += _finding_block(finding)
+    lines += _pre_existing_section(data.get("pre_existing") or [])
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _pre_existing_section(findings: Sequence[Dict[str, Any]]) -> List[str]:
+    """Problems that were there before the change, or nothing when there are none."""
+    if not findings:
+        return []
+    lines = [
+        "",
+        "## Pre-existing, not triaged",
+        "",
+        "Reported as there before this change and not made worse by it. Not part of",
+        "triage or the fix brief: file a follow-up for any worth fixing.",
+        "",
+    ]
+    for finding in findings:
+        lines += [
+            "### %s [%s]" % (finding.get("id", "?"), str(finding.get("severity") or "medium").upper()),
+            "",
+            "- Location: `%s`:%s" % (finding.get("file", "?"), finding.get("line", "n/a")),
+            "- Reported by: %s" % ", ".join(finding.get("reported_by", [])),
+            "- Problem: %s" % finding.get("problem", ""),
+            "- Impact: %s" % finding.get("impact", ""),
+            *_labelled("- ", "Recommended fix", finding.get("recommended_fix", "")),
+            "",
+        ]
+    return lines
 
 
 def _summary_lines(data: Dict[str, Any]) -> List[str]:
@@ -813,6 +955,11 @@ def _summary_lines(data: Dict[str, Any]) -> List[str]:
         "- Findings: %s (%s duplicate report(s) merged)"
         % (counts.get("findings_total"), counts.get("duplicates_merged"))
     )
+    # Only when there are some: a report from before the category, or a round
+    # without one, has nothing to say about it.
+    pre_existing = data.get("pre_existing") or []
+    if pre_existing:
+        lines.append("- Pre-existing (not triaged): %d" % len(pre_existing))
     return lines
 
 
@@ -1050,7 +1197,10 @@ def round_key(data: Dict[str, Any]) -> Tuple[str, str]:
     the live report of one round compare equal. ``("", "")`` for a report
     written before anything was frozen.
     """
-    snapshot = data.get("snapshot") or {}
+    snapshot = data.get("snapshot")
+    # A mangled entry is no round, rather than a crash in every reader of the archive.
+    if not isinstance(snapshot, dict):
+        return "", ""
     sha = str(snapshot.get("sha256") or "")
     if not sha:
         return "", ""

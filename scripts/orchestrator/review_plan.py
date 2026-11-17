@@ -43,6 +43,41 @@ def added_in_revision(plan_text: str) -> Optional[str]:
     return None if body is None else "\n".join(body).strip()
 
 
+_SECTION_NUMBER_RE = re.compile(r"^\d+[.)]?\s*")
+
+
+def plan_section(plan_text: str, name: str) -> Optional[str]:
+    """The body of the plan's ``## <name>`` or ``### <name>`` section.
+
+    ``added_in_revision`` for any section: a numbered heading
+    (``## 11. Risks``) counts, the name is matched whole and without regard
+    to case, and a heading inside a fenced block is not one. None when the
+    plan has no such heading; the body runs to the next heading of the same
+    level or higher, stripped.
+    """
+    wanted = name.strip().lower()
+    body: Optional[List[str]] = None
+    level = 0
+    for fenced in fenced_lines(plan_text.splitlines()):
+        line = fenced.text
+        if fenced.part:
+            if body is not None:
+                body.append(line)
+            continue
+        heading = HEADING_TEXT_RE.match(line)
+        if body is not None:
+            if heading and len(heading.group(1)) <= level:
+                break
+            body.append(line)
+            continue
+        if heading and len(heading.group(1)) in (2, 3):
+            title = _SECTION_NUMBER_RE.sub("", heading_title(heading.group(2)))
+            if title.lower() == wanted:
+                body = []
+                level = len(heading.group(1))
+    return None if body is None else "\n".join(body).strip()
+
+
 FILES_HEADING_RE = re.compile(r"^(?:\d+[.)]\s*)?files to modify\b", re.IGNORECASE)
 BACKTICK_RE = re.compile(r"`([^`\n]+)`")
 _BRACE_RE = re.compile(r"^(.*?)\{([^{}]*)\}(.*)$")

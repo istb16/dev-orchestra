@@ -30,7 +30,13 @@ def render_round_context(workspace: ws.Workspace, meta: Dict[str, Any]) -> str:
     units = render_units(meta)
     if not meta.get("incremental_from"):
         return units
-    lines = ["Re-review. The diff above is the fix only, not the whole change."]
+    lines = [
+        "Re-review. The diff above is the fix only, not the whole change.",
+        # The Category line's "this change" would otherwise read as the fix
+        # diff, and the original change's own bug would look pre-existing.
+        'For "Category: pre-existing", "this change" means the whole change, not this fix: '
+        "a problem the change brought in is never pre-existing, fixed or not.",
+    ]
     if meta.get("full_diff"):
         lines.append("Whole change frozen at %s -- read it if you need the context." % meta["full_diff"])
     accepted = carried_findings(workspace, meta)

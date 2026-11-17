@@ -276,6 +276,7 @@ def build_review_prompt(
     inline_chars: Optional[int] = None,
     surrounding: Optional[context_mod.Adoption] = None,
     instructions: str = "",
+    decisions: str = "",
 ) -> BuiltPrompt:
     """The code reviewer's prompt, built from the frozen snapshot.
 
@@ -285,6 +286,11 @@ def build_review_prompt(
 
     ``instructions`` is the seat's project instructions block, appended to
     its role guidance; "" leaves the prompt as it always was.
+
+    ``decisions`` is the round's "Decisions already made" section
+    (``review_decisions.render_code_decisions``). It goes after the
+    surrounding context, last, because its own heading would otherwise take
+    in the notes that follow it; "" adds nothing.
     """
     role = str(reviewer.get("role") or "general")
     guidance = ROLE_GUIDANCE.get(
@@ -307,6 +313,7 @@ def build_review_prompt(
         render_withheld(meta.get("withheld") or []),
         render_round_context(workspace, meta),
         context_mod.render_surrounding(surrounding),
+        decisions,
     ):
         if note:
             diff_section += "\n\n" + note
@@ -534,6 +541,7 @@ class FanoutOptions(NamedTuple):
     refusals: Optional[Dict[str, str]] = None
     activity_for: Optional[Callable[[str], Optional[activity.Sink]]] = None
     instructions_for: Optional[Callable[[Dict[str, Any]], str]] = None
+    decisions: str = ""
 
 
 def run_reviews(
@@ -582,6 +590,9 @@ def run_reviews(
     ``instructions_for`` maps a reviewer to its project instructions block
     for the code-review prompt, or is None for none. A ``prompt_for`` puts in
     its own, so the two are not given together.
+
+    ``decisions`` is the round's "Decisions already made" section for the
+    code-review prompt, the same for every seat; a ``prompt_for`` ignores it.
     """
     if not reviewers:
         return []
@@ -638,6 +649,7 @@ def run_reviews(
         timeout=options.timeout,
         idle_timeout=options.idle_timeout,
         instructions_for=options.instructions_for,
+        decisions=options.decisions,
     )
     activity_for = options.activity_for
 
@@ -680,6 +692,8 @@ class _Fanout(NamedTuple):
     timeout: int
     idle_timeout: Optional[float]
     instructions_for: Optional[Callable[[Dict[str, Any]], str]]
+    #: The "Decisions already made" section, code review only; "" for none.
+    decisions: str
 
 
 def _attempt(fan: _Fanout, reviewer: Dict[str, Any], sink: Optional[activity.Sink]) -> ReviewerRun:
@@ -702,6 +716,7 @@ def _attempt(fan: _Fanout, reviewer: Dict[str, Any], sink: Optional[activity.Sin
             fan.limit,
             fan.context,
             fan.instructions_for(reviewer) if fan.instructions_for is not None else "",
+            fan.decisions,
         )
     # Every run from here on knows what it was handed, and which snapshot it
     # was handed, failures included: a round is judged on what it sent, not

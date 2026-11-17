@@ -711,6 +711,17 @@ Reviewers are asked for this exact shape:
 
 A clean review returns exactly `NO_FINDINGS`.
 
+On a code round the Category line also offers `pre-existing`, for a problem
+this change did not cause, worsen or expose. A problem that was there before
+but that the change makes worse, or newly exposes, is a normal finding with its
+normal category.
+`pre-existing`, `preexisting` and `pre_existing` are all read as the same
+category, since models vary the spelling. Medium and low such findings are
+kept out of triage (see [Triage](#triage)). On a re-review whose diff is the
+fix only, the round's context tells reviewers that "this change" means the
+whole change, not the fix: a problem the change brought in is never
+pre-existing, fixed or not. The design prompt does not offer the category.
+
 ### Output limits
 
 The prompt caps what comes back:
@@ -1067,6 +1078,39 @@ is true in this codebase (not in general), and check the recommended fix does
 not break something the reviewer could not see. Before rejecting: make sure you
 are rejecting the claim, not just the tone.
 
+A medium or low finding a reviewer marked `Category: pre-existing` is not
+triage material. Consolidation merges such findings among themselves as it
+merges the others, numbers them `P1…Pn`, and keeps them out of `findings`:
+they carry no `triage` or `triage_note`, and they are not counted in `counts`,
+not part of the blocking or `wanted` findings, the fix brief or the loop's
+signature. A round whose only findings are these is clean. Two kinds of
+`pre-existing` finding stay in `findings`, with the category shown, and are
+triaged like any other:
+
+- a critical or high one. The label is one reviewer's free text, which the
+  reviewed diff can steer, and a severe finding set aside on it alone would
+  let the round finish clean; triage decides whether it is the change's.
+- one the last report already holds and triage has not rejected: the same
+  wording (its `key`, or the wording of one of the reports merged into it),
+  or failing that the same place (same file, lines within 10 of each other),
+  since a reviewer seldom repeats its words between rounds. It keeps that
+  finding's triage, also when it is merged with another reviewer's new
+  wording: an accepted finding re-reported as pre-existing on a fix-only
+  round is still accepted, and still blocks until it is fixed. One whose
+  wording the last report rejected is set apart.
+
+`consolidated.md` lists
+them after the findings, under `## Pre-existing, not triaged`, with id,
+severity, location, who reported them, problem, impact and recommended fix,
+and its summary adds `- Pre-existing (not triaged): N`; both appear only when
+there are some. `--json` has them under `pre_existing` (see
+`references/json.md`). A `P` id cannot be triaged -- `review triage P1` fails
+with the usual "no finding with id" error -- because they are not the
+change's to fix: file a follow-up for any worth fixing. `review show
+--accepted` filters `findings` only and leaves `pre_existing` as it is. A
+report written before this version has no `pre_existing` and renders as it
+always did.
+
 ## Re-review
 
 The round counter belongs to *this* review, not to the project. It lives in
@@ -1103,6 +1147,50 @@ review_fixer`, the tests again, recorded with `state record test ok|failed`
 (`final_fix` goes `pending` → `retest` → `done`). Then report what remains and
 stop; do not re-review. Two rounds catch the overwhelming majority of what
 this pipeline is going to catch; a third mostly re-litigates.
+
+**Decisions already made.** So that a round does not re-litigate what was
+already settled, every code round's prompt ends with a `## Decisions already
+made` section, after the diff and its notes (withheld files, the round's
+context, surrounding context). It tells reviewers to treat what it lists as
+premises -- not to report the change for following them -- and to report, and
+cite the decision (`decisions.md#Q3`, `plan.md#Risks`, or the rejected
+finding's location), when the code contradicts one or a decision itself looks
+wrong. Its parts, each fenced under its own label, in this order:
+
+1. The user's answers to the design questions (`decisions.md`), the same text
+   a design round is given.
+2. The plan's `Risks` and `Decisions` sections, matched as `##` or `###`
+   headings with or without a number (`## 11. Risks`), never inside a fence.
+   A section that says only `None.` adds nothing. No other section is handed
+   over: Test Strategy and the rest are the plan's own business, not premises
+   for the code.
+3. The findings rejected in earlier rounds of this review. Each finding is
+   taken as the latest round of the same lineage that holds it left it --
+   rounds of this snapshot included -- so one rejected and later accepted is
+   not listed, and one rejected and not reported again stays listed. Only a
+   finding whose latest round is on another snapshot is listed, so a re-run
+   of one snapshot is not shown its own rejections. Rounds are ordered by
+   `generated_at`, then by snapshot and round id, so equal or missing
+   timestamps give the same answer every time. One line each,
+   `- <file>:<line> -- <problem> -- <triage note>`, the problem on one line
+   and cut at 160 characters, `no reason recorded` when the note is empty.
+   Who reported it is never named. Their label tells reviewers they are
+   context, not authority -- the problem text is a reviewer's, not the
+   user's -- and to still report any other problem at the same location.
+
+The section is at most 6,000 characters per reviewer prompt -- it is paid once
+per reviewer per round -- and is filled in that order, so a cut drops the
+rejections first and the user's decisions last. A cut is made at a line
+boundary and followed by a note naming only what was cut, in the form:
+
+```
+This section was cut at 6,000 chars. Full text: `<decisions.md>`, `<plan.md>`; N earlier rejected finding(s) left out.
+```
+
+It is not counted in `review.context.max_chars`.
+With no decisions, no plan sections and no rejections there is no section,
+and the prompt is what it was before. Design rounds do not get it; they have
+their own decisions section.
 
 ### Closing on the whole change
 

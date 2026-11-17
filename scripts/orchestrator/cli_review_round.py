@@ -381,8 +381,13 @@ def _run_panel(
     extra_context: str = "",
     prompt_for: Optional[Callable[[Dict[str, Any], str], review_mod.BuiltPrompt]] = None,
     surrounding: Optional[context_mod.Adoption] = None,
+    decisions: str = "",
 ) -> Union[int, _PanelRun]:
-    """Open the round's ledger entry and run the panel, or the exit code of a round that could not."""
+    """Open the round's ledger entry and run the panel, or the exit code of a round that could not.
+
+    ``decisions`` is the code round's "Decisions already made" section; the
+    design path leaves it "".
+    """
     args, settings, book = ctx.args, ctx.settings, ctx.book
     batch_timeout = args.timeout or config_mod.review_timeout(ctx.loaded).seconds
     token = book.begin(
@@ -439,6 +444,7 @@ def _run_panel(
                     refusals=_reviewer_refusals(ctx.loaded, reviewers, ctx.kind.panel),
                     activity_for=echo.sink_for if echo is not None else None,
                     instructions_for=instructions_for,
+                    decisions="" if design else decisions,
                 ),
             )
     except review_mod.ReviewError as exc:
