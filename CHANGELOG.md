@@ -52,6 +52,14 @@ authors can find it.
   means the whole change, not the fix. `P` ids cannot be triaged. Reports
   written before this have no `pre_existing` and render as before.
 
+### Changed
+
+- **The implementer and the review fixer run only the related tests.** The
+  implementation and fix request templates, and the skill, now ask for the
+  tests the change touches rather than the whole suite, which runs once at the
+  Test stage (#387). A project that wants the whole suite run in those runs
+  says so in `instructions.implementer` / `instructions.review_fixer`.
+
 ## [1.3.2] - 2026-11-09
 
 ### Fixed

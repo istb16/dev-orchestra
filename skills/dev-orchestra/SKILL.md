@@ -101,8 +101,9 @@ only on `status`'s `Plan approval: not required`. Open findings,
 requested changes: `references/workflow.md` (Approval).
 
 **Implement.** Require: existing conventions, minimal change, no unrelated
-refactoring, tests added or updated and run; plan wrong → stop and report,
-not redesign.
+refactoring, tests added or updated and the related ones run (the whole
+suite runs in Test, unless project instructions say otherwise); plan wrong →
+stop and report, not redesign.
 
 **Test.** The project's documented commands only; never invent one. A red
 suite stops the pipeline. Record the outcome even if none ran this session:
