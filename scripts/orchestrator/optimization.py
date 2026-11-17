@@ -45,6 +45,16 @@ one out -- no security-relevant path, a docs-only change, one small module
 with no contract path -- and a high-risk hit, a declaration, a carried finding
 or ``--only`` keeps it before the question is asked. Doubt about the evidence
 means run.
+
+A re-review round -- a fix-only snapshot, with ``incremental_from`` set -- asks
+a different question of every seat that always runs and has a relevance rule
+(``relevance_rule``): whether it reported an accepted finding that is still
+open (``re_review_records``). One that did re-checks it, as does a seat judged
+by the security rule when the fix touches a security path; any other sits the
+round out. A ``general`` seat, ``relevance: always`` and a security seat that
+has not opted in are never narrowed. A high-risk hit, a declaration or
+``--only`` keeps today's panel, and
+``optimization.narrow_re_reviews: false`` turns the cut off.
 """
 
 from __future__ import annotations
@@ -162,6 +172,10 @@ REVIEWER_CONDITIONS = (WHEN_ALWAYS, WHEN_HIGH_RISK)
 #: The kind of a conditional record written by ``relevance_records``. Not a
 #: ``when`` value anyone writes: it is how a round says it judged a seat.
 WHEN_RELEVANCE = "relevance"
+
+#: The kind of a conditional record written by ``re_review_records``: how a
+#: re-review round says it judged a seat.
+WHEN_RE_REVIEW = "re-review"
 
 #: The rules a seat's ``relevance`` may name, one per built-in role they are
 #: for; ``always`` keeps the seat out of the judgement.
@@ -544,8 +558,9 @@ def qualifies(reviewer: Dict[str, Any], records: Sequence[Dict[str, Any]]) -> bo
     """Whether a reviewer runs this round, by its conditional records.
 
     A conditional reviewer runs only on a record that says so. One that
-    always runs does unless a record -- ``relevance_records`` writes the only
-    kind it can have -- says it sits this round out.
+    always runs does unless a record -- ``relevance_records`` and
+    ``re_review_records`` write the only kinds it can have -- says it sits
+    this round out.
     """
     name = str(reviewer.get("id") or "")
     mine = [record for record in records if record.get("id") == name]
@@ -638,6 +653,11 @@ def skip_unneeded_roles(settings: Dict[str, Any]) -> bool:
     return settings.get("skip_unneeded_roles") is not False
 
 
+def narrow_re_reviews(settings: Dict[str, Any]) -> bool:
+    """``optimization.narrow_re_reviews``: on unless it is ``false``."""
+    return settings.get("narrow_re_reviews") is not False
+
+
 def is_doc(path: str) -> bool:
     """A ``.md``, ``.rst`` or ``.txt`` file, or one under ``DESIGN_DOCS_PREFIXES``."""
     normal = _plan_path(str(path))
@@ -659,7 +679,7 @@ def _top_dirs(paths: Sequence[str]) -> List[str]:
 def _matches(stage: str, paths: Sequence[str], patterns: Sequence[str]) -> List[Tuple[str, str]]:
     """``high_risk_matches`` on a diff's paths; case-insensitive on a plan's tokens."""
     if stage == "design":
-        return _token_matches(paths, patterns)
+        return token_matches(paths, patterns)
     return high_risk_matches(paths, patterns)
 
 
@@ -768,11 +788,7 @@ def relevance_records(
         if rule is None:
             continue
         name = str(reviewer.get("id") or "")
-        own = [
-            finding
-            for finding in carried
-            if isinstance(finding, dict) and name in [str(r) for r in finding.get("reported_by") or []]
-        ]
+        own = [finding for finding in carried if isinstance(finding, dict) and name in _reporters(finding)]
         own.sort(key=_finding_order)
         if hits:
             runs, reason = True, _hit_reason(hits)
@@ -785,6 +801,64 @@ def relevance_records(
         else:
             runs, reason = _rule_answer(rule, stage, evidence, settings, literal_paths)
         records.append({"id": name, "when": WHEN_RELEVANCE, "runs": runs, "reason": redact(reason)})
+    return records
+
+
+def _reporters(finding: Dict[str, Any]) -> List[str]:
+    """A finding's ``reported_by`` as a list of ids; a lone string is one id, anything else none."""
+    value = finding.get("reported_by")
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return []
+
+
+def re_review_records(
+    panel: Sequence[Dict[str, Any]],
+    carried: Sequence[Dict[str, Any]],
+    evidence: Evidence,
+    settings: Dict[str, Any],
+    *,
+    literal_paths: Sequence[str] = (),
+) -> List[Dict[str, Any]]:
+    """One ``re-review`` record per seat that always runs and has a relevance rule.
+
+    Only a seat ``relevance_rule`` would judge is narrowed: a ``general``
+    seat, a ``relevance: always`` one and a security seat that has not
+    opted in run as they would on any round. A seat that reported an open
+    accepted finding (``carried``, from ``review.carried_findings``) runs to
+    re-check it; so does a seat judged by the security rule when that rule
+    (``_security_needed``) finds the fix's paths. Any other sits the round
+    out. Nothing is judged, as for ``relevance_records``, when
+    ``optimization.skip_unneeded_roles`` is false or the evidence is in
+    doubt. ``decide`` asks this, in place of ``relevance_records``, only
+    on a re-review round with no high-risk hit, declaration or ``--only``.
+    The empty-panel guard is ``join_relevance``'s, as for relevance.
+    """
+    if not skip_unneeded_roles(settings) or evidence.doubt:
+        return []
+    records: List[Dict[str, Any]] = []
+    for reviewer in panel:
+        if not isinstance(reviewer, dict) or reviewer_condition(reviewer) != WHEN_ALWAYS:
+            continue
+        rule = relevance_rule(reviewer)
+        if rule is None:
+            continue
+        name = str(reviewer.get("id") or "")
+        own = [finding for finding in carried if isinstance(finding, dict) and name in _reporters(finding)]
+        own.sort(key=_finding_order)
+        security, why = False, ""
+        if rule == "security" and not own:
+            security, why = _security_needed("code", evidence, settings, literal_paths)
+        if own:
+            runs, reason = True, "%s %s%s" % (_CARRIED, own[0].get("id"), _and_more(len(own) - 1))
+        elif security:
+            runs, reason = True, why
+        else:
+            runs = False
+            reason = "re-review round: reported no open accepted finding (optimization.narrow_re_reviews)"
+        records.append({"id": name, "when": WHEN_RE_REVIEW, "runs": runs, "reason": redact(reason)})
     return records
 
 
@@ -824,14 +898,15 @@ def _keep_one(panel: Sequence[Dict[str, Any]], records: Sequence[Dict[str, Any]]
 def keeps_whole(records: Sequence[Dict[str, Any]]) -> bool:
     """Whether a record that ran should keep a code panel whole against the low-risk cut.
 
-    A ``when`` seat that qualified does; a relevance answer does only when a
-    carried finding kept the seat. A rule finding its evidence is not a
-    reason to pay for two reviewers to agree that a small change is small.
+    A ``when`` seat that qualified does; a relevance or re-review answer does
+    only when a carried finding kept the seat. A rule finding its evidence is
+    not a reason to pay for two reviewers to agree that a small change is small.
     """
     for record in records:
         if not record.get("runs"):
             continue
-        if record.get("when") != WHEN_RELEVANCE or str(record.get("reason") or "").startswith(_CARRIED):
+        judged = record.get("when") in (WHEN_RELEVANCE, WHEN_RE_REVIEW)
+        if not judged or str(record.get("reason") or "").startswith(_CARRIED):
             return True
     return False
 
@@ -862,13 +937,14 @@ def design_evidence(scan: Any, plan_state: str) -> Evidence:
 def conditional_notes(records: Sequence[Dict[str, Any]]) -> List[str]:
     """One line per conditional record, saying whether its reviewer runs and why.
 
-    A seat a relevance rule left out is told how to include it.
+    A seat a relevance rule or a re-review round left out is told how to
+    include it.
     """
     notes: List[str] = []
     for record in records:
         verdict = "added" if record["runs"] else "left out"
         line = "%s (when: %s) %s: %s" % (record["id"], record["when"], verdict, record["reason"])
-        if record["when"] == WHEN_RELEVANCE and not record["runs"]:
+        if record["when"] in (WHEN_RELEVANCE, WHEN_RE_REVIEW) and not record["runs"]:
             line += "; --only %s to include it" % redact(str(record["id"]))
         notes.append(line)
     return notes
@@ -1020,6 +1096,7 @@ def decide(
     reviewed: Optional[Sequence[str]] = None,
     literal_paths: Sequence[str] = (),
     alongside_tests: bool = False,
+    re_review: bool = False,
 ) -> Plan:
     """Work out what this round should cost, from the change and the config.
 
@@ -1054,6 +1131,11 @@ def decide(
     ``alongside_tests`` says ``test_status`` is the result recorded on the
     round's own tree (``review.start_before_tests``); it changes the gate's
     note, not the gate.
+
+    ``re_review`` says the round is a fix-only re-review (a snapshot with
+    ``incremental_from``). With ``optimization.narrow_re_reviews`` on and no
+    high-risk hit, declaration or ``--only``, the panel is judged by
+    ``re_review_records`` instead of ``relevance_records``.
     """
     requested = normalise_level(settings.get("level"))
     hits = high_risk_matches(paths, risk_patterns(settings, literal_paths))
@@ -1080,19 +1162,24 @@ def decide(
             only=only,
             paths=paths if condition_paths is None else condition_paths,
         )
-        # At every level, `quality` included: the level never keeps a role
-        # with nothing to read. A high-risk hit does, as it escalates.
-        relevance = relevance_records(
-            "code",
-            panel,
-            code_evidence(paths, reviewed),
-            settings,
-            hits=hits,
-            declared=declared,
-            carried=carried,
-            only=only,
-            literal_paths=literal_paths,
-        )
+        if re_review and narrow_re_reviews(settings) and not (hits or declared or only):
+            relevance = re_review_records(
+                panel, carried, code_evidence(paths, reviewed), settings, literal_paths=literal_paths
+            )
+        else:
+            # At every level, `quality` included: the level never keeps a role
+            # with nothing to read. A high-risk hit does, as it escalates.
+            relevance = relevance_records(
+                "code",
+                panel,
+                code_evidence(paths, reviewed),
+                settings,
+                hits=hits,
+                declared=declared,
+                carried=carried,
+                only=only,
+                literal_paths=literal_paths,
+            )
         conditional = join_relevance(panel, conditional, relevance)
         members = [reviewer for reviewer in panel if isinstance(reviewer, dict)]
         reviewers = sum(1 for reviewer in members if qualifies(reviewer, conditional))
@@ -1184,7 +1271,7 @@ def _folded_patterns(patterns: Sequence[str]) -> Dict[str, str]:
     return folded
 
 
-def _token_matches(tokens: Sequence[str], patterns: Sequence[str]) -> List[Tuple[str, str]]:
+def token_matches(tokens: Sequence[str], patterns: Sequence[str]) -> List[Tuple[str, str]]:
     """``(token, pattern)`` for each plan token one of ``patterns`` matches.
 
     Case-insensitive, through ``_risk_candidates``: the plan's spelling of a
@@ -1223,7 +1310,7 @@ def design_risk(
     patterns = risk_patterns(settings, literal_paths)
     return [
         (token, sections.get(token, ""), pattern)
-        for token, pattern in _token_matches([item.token for item in scan.tokens], patterns)
+        for token, pattern in token_matches([item.token for item in scan.tokens], patterns)
     ]
 
 
@@ -1250,28 +1337,47 @@ def plan_files(scan: Any) -> PlanFiles:
         return PlanFiles([], [], "plan could not be read")
     if not scan.has_files_section:
         return PlanFiles([], [], "no Files to Modify section")
+    entries = [(item.token, item.prose) for item in scan.tokens if item.in_files]
+    return _judge_entries(entries, scanned=True, empty="Files to Modify names no file")
+
+
+def judge_files(paths: Sequence[str]) -> PlanFiles:
+    """A list of paths, each meant as a file, judged by ``plan_files``'s rules.
+
+    For a list that names files and nothing else, such as a unit's
+    ``files``: a name with no ``/`` and no extension is not skipped as a
+    word, as it is in a plan's prose, but is doubt (it may be a directory).
+    """
+    return _judge_entries([(str(path), False) for path in paths], scanned=False, empty="names no file")
+
+
+def _judge_entries(entries: Sequence[Tuple[str, bool]], *, scanned: bool, empty: str) -> PlanFiles:
+    """``(token, prose)`` entries judged as files: the one rule set ``plan_files`` and ``judge_files`` share.
+
+    ``scanned`` says the entries were read out of text, where a token with no
+    ``/`` and no extension is a word, not a file. The first doubt found is
+    the one reported.
+    """
     shaped: List[str] = []
-    for item in scan.tokens:
-        if not item.in_files:
-            continue
-        path = _plan_path(item.token)
+    for token, prose in entries:
+        path = _plan_path(token)
         extension = _has_extension(path)
-        if "/" not in path and not extension:
+        if scanned and "/" not in path and not extension:
             continue
         if any(ch in path for ch in _GLOB_CHARS):
-            return PlanFiles(shaped, [], "names a glob: %s" % item.token)
+            return PlanFiles(shaped, [], "names a glob: %s" % token)
         if path.endswith("/"):
-            return PlanFiles(shaped, [], "names a directory: %s" % item.token)
+            return PlanFiles(shaped, [], "names a directory: %s" % token)
         if ".." in path.split("/"):
-            return PlanFiles(shaped, [], "names a path through ..: %s" % item.token)
+            return PlanFiles(shaped, [], "names a path through ..: %s" % token)
         if not extension:
-            if item.prose:
+            if prose:
                 continue
-            return PlanFiles(shaped, [], "may name a directory: %s" % item.token)
+            return PlanFiles(shaped, [], "may name a directory: %s" % token)
         if path not in shaped:
             shaped.append(path)
     if not shaped:
-        return PlanFiles(shaped, [], "Files to Modify names no file")
+        return PlanFiles(shaped, [], empty)
     code = [path for path in shaped if not path.startswith(DESIGN_TESTS_PREFIXES) and not is_doc(path)]
     return PlanFiles(shaped, code, "")
 

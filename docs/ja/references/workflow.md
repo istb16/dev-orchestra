@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:49d86a4218dfc3edd4ce27a18d57ecb1a7004a1a71ef594271386ebcc24a0926 -->
+<!-- translated-from: references/workflow.md sha256:061d83af69ce19a41ee2703ad070121ae50711246e9454fe51903f2eb2b82333 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -877,11 +877,23 @@ worktree を作るときにコピーされます。見つからないもの、`.
 `--resume` には二度と入らないので、指示を足す前に始まったセッションはそれを見ません。反映するには
 新しく走らせてください。`run <reviewer-id>` と `run orchestrator` には入りません。
 
-**小さな作業は light tier に回します。** role に `light` tier があるとき（`config show`。
-`references/configuration.md` の Model tiers を参照）、計画の Files to Modify が 3 つ以下で、
-どれも高リスクのパス（`optimization.high_risk_paths` と `extra_high_risk_paths`）にないなら、
-`--tier light` で実装を走らせます。light の実行が失敗した後のやり直しは、role 本来のモデルで
-走らせます。
+**小さな作業は light tier に回します。** implementer に `light` tier があり（`config show`。
+`references/configuration.md` の Model tiers を参照）、`--tier` を渡さないとき、`run implementer`
+が自分で選びます。計画の Files to Modify が 3 つ以下で、どれも高リスクのパス
+（`optimization.high_risk_paths`、`extra_high_risk_paths`、監視している指示ファイル）にないなら
+`light`、そうでなければ role 本来のモデルです。`--unit` の実行は、その unit の `files` を
+Files to Modify と同じ規則で判断します。Files to Modify の項目は、`Dockerfile` のような
+拡張子のない名前も含めて、バッククォートの有無にかかわらずすべて高リスクのパスと照合します。
+`/` も拡張子もない項目（`Makefile`）は 3 つの数にも入ります。
+疑わしいとき -- glob、ディレクトリ、`..` を通るパス、Files to Modify がない、計画が読めない -- は role 本来の
+モデルです。その工程（と unit）の直前の実行が `light` で、`ok` で終わらなかったとき（モデルを
+解決できなかった実行も含む）は、次の実行は role 本来のモデルになります。選んだ結果と理由は
+`note:` 行に出し、実行のイベントに `tier_choice`（安定した `cause`: `light`、`retry`、`size`、
+`risk`、`doubt`、`caller` 付き）として記録し、`status` の `Tiers:` 行と `optimization report` に表示します。`--tier <name>` で
+これまでどおり自分でティアを選べます。CLI からは見えない形で light の実行が失敗したとき --
+`ok` で終わったがテストが赤になった -- は、`--no-auto-tier` を付けて走らせ直すと role 本来の
+モデルを使います。`light` tier がないとき、または `optimization.auto_tier: false` のときは、
+何も選ばれず、実行は従来どおりです。
 
 implementer の失敗は致命的です。停止し、何が起きたかを報告し、ユーザーが調べられる状態で
 ツリーを残してください。
@@ -994,9 +1006,16 @@ For each finding below:
 Do not fix anything that is not listed here.
 ```
 
-**小さな修正は light tier に回します。** `review_fixer` に `light` tier があるとき、受け入れた
-指摘がすべて medium 以下で、brief が挙げるファイルが 3 つ以下なら、`--tier light` で走らせます。
-light の実行が失敗した後のやり直しは、role 本来のモデルで走らせます。
+**小さな修正は light tier に回します。** `review_fixer` に `light` tier があり、`--tier` を
+渡さないとき、`run review_fixer` が現在のレポートの受け入れた指摘から選びます。指摘が 1 つ以上
+あり、すべて medium 以下で、どれも高リスクのパスのファイルにない（implementer と同じく大文字小文字を
+区別せずに照合）なら `light`、そうでなければ
+role 本来のモデルです。指摘の `file` がない、`n/a` のような埋め草、または 1 つのファイルでない
+（glob やディレクトリ）ときは判断できないので、これも role 本来のモデルです。
+ファイル数の上限はありません。implementer と同じく、light の実行が失敗した
+後のやり直しは role 本来のモデルになり、選んだ結果は表示・記録され、`--tier` が優先し、
+`--no-auto-tier` は role 本来のモデルで走らせ、`optimization.auto_tier: false` で選ぶこと自体を
+やめます。
 
 <a id="re-test-and-re-review"></a>
 

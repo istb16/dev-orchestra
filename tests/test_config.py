@@ -799,6 +799,70 @@ class TestProjectGateTurnOff(IsolatedCase):
         self.assertEqual(self.notices("review:\n  whole_change_recheck: false\n"), [])
 
 
+class TestAutoTierAndNarrowReReviews(IsolatedCase):
+    """``optimization.auto_tier`` and ``optimization.narrow_re_reviews`` (#384)."""
+
+    KEYS = ("auto_tier", "narrow_re_reviews")
+
+    def setUp(self):
+        super().setUp()
+        self.fake_clis()
+
+    def write_global(self, text):
+        path = config_mod.global_config_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("version: 1\n" + text)
+
+    def notices(self, text):
+        self.write(".dev-orchestra.yaml", "version: 1\n" + text)
+        loaded = config_mod.load(self.project, validate_result=False)
+        return [
+            line
+            for line in policy_mod.project_loosening_notices(loaded)
+            if line.startswith("optimization.narrow_re_reviews: the project config")
+        ]
+
+    def test_both_default_to_on(self):
+        optimization = config_mod.default_config()["optimization"]
+        for key in self.KEYS:
+            self.assertIs(optimization[key], True, key)
+
+    def test_each_must_be_a_boolean(self):
+        for key in self.KEYS:
+            for value in (True, False, None):
+                data = config_mod.default_config()
+                data["optimization"][key] = value
+                self.assertEqual(config_mod.validate(data), [], (key, value))
+            for value in ("yes", "false", 0, 1):
+                data = config_mod.default_config()
+                data["optimization"][key] = value
+                self.assertEqual(
+                    config_mod.validate(data),
+                    ["optimization.%s: must be true or false, or null" % key],
+                    (key, value),
+                )
+
+    def test_turning_narrow_re_reviews_on_is_reported(self):
+        self.write_global("optimization:\n  narrow_re_reviews: false\n")
+        [line] = self.notices("optimization:\n  narrow_re_reviews: true\n")
+        self.assertIn("turns it on", line)
+        self.assertIn("can come with the branch under review", line)
+
+    def test_on_by_default_in_the_global_file_is_not_reported(self):
+        self.assertEqual(self.notices("optimization:\n  narrow_re_reviews: true\n"), [])
+
+    def test_turning_narrow_re_reviews_off_is_not_reported(self):
+        self.assertEqual(self.notices("optimization:\n  narrow_re_reviews: false\n"), [])
+
+    def test_auto_tier_is_not_a_review_gate(self):
+        self.write_global("optimization:\n  auto_tier: false\n")
+        self.write(".dev-orchestra.yaml", "version: 1\noptimization:\n  auto_tier: true\n")
+        loaded = config_mod.load(self.project, validate_result=False)
+        notices = policy_mod.project_loosening_notices(loaded)
+        self.assertFalse([line for line in notices if "auto_tier" in line], notices)
+
+
 class TestValidateOrder(IsolatedCase):
     """The whole list ``validate`` returns, in the order it says it."""
 

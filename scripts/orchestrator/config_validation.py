@@ -162,6 +162,8 @@ _PROGRESS_RULES = (_Rule("progress.updates", _TRUE_FALSE_OR_AUTO),)
 _REVIEW_EXCLUDE_RULES = (_Rule("review.exclude", _GLOB_LIST),)
 _OPTIMIZATION_RULES = (
     _Rule("optimization.skip_unneeded_roles", _TRUE_OR_FALSE),
+    _Rule("optimization.auto_tier", _TRUE_OR_FALSE),
+    _Rule("optimization.narrow_re_reviews", _TRUE_OR_FALSE),
     _Rule("optimization.high_risk_paths", _GLOB_LIST),
     _Rule("optimization.extra_high_risk_paths", _GLOB_LIST),
     _Rule("optimization.security_paths", _GLOB_LIST),

@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:73d1591c66979c1f42bf4719dda6c726def83be88d9c4f06f88b314ac73d9301 -->
+<!-- translated-from: references/cli.md sha256:4fadc2575a90a95ccb76ea9652bdfa2c53c9232df571153a53ce75a7e9a0c189 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -288,7 +288,7 @@ Claude Code のユーザー設定（`$CLAUDE_CONFIG_DIR/settings.json`、なけ�
 
 | コマンド | 説明 |
 | --- | --- |
-| `run <role> [--prompt <text>\|--prompt-file <path>] [--tier <name>] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--idle-timeout <s>] [--resume --resume-prompt-file <path>] [--questions] [--unit <name>] [--detach] [--force] [--json] [--print-command] [--extra …]` | 設定されたロールを 1 つ実行します。`<role>` は `orchestrator`、`architect`、`implementer`、`review_fixer`、またはレビュアーの id です。`--tier` はそのロールに設定された `model_tiers` の 1 つを選びます。未知のものはデフォルトのモデルで実行されるのではなく拒否されます。そのステージの予算から試行を 1 回消費し、予算が尽きていれば `--force` がない限り拒否します（終了コード 3）。`run implementer` は、plan が存在し承認されていない間は拒否します（終了コード 5）。これは親プロセスで行われ、detach されたワーカーでも再度行われます。ワーカーでの拒否はそのままジョブレコードに記録されます。`--force` は適用されません。`.ai/plan.md` を書く `run architect` も、design の質問が未回答の間は同じように拒否します（終了コード 6）。`run implementer` も、承認の内容にかかわらず同じです。`--questions` は、代わりに architect に design の質問を出させます（後述）。`--unit` は plan の作業単位を 1 つ走らせます（後述）。 |
+| `run <role> [--prompt <text>\|--prompt-file <path>] [--tier <name>\|--no-auto-tier] [--mode plan\|implement\|review] [--output <path>] [--timeout <s>] [--idle-timeout <s>] [--resume --resume-prompt-file <path>] [--questions] [--unit <name>] [--detach] [--force] [--json] [--print-command] [--extra …]` | 設定されたロールを 1 つ実行します。`<role>` は `orchestrator`、`architect`、`implementer`、`review_fixer`、またはレビュアーの id です。`--tier` はそのロールに設定された `model_tiers` の 1 つを選びます。未知のものはデフォルトのモデルで実行されるのではなく拒否されます。渡さないとき、`implementer` と `review_fixer` は `light` tier があれば小さく低リスクな作業でそれを選び、理由を `note:` 行に出します（[workflow](workflow.md#implementation)、`optimization.auto_tier`）。`--no-auto-tier` を付けると代わりに role 本来のモデルで走ります。テストでだけ失敗が分かった light の実行の後などに使います。両方を同時に渡すと拒否されます（exit 2）。`implementer` と `review_fixer` 以外の role に `--no-auto-tier` を渡しても同じく拒否されます。そのステージの予算から試行を 1 回消費し、予算が尽きていれば `--force` がない限り拒否します（終了コード 3）。`run implementer` は、plan が存在し承認されていない間は拒否します（終了コード 5）。これは親プロセスで行われ、detach されたワーカーでも再度行われます。ワーカーでの拒否はそのままジョブレコードに記録されます。`--force` は適用されません。`.ai/plan.md` を書く `run architect` も、design の質問が未回答の間は同じように拒否します（終了コード 6）。`run implementer` も、承認の内容にかかわらず同じです。`--questions` は、代わりに architect に design の質問を出させます（後述）。`--unit` は plan の作業単位を 1 つ走らせます（後述）。 |
 
 プロンプトは stdin からパイプで渡すこともできます（`--prompt-file -` は明示的に stdin を読みます）。
 デフォルトのモード: architect/orchestrator は `plan`、implementer と review_fixer は `implement`、

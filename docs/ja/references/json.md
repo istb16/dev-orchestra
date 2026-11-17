@@ -1,4 +1,4 @@
-<!-- translated-from: references/json.md sha256:2d18f3163cb539d747382f966d55138d766c1488c8cc029f07f8bd2f8f2abe8b -->
+<!-- translated-from: references/json.md sha256:b6422bbac2e30ef552cc68ed296c716a5dfa2ac3bc586920bc17422a6feeb98f -->
 
 > この文書は [references/json.md](../../../references/json.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -501,7 +501,8 @@ Object.
 | `runtime_remaining_seconds` | integer or null | 委任した実行時間の残り（切り上げ）。上限がなければ `null`。 |
 | `runtime` | object | `used`、`limit`、`remaining`、`suspended`。 |
 | `tokens` | object | `tokens show --json` が出すもの。 |
-| `optimization` | object | 次の `review run` が決めること。`review run` と同じ。 |
+| `optimization` | object | 次の `review run` が決めること。`review run` と同じ。修正だけの再レビューのラウンドでは、`conditional` に `when: re-review` の記録が入ります。[ラウンドが必要としないロール](reviews.md#roles-a-round-does-not-need) を参照。 |
+| `tiers` | object | `implementer` と `review_fixer`: その工程の直前の実行が記録した `tier_choice` -- `tier`（ティア名。role 本来のモデルなら `null`）、`source`（`auto`、`explicit`、`off`）、`reason`（表示用）、`cause`（`light`、`retry`、`size`、`risk`、`doubt`、`caller`。数えるときはこちら） -- 。その実行が記録しなかったときは（`light` tier も `--tier` もない、または `optimization.auto_tier: false`）`null`。 |
 | `workflow` | string | ワークフロー。 |
 | `also_active` | list of strings | この作業ツリーで動いているように見えるほかのワークフロー。 |
 
@@ -575,6 +576,8 @@ Object. `by_context` から下のキーは [optimization](cli.md#optimization) �
 | `conditional` | object | `added`、`left_out`、`declared_rounds`。 |
 | `relevance` | object | コードのラウンドに出番のなかったロール。`judged`、`added`、`left_out`、`left_out_by_level`、`estimated_saving`。 |
 | `design_relevance` | object | design のラウンドについての同じもの。 |
+| `re_review` | object | 修正だけの再レビューのラウンドが外した席と、開いた指摘のために残した席（`when: re-review` の記録）。キーは `relevance` と同じで、`relevance` とも `conditional` とも別に数えます。 |
+| `tiers` | object | `implementer` と `review_fixer` について、`tier_choice` を記録した実行のイベントから: `runs`、`by_source`（`auto`、`explicit`、`off`）、`by_tier`（ティア名。role 本来のモデルは `own_model`）、`light_failed`（`light` で走り、`ok` で終わらなかったか応答しなかった実行。モデルを解決できなかった実行も含む）、`retried_on_role_model`（light の実行が失敗した後、CLI が role 本来のモデルに回した実行。実行イベントの `tier_choice.cause` -- `light`、`retry`、`size`、`risk`、`doubt`、`caller` -- で数え、表示用の `reason` では数えない）。 |
 | `rounds_without_a_test_result` | integer | ゲートのためのテスト結果が記録されていないラウンド。 |
 | `reviewer_runs` | integer | コードレビューのレビュアーの実行。 |
 | `measured_runs` | integer | そのうち使用量を報告したもの。 |

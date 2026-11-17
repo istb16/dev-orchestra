@@ -120,6 +120,14 @@ def _full_rounds() -> Dict[str, Any]:
         "delta": {"billed_per_run": 500.0, "tool_uses_per_run": None, "tool_output_chars_per_run": None},
     }
     paired = merged(empty["paired"], pairs=[pair], pairs_listed=1)
+    re_review = merged(
+        empty["re_review"],
+        judged=3,
+        added=1,
+        left_out=2,
+        left_out_by_level={"balanced": 2},
+        estimated_saving=10000,
+    )
     return _rounds(
         rounds=5,
         ran=3,
@@ -152,7 +160,29 @@ def _full_rounds() -> Dict[str, Any]:
         design_tool_output_chars_per_run=1500.0,
         by_context=by_context,
         paired=paired,
+        re_review=re_review,
+        tiers=_full_tiers(),
     )
+
+
+def _full_tiers() -> Dict[str, Any]:
+    """``tier_choices`` over no events, with three implementer runs laid over it."""
+    tiers = opt_report.tier_choices([])
+    tiers["implementer"].update(
+        runs=3,
+        by_tier={"light": 2, opt_report.OWN_MODEL: 1},
+        light_failed=1,
+        retried_on_role_model=1,
+    )
+    tiers["implementer"]["by_source"].update(auto=2, explicit=1)
+    return tiers
+
+
+TIERS_TEXT = [
+    "Model tiers (run implementer and run review_fixer, as each run recorded its choice):",
+    "  implementer            3 run(s): light x2, own model x1; auto x2, explicit x1; "
+    "1 light run(s) failed; 1 retried on the role's model",
+]
 
 
 def _full_scorecard() -> Dict[str, Any]:
@@ -248,6 +278,7 @@ FULL_TEXT = [
     "  gate verdicts          pass x3, refuse x2",
     "  panel reduced          1",
     "  conditional reviewers  added x2, left out x1, declared with --high-risk x1",
+    "  re-review seats        left out x2 of 3 judged (balanced x2), est. 10,000 tokens",
     "  escalated (high risk)  5",
     "    caused by            auth/** x5",
     "  every round escalated, so the level you configured never applied. "
@@ -346,6 +377,8 @@ FULL_TEXT = [
     "  per-round figures above are not added, because a round of each is a different unit of",
     "  work. Read it beside the two stage figures: the mix of stages moves it, and it is taken",
     "  over the readable rounds only.",
+    "",
+    *TIERS_TEXT,
     "",
     "Architect revisions (cost against each workflow's initial design run):",
     "  resumed: 1 revisions (1 priced, 1 with ratio) cost ratio to initial 0.75 mean, "
@@ -453,11 +486,14 @@ class TestOptimizationReportText(IsolatedCase):
     ) -> "tuple[int, str, str]":
         # Read through the module at call time, so replacing them here is
         # what the command sees. A copy each call: the command adds keys.
+        # The tiers are the fixture's own, or the real empty ones.
+        tiers = rounds.get("tiers") or opt_report.tier_choices([])
         with mock.patch.multiple(
             opt_report,
             summarise_rounds=mock.Mock(side_effect=lambda events: copy.deepcopy(rounds)),
             reviewer_scorecard=mock.Mock(side_effect=lambda inputs: copy.deepcopy(scorecard)),
             architect_revisions=mock.Mock(side_effect=lambda workflows: copy.deepcopy(revisions)),
+            tier_choices=mock.Mock(side_effect=lambda workflows: copy.deepcopy(tiers)),
         ):
             return run_cli("optimization", "report", *extra)
 
@@ -488,6 +524,14 @@ class TestOptimizationReportText(IsolatedCase):
             "Run a review, then ask again -- this reads what happened, not what would.",
         ]
         self.assertEqual(optimization_render.report_lines(empty, source), nothing)
+        # Tier choices with no review round at all still print, below the notice.
+        tiers_only = merged(empty, tiers=_full_tiers())
+        self.assertEqual(optimization_render.report_lines(tiers_only, source), [*nothing, "", *TIERS_TEXT])
+        # And below the revisions when those are all there is.
+        revisions_only = merged(tiers_only, architect_revisions=_full_revisions())
+        lines = optimization_render.report_lines(revisions_only, source)
+        self.assertEqual(lines[-len(TIERS_TEXT) - 1 :], ["", *TIERS_TEXT])
+        self.assertEqual(lines[0], "Architect revisions (cost against each workflow's initial design run):")
 
     def test_json_is_the_summary_with_both_attached(self):
         rounds, scorecard, revisions = _full_rounds(), _full_scorecard(), _full_revisions()
@@ -835,6 +879,84 @@ class TestStatusText(IsolatedCase):
         code, out, _ = self.status(verdict, [])
         self.assertEqual(code, 0)
         self.assertEqual(out, text(STATUS_C_TEXT))
+
+    def test_a_recorded_tier_choice_prints_a_tiers_line(self):
+        plan = opt_mod.Plan("balanced", "balanced", opt_mod.GATE_ALLOW, "ok", 10, None)
+        verdict = self.verdict(
+            plan,
+            opt_design.DesignDecision("off", False),
+            None,
+            verdict="continue",
+            reasons=[],
+            review={
+                "iteration": 0,
+                "max_review_iterations": 2,
+                "accepted": 0,
+                "blocking": [],
+                "final_fix": None,
+                "identical_rounds": 0,
+            },
+            design_review={
+                "iteration": 0,
+                "max_iterations": 2,
+                "accepted": 0,
+                "blocking": [],
+                "final_revision_pending": False,
+                "identical_rounds": 0,
+            },
+            design_approval={
+                "state": "stale",
+                "pending": False,
+                "stale_reason": "plan-changed",
+                "approved_sha256": "a" * 64,
+                "plan_sha256": "b" * 64,
+            },
+            tokens={"totals": {"runs": 0, "billed_tokens": 0}, "complete": True},
+            runtime={"suspended": 0},
+            tiers={
+                "implementer": {
+                    "tier": "light",
+                    "source": "auto",
+                    "reason": "light: 2 files in Files to Modify, none high-risk",
+                },
+                "review_fixer": {"tier": None, "source": "off", "reason": "--no-auto-tier"},
+            },
+        )
+        code, out, _ = self.status(verdict, [])
+        self.assertEqual(code, 0)
+        expected = [
+            *STATUS_C_TEXT,
+            "Tiers: implementer on its 'light' tier "
+            "(auto: light: 2 files in Files to Modify, none high-risk); "
+            "review_fixer on its own model (off: --no-auto-tier)",
+        ]
+        self.assertEqual(out, text(expected))
+
+    def test_the_payload_holds_each_roles_last_choice(self):
+        workspace = self.cli_workspace()
+        first = {"tier": "light", "source": "auto", "reason": "light: 1 file, none high-risk"}
+        first["cause"] = "light"
+        second = {"tier": None, "source": "auto", "reason": "retrying after a failed light run"}
+        second["cause"] = "retry"
+        workspace.record_event("implementer", "failed", {"tier": "light", "tier_choice": first})
+        workspace.record_event("implementer", "ok", {"tier": None, "tier_choice": second})
+        workspace.record_event("review_fixer", "ok", {"tier": None})
+        loaded = config_mod.load(self.project, validate_result=False)
+        book = ledger_mod.Ledger(workspace, ledger_mod.budget_settings(loaded.data))
+        payload = cli_workflow._status_payload(loaded, workspace, book).payload
+        self.assertEqual(payload["tiers"], {"implementer": second, "review_fixer": None})
+
+    def test_a_later_run_with_no_choice_clears_the_earlier_one(self):
+        workspace = self.cli_workspace()
+        light = {"tier": "light", "source": "auto", "reason": "light: 1 file, none high-risk"}
+        workspace.record_event("implementer", "ok", {"tier": "light", "tier_choice": light})
+        # optimization.auto_tier turned off: the next run records no choice.
+        workspace.record_event("implementer", "ok", {"tier": None})
+        loaded = config_mod.load(self.project, validate_result=False)
+        book = ledger_mod.Ledger(workspace, ledger_mod.budget_settings(loaded.data))
+        status = cli_workflow._status_payload(loaded, workspace, book)
+        self.assertEqual(status.payload["tiers"], {"implementer": None, "review_fixer": None})
+        self.assertEqual(cli_workflow._tier_line(status.payload["tiers"]), "")
 
 
 class TestStatusRounds(IsolatedCase):

@@ -82,6 +82,10 @@ def round_plan(
     With ``review.start_before_tests`` on, the gate reads the test result
     recorded on the snapshot's own tree: the last one of all was recorded on
     an earlier tree, before the fix this round is reviewing.
+
+    A snapshot with ``incremental_from`` is a fix-only re-review round; a
+    whole-change recheck is not, and keeps the full panel even if its
+    snapshot carries ``incremental_from``.
     """
     files = meta.get("files")
     alongside = loaded.start_before_tests()
@@ -108,6 +112,9 @@ def round_plan(
         reviewed=[str(path) for path in files] if isinstance(files, list) else None,
         literal_paths=instructions.watched_paths(loaded),
         alongside_tests=alongside,
+        # A recheck wins over `incremental_from`: it is the round that reads
+        # the whole change again, so it must never get the narrowed panel.
+        re_review=bool(meta.get("incremental_from")) and not meta.get("recheck"),
     )
 
 

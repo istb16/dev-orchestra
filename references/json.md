@@ -486,7 +486,8 @@ Object.
 | `runtime_remaining_seconds` | integer or null | The delegated runtime left, rounded up; `null` without a limit. |
 | `runtime` | object | `used`, `limit`, `remaining`, `suspended`. |
 | `tokens` | object | What `tokens show --json` prints. |
-| `optimization` | object | What the next `review run` would decide, as in `review run`. |
+| `optimization` | object | What the next `review run` would decide, as in `review run`. A fix-only re-review round's `conditional` has records with `when: re-review` -- see [Roles a round does not need](reviews.md#roles-a-round-does-not-need). |
+| `tiers` | object | `implementer` and `review_fixer`: the `tier_choice` the stage's last run recorded -- `tier` (a tier name, or `null` for the role's own model), `source` (`auto`, `explicit` or `off`), `reason` (display text), `cause` (`light`, `retry`, `size`, `risk`, `doubt` or `caller`; what to count on) -- or `null` when that run recorded none (no `light` tier and no `--tier`, or `optimization.auto_tier: false`). |
 | `workflow` | string | The workflow. |
 | `also_active` | list of strings | Other workflows that look live in this working tree. |
 
@@ -552,6 +553,8 @@ Object. The keys below `by_context` are described in [optimization](cli.md#optim
 | `conditional` | object | `added`, `left_out`, `declared_rounds`. |
 | `relevance` | object | Roles a code round had nothing for: `judged`, `added`, `left_out`, `left_out_by_level`, `estimated_saving`. |
 | `design_relevance` | object | The same for design rounds. |
+| `re_review` | object | The seats fix-only re-review rounds left out or kept for an open finding (`when: re-review` records), with the keys of `relevance`; counted apart from it and from `conditional`. |
+| `tiers` | object | `implementer` and `review_fixer`, from the run events that recorded a `tier_choice`: `runs`, `by_source` (`auto`, `explicit`, `off`), `by_tier` (a tier name, or `own_model`), `light_failed` (runs on `light` that did not end `ok` or did not answer, a run whose model could not be resolved included), `retried_on_role_model` (runs the CLI sent to the role's own model after a failed light run, counted on the run event's `tier_choice.cause` -- `light`, `retry`, `size`, `risk`, `doubt` or `caller` -- never on its `reason`, which is display text). |
 | `rounds_without_a_test_result` | integer | Rounds with no test result recorded for the gate. |
 | `reviewer_runs` | integer | Code review reviewer runs. |
 | `measured_runs` | integer | Those that reported usage. |

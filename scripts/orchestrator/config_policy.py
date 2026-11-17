@@ -638,6 +638,12 @@ def _skips(now: LoadedConfig, before: LoadedConfig) -> str:
     return "turns it on" if new and not old else ""
 
 
+def _narrows(now: LoadedConfig, before: LoadedConfig) -> str:
+    new = now.optimization_settings().get("narrow_re_reviews") is not False
+    old = before.optimization_settings().get("narrow_re_reviews") is not False
+    return "turns it on" if new and not old else ""
+
+
 #: Every review gate a project file may still set, and how it gets looser.
 #: Read through the accessors the runs read it through, so a value no run
 #: would take as written (a string count, an unknown level) is compared as
@@ -683,6 +689,7 @@ _GATES = (
         _higher(lambda loaded: loaded.optimization_settings().get("low_risk_max_lines")),
     ),
     _Gate("optimization.skip_unneeded_roles", ("optimization.skip_unneeded_roles",), _skips),
+    _Gate("optimization.narrow_re_reviews", ("optimization.narrow_re_reviews",), _narrows),
     _Gate(
         "optimization.security_paths",
         ("optimization.security_paths", "optimization.extra_security_paths"),

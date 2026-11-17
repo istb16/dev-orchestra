@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:3b4bf702efb982ae8b9e687391f3318008edd46283bcd1297287bda03aedf742 -->
+<!-- translated-from: references/reviews.md sha256:ca941f4f04a5bae84f628b9e4d24d1c4aebb415be1ad9cd93fa595559361a6d3 -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -644,8 +644,27 @@ note: claude-architecture (when: relevance) left out: 1 directory, 3 file(s), no
 ステージのレビュアー実行 1 回あたりの平均課金トークンで見積もった推定削減量を添えます
 （`roles skipped`。`--json` では `relevance` と `design_relevance`）。
 
+**再レビューのラウンド。** 修正だけのラウンド -- `incremental_from` が付いたスナップショットで、
+系列の 2 ラウンド目以降はすべてそうです -- では、常に走る席のうち、上のロールの規則で判断される
+席に別の問いを立てます。その席が報告した受け入れ済みの指摘で、まだ開いているものがあるか。あれば
+その確認のために走り（`has open accepted finding F3 (and 1 more)`）、セキュリティの規則で
+判断される席は、その規則が修正のパスに一致を見つけたときも走ります
+（`src/handler.py matches *handler*`）。どちらでもなければそのラウンドを
+休みます（`re-review round: reported no open accepted finding
+(optimization.narrow_re_reviews)`）。休んだ席のメモにも同じ `--only` の案内が付きます。
+そうしたラウンドでは、この問いが上のロールの規則に代わります。`general` の席、`relevance: always`
+の席、`relevance: security` を自分で指定していないセキュリティの席は常に走り、
+`when: high-risk` や `when: paths` の席はこれまでどおり自分の条件で判断され、高リスクの一致、
+`--high-risk`、`--only` があればいつものレビュアー陣になります。変更全体を見直すラウンド
+（`recheck: true`。スナップショットに `incremental_from` があっても同じ）と、指摘なし、またはすべて却下だったレビューの後の変更全体のラウンドは
+再レビューのラウンドではなく、レビュアー陣はそのままです。席が 1 つも残らないときは、上と同じく
+1 つ残します。記録は `when: re-review` で、`optimization report` は別に数えます
+（`re-review seats`。`--json` では `re_review`）。`config set
+optimization.narrow_re_reviews false` でこの絞り込みをやめます
+（[設定](configuration.md#field-reference)）。
+
 **無効にする方法は 2 つ。** `config set optimization.skip_unneeded_roles false` は、常時
-実行の席をすべて毎ラウンドに戻します。`reviewer set claude-test --relevance always`
+実行の席をすべて毎ラウンドに戻します。修正だけの再レビューのラウンドも同じです。`reviewer set claude-test --relevance always`
 （設計パネルには `--design` を付ける）は 1 つの席を戻します。パターンのリストは、
 `high_risk_paths` と同じく、丸ごと置き換える（`optimization.security_paths`、
 `optimization.architecture_paths`）ことも、追加する（`extra_security_paths`、
