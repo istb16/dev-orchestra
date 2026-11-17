@@ -592,6 +592,23 @@ class RealStateTest(IsolatedCase):
     def test_no_questions_no_section(self):
         self.assertEqual(render_code_decisions(self.workspace, LINEAGE, self.meta), "")
 
+    def test_option_answer_is_kept_and_open_one_left_out(self):
+        asked = [
+            {
+                "topic": "Storage",
+                "question": "Which store?",
+                "options": [{"key": "A", "text": "SQLite"}, {"key": "B", "text": "Files"}],
+                "recommended": None,
+            },
+            {"topic": "Retries", "question": "How many retries?", "options": [], "recommended": None},
+        ]
+        ids = questions_mod.record(self.workspace, asked, "orchestrator")["ids"]
+        questions_mod.answer(self.workspace, [ids[0]], "option", option="A")
+        text = render_code_decisions(self.workspace, LINEAGE, self.meta)
+        self.assertIn("## %s: Storage" % ids[0], text)
+        self.assertIn("- Answer: A", text)
+        self.assertNotIn("Retries", text)
+
     def test_answers_and_open_questions(self):
         asked = [
             {"topic": "Storage", "question": "Which store?", "options": [], "recommended": None},

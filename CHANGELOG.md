@@ -45,8 +45,9 @@ authors can find it.
   last report may already hold and triage has not rejected: in the same words,
   which keeps its triage, or at the same place (same file, line numbers on
   both within 10), which stays as `needs-triage` for triage to decide. A
-  rejection is carried through a merged report's words only when every report
-  merged into the finding was rejected. A design round sets nothing apart. On
+  rejection is carried only when every report merged into the finding,
+  whichever gave it its wording, matches a rejected one; reports that match
+  both a rejected and a not-rejected finding leave it to triage. A design round sets nothing apart. On
   a fix-only re-review, reviewers are told that "this change"
   means the whole change, not the fix. `P` ids cannot be triaged. Reports
   written before this have no `pre_existing` and render as before.

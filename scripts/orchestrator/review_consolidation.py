@@ -577,28 +577,32 @@ def report_keys(entry: Dict[str, Any]) -> List[str]:
 
 
 def _prior_triage(entry: Dict[str, Any], previous: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """The earlier finding whose triage ``entry`` carries, or None.
+    """The earlier finding whose triage ``entry`` carries, or None for ``needs-triage``.
 
-    Its own, final wording decides first, as it always has. Only when that
-    matches nothing are the wordings of the reports merged into it looked
-    up: a report recognised under its own words keeps that finding's triage
-    when another reviewer's new wording is merged with it. Among those, a
-    match not rejected wins over a rejected one.
+    Every report merged into the entry is looked up by its wording -- the
+    entry's own, longest wording is one of them:
 
-    A rejection is carried that way only when every report merged into the
-    entry matches a rejected finding. A new report merged with a re-reported
-    rejection may be a different, real issue at the same place; taking it
-    as rejected would let the loop skip it, so it is ``needs-triage``.
+    - Only decisions that are not rejections: the entry carries one, its own
+      wording's first. A report recognised in its own words keeps that
+      finding's triage when another reviewer's new wording is merged with it,
+      so an accepted bug re-reported on a fix-only round still blocks.
+    - Only rejections, and every report recognised: still rejected.
+    - A rejection beside anything else -- a report in new words, or a
+      decision that is not a rejection: ``needs-triage``. The other report
+      may be a different, real issue at the same place, and taking the
+      merged entry as rejected would let the loop skip it; triage decides.
     """
+    # ``merged_reports`` holds every report, the one the entry's own wording
+    # came from included; an entry never merged is its own one report.
     own = previous.get(entry["key"])
-    if own is not None:
-        return own
-    matches = [previous.get(key) for key in report_keys(entry)]
-    for found in matches:
-        if found is not None and found.get("triage") != "rejected":
-            return found
-    if matches and all(found is not None for found in matches):
-        return matches[0]
+    found = [previous.get(key) for key in report_keys(entry) or [entry["key"]]]
+    known = [match for match in found if match is not None]
+    rejected = [match for match in known if match.get("triage") == "rejected"]
+    kept = [match for match in known if match.get("triage") != "rejected"]
+    if kept and not rejected:
+        return own if own in kept else kept[0]
+    if rejected and not kept and len(known) == len(found):
+        return own if own in rejected else rejected[0]
     return None
 
 

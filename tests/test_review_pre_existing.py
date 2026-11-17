@@ -270,9 +270,12 @@ class TestEarlierTriage(unittest.TestCase):
         self.assertEqual(data["findings"], [])
         self.assertEqual([f["id"] for f in data["pre_existing"]], ["P1"])
 
-    def test_own_rejected_wording_is_not_overruled_by_a_merged_report(self):
-        """A normal finding re-reported in the words triage rejected stays rejected,
-        whatever another report merged with it matches."""
+    def test_rejected_and_accepted_wordings_merged_are_left_to_triage(self):
+        """Reports matching a rejected and an accepted finding disagree: neither decision is carried.
+
+        Carrying the rejection could drop a real issue; carrying the
+        acceptance could send rejected noise to the fixer. Triage decides.
+        """
         key = review_consolidation.finding_key
         noise = {"file": "util.py", "problem": "the helper swallows every exception"}
         real = {"file": "util.py", "problem": "the helper ignores the timeout"}
@@ -280,16 +283,19 @@ class TestEarlierTriage(unittest.TestCase):
             key(noise): dict(noise, triage="rejected", triage_note="noise"),
             key(real): dict(real, triage="accepted", triage_note="real"),
         }
-        entry = dict(noise, key=key(noise), merged_reports=[{"problem": real["problem"]}])
-        found = review_consolidation._prior_triage(entry, previous)
+        merged = [{"problem": noise["problem"]}, {"problem": real["problem"]}]
+        entry = dict(noise, key=key(noise), merged_reports=merged)
+        self.assertIsNone(review_consolidation._prior_triage(entry, previous))
+        entry = dict(real, key=key(real), merged_reports=merged)
+        self.assertIsNone(review_consolidation._prior_triage(entry, previous))
+
+    def test_own_rejected_wording_alone_stays_rejected(self):
+        key = review_consolidation.finding_key
+        noise = {"file": "util.py", "problem": "the helper swallows every exception"}
+        previous = {key(noise): dict(noise, triage="rejected", triage_note="noise")}
+        found = review_consolidation._prior_triage(dict(noise, key=key(noise)), previous)
         assert found is not None
         self.assertEqual(found["triage"], "rejected")
-        # Its own wording matching nothing, the merged reports decide, a decision not rejected first.
-        stranger = dict(entry, problem="something else", key=key({"file": "util.py", "problem": "else"}))
-        stranger["merged_reports"] = [{"problem": noise["problem"]}, {"problem": real["problem"]}]
-        found = review_consolidation._prior_triage(stranger, previous)
-        assert found is not None
-        self.assertEqual(found["triage"], "accepted")
 
     def test_new_words_elsewhere_are_set_apart(self):
         far = dict(by_file("util.py"), line="40", problem=REWORDED)
@@ -526,6 +532,55 @@ class TestPriorRejection(unittest.TestCase):
         self.assertIsNone(review_consolidation._prior_triage(entry, previous))
 
 
+class TestCarryAfterMerging(unittest.TestCase):
+    """What a merged entry carries, whichever report gave it its wording."""
+
+    LONG = "the session token is written to the debug log in production builds too"
+    SHORT = "the session token is written to the debug log"
+
+    def last_with(self, problem: str, triage: str) -> Dict[str, Any]:
+        last = build([dict(by_file("util.py"), category="security", problem=problem)])
+        review_consolidation.set_triage(last, "F1", triage, "noted")
+        return last
+
+    def test_rejected_longer_wording_with_a_new_shorter_report_is_not_rejected(self):
+        """The rejected report gives the merged entry its key; the new one still leaves it to triage."""
+        again = dict(by_file("util.py"), category="security", problem=self.LONG)
+        new = dict(again, reviewer="r2", severity="high", problem=self.SHORT)
+        data = build([again, new], last=self.last_with(self.LONG, "rejected"))
+        (entry,) = data["findings"]
+        self.assertEqual(entry["problem"], self.LONG)
+        self.assertEqual(entry["triage"], "needs-triage")
+        self.assertEqual(review_consolidation.unresolved_blocking(data, BLOCKING), [entry])
+
+    def test_accepted_beside_new_words_carries_accepted(self):
+        """An accepted report merged with one in new words keeps it accepted, and so blocking."""
+        key = review_consolidation.finding_key
+        accepted = {"file": "util.py", "problem": self.SHORT}
+        previous = {key(accepted): dict(accepted, triage="accepted", triage_note="real")}
+        entry = dict(
+            accepted,
+            key=key({"file": "util.py", "problem": self.LONG}),
+            merged_reports=[{"problem": self.SHORT}, {"problem": self.LONG}],
+        )
+        found = review_consolidation._prior_triage(entry, previous)
+        assert found is not None
+        self.assertEqual(found["triage"], "accepted")
+
+    def test_each_report_place_is_looked_up(self):
+        """Two pre-existing reports merged: one near an accepted finding keeps the entry in triage."""
+        earlier = dict(by_file("util.py"), category="correctness", line="24", problem="a different thing")
+        last = build([earlier])
+        review_consolidation.set_triage(last, "F1", "accepted", "noted")
+        first = dict(by_file("util.py"), line="7")
+        second = dict(first, reviewer="r2", line="15")
+        data = build([first, second], last=last)
+        self.assertEqual(data["pre_existing"], [])
+        (entry,) = data["findings"]
+        self.assertEqual(entry["triage"], "needs-triage")
+        self.assertEqual(len(entry.get("merged_reports") or []), 2)
+
+
 class TestOpenMatchInteractions(unittest.TestCase):
     def test_own_rejected_wording_beside_an_open_finding_is_set_apart(self):
         """Its own wording rejected, it is not looked for by place, even beside an accepted finding."""
@@ -732,6 +787,26 @@ class TestConsolidateCli(IsolatedCase):
         self.assertEqual(data["counts"]["findings_total"], 3)
         stored = ws.read_json(workspace.consolidated_json_path, {})
         self.assertEqual(stored["pre_existing"], data["pre_existing"])
+
+    def test_configured_blocking_reaches_consolidate(self):
+        """``review.re_review_severities`` naming medium keeps a medium pre-existing finding in triage."""
+        self.init_git_repo()
+        self.write("app.py", "x = 1\n")
+        self.commit_all("init")
+        self.write("app.py", "x = 2\n")
+        run_cli("config", "setup", "--defaults")
+        run_cli("config", "set", "review.re_review_severities", "[critical, high, medium]")
+        for seat in ("claude-general", "codex-general", "claude-security", "claude-test"):
+            run_cli("reviewer", "remove", seat)
+        run_cli("reviewer", "add", "--provider", "mock", "--id", "m1", "--role", "general")
+        code, _, err = run_cli("review", "snapshot")
+        self.assertEqual(code, 0, err)
+        ws.write_text(self.cli_workspace().reviewer_report_path("m1"), REPORT)
+        code, out, err = run_cli("review", "consolidate", "--json")
+        self.assertEqual(code, 0, err)
+        data = json.loads(out)
+        self.assertIn("util.py", {f["file"] for f in data["findings"]})
+        self.assertEqual([f["file"] for f in data["pre_existing"]], ["names.py"])
 
 
 if __name__ == "__main__":

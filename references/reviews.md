@@ -1110,11 +1110,15 @@ triaged like any other:
   whose wording the last report rejected is set apart, and is not looked for
   by place even beside a finding that was not rejected.
 
-A rejection is carried through the wordings of merged reports only when every
-report merged into the finding matches a rejected one. A reviewer re-reporting
-a rejected finding, merged with another reviewer's new wording at the same
-place, may be hiding a different, real issue, so such a finding is
-`needs-triage` rather than rejected.
+Every report merged into a finding is looked up by its wording, the one
+that gave the finding its own wording included. A rejection is carried only
+when every report matches a rejected finding; a report in new words, or one
+matching a finding that was not rejected, leaves the merged finding
+`needs-triage` -- a reviewer re-reporting a rejected finding, merged with
+another reviewer's report at the same place, may be hiding a different, real
+issue, whichever of the two is worded at greater length. Without a rejection
+among the matches, the finding carries the decision its own wording matched,
+or else the first match.
 
 `consolidated.md` lists
 them after the findings, under `## Pre-existing, not triaged`, with id,
