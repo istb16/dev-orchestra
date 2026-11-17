@@ -1,0 +1,22 @@
+# Version updates: once a week, one PR per ecosystem for the pinned tools that have a newer release.
+# The runtime is the standard library only, so what moves here is the
+# development tooling (requirements-dev.txt) and the CI actions.
+# Security updates are switched on in the repository settings, not here.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      dev-tools:
+        patterns:
+          - "*"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
