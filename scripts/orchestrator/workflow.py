@@ -256,19 +256,6 @@ def active_elsewhere(container: str, workflow: str, idle_seconds: float = 900.0)
     return names
 
 
-def _parse_stamp(value: Any) -> Optional[datetime]:
-    """A timestamp as ``ws.utcnow()`` writes it, or None for anything else."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        stamp = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    if stamp.tzinfo is None:
-        stamp = stamp.replace(tzinfo=timezone.utc)  # every stamp this tool writes is UTC
-    return stamp
-
-
 def stale_elsewhere(container: str, workflow: str, days: int, now: Optional[datetime] = None) -> List[str]:
     """Other workflows here quiet for ``days`` days or more, oldest first.
 
@@ -284,7 +271,7 @@ def stale_elsewhere(container: str, workflow: str, days: int, now: Optional[date
     for entry in listing(container):
         if entry["workflow"] == workflow or entry["in_flight"]:
             continue
-        last = _parse_stamp(entry["updated_at"]) or _parse_stamp(entry["started_at"])
+        last = ws.parse_stamp(entry["updated_at"]) or ws.parse_stamp(entry["started_at"])
         if last is None:
             continue
         if (now - last).total_seconds() >= days * 86400:

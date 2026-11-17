@@ -18,42 +18,24 @@ def added_in_revision(plan_text: str) -> Optional[str]:
 
     None when the plan has no such heading outside a fenced block; the body
     runs to the next heading of the same level or higher, stripped, so
-    ``###`` items under a ``##`` heading stay inside it.
+    ``###`` items under a ``##`` heading stay inside it. A heading that goes
+    on past the name (``## Added in this revision (round 2)``) counts.
     """
-    body: Optional[List[str]] = None
-    level = 0
-    for fenced in fenced_lines(plan_text.splitlines()):
-        line = fenced.text
-        if fenced.part:
-            if body is not None:
-                body.append(line)
-            continue
-        if body is not None:
-            heading = HEADING_RE.match(line)
-            if heading and len(heading.group(1)) <= level:
-                break
-        else:
-            added = ADDED_HEADING_RE.match(line)
-            if added:
-                body = []
-                level = len(added.group(1))
-                continue
-        if body is not None:
-            body.append(line)
-    return None if body is None else "\n".join(body).strip()
+    return plan_section(plan_text, "Added in this revision", prefix=True)
 
 
 _SECTION_NUMBER_RE = re.compile(r"^\d+[.)]?\s*")
 
 
-def plan_section(plan_text: str, name: str) -> Optional[str]:
+def plan_section(plan_text: str, name: str, prefix: bool = False) -> Optional[str]:
     """The body of the plan's ``## <name>`` or ``### <name>`` section.
 
     ``added_in_revision`` for any section: a numbered heading
     (``## 11. Risks``) counts, the name is matched whole and without regard
     to case, and a heading inside a fenced block is not one. None when the
     plan has no such heading; the body runs to the next heading of the same
-    level or higher, stripped.
+    level or higher, stripped. With ``prefix`` the heading may go on past
+    the name, as long as the name ends on a word boundary.
     """
     wanted = name.strip().lower()
     body: Optional[List[str]] = None
@@ -72,7 +54,8 @@ def plan_section(plan_text: str, name: str) -> Optional[str]:
             continue
         if heading and len(heading.group(1)) in (2, 3):
             title = _SECTION_NUMBER_RE.sub("", heading_title(heading.group(2)))
-            if title.lower() == wanted:
+            title = title.lower()
+            if title == wanted or (prefix and re.match(r"%s\b" % re.escape(wanted), title)):
                 body = []
                 level = len(heading.group(1))
     return None if body is None else "\n".join(body).strip()

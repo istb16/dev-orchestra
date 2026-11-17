@@ -402,11 +402,11 @@ def consolidation_from(
     # drops a decision -- or applies it to a different finding -- as soon as the
     # finding set changes, which is exactly what fixing things does.
     previous = _previous_by_key(last)
-    normal, pre_existing, held = _split_pre_existing(findings, previous)
+    normal, pre_existing = _split_pre_existing(findings, previous)
     consolidated = consolidate_findings(normal)
     for entry in consolidated:
         entry["key"] = finding_key(entry)
-        old = _prior_triage(entry, previous, held)
+        old = _prior_triage(entry, previous)
         if old:
             entry["triage"] = old.get("triage", entry["triage"])
             entry["triage_note"] = old.get("triage_note", "")
@@ -484,70 +484,84 @@ def consolidation_from(
 def _split_pre_existing(
     findings: Sequence[Dict[str, Any]],
     previous: Optional[Dict[str, Dict[str, Any]]] = None,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
-    """``(normal, pre_existing, held)``: the findings to triage, those that were there before,
-    and the earlier finding each one kept in triage by ``previous`` matched, by its key.
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """``(normal, pre_existing)``: the findings to triage, and those that were there before.
 
     Only a medium or low finding is set apart on a reviewer's "pre-existing".
     A critical or high one stays in triage -- one reviewer's free-text label,
     which the reviewed diff can steer, must not take a severe finding out of
-    the loop's decision. So does one the last report already holds and has
-    not rejected (``_open_match``): on a fix-only round the original change's
-    bug looks pre-existing beside the fix, and setting it apart would drop
-    its ``accepted`` and call the round clean with the bug still in.
+    the loop's decision. So does one the last report may already hold and
+    has not rejected (``_open_match``): on a fix-only round the original
+    change's bug looks pre-existing beside the fix, and setting it apart
+    would drop its ``accepted`` and call the round clean with the bug still in.
+
+    Kept in triage is all such a finding gets. Whether it carries an earlier
+    decision is ``_prior_triage``'s question, answered by wording alone: one
+    that only stands near an earlier finding is a new report, ``needs-triage``.
     """
     previous = previous or {}
     normal: List[Dict[str, Any]] = []
     pre_existing: List[Dict[str, Any]] = []
-    held: Dict[str, Dict[str, Any]] = {}
     for finding in findings:
         category = str(finding.get("category") or "").strip().lower()
         severity = str(finding.get("severity") or "medium").strip().lower()
         if category not in PRE_EXISTING_CATEGORIES or severity in PRE_EXISTING_TRIAGED_SEVERITIES:
             normal.append(finding)
-            continue
-        match = _open_match(finding, previous)
-        if match is None:
-            pre_existing.append(finding)
-        else:
-            held.setdefault(finding_key(finding), match)
+        elif _open_match(finding, previous):
             normal.append(finding)
-    return normal, pre_existing, held
+        else:
+            pre_existing.append(finding)
+    return normal, pre_existing
 
 
-def _open_match(finding: Dict[str, Any], previous: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """The last report's not-rejected finding this one is, or None.
+def _open_match(finding: Dict[str, Any], previous: Dict[str, Dict[str, Any]]) -> bool:
+    """Whether the last report may hold this finding and has not rejected it.
 
     By wording first: one whose wording the last report rejected is not
-    looked for elsewhere. Then by place -- the same file, lines within 10 --
-    since a reviewer seldom repeats its words between rounds.
+    looked for elsewhere. Then by place, since a reviewer seldom repeats its
+    words between rounds: the same file, and line numbers on both within 10
+    of each other. Two findings without a line share no more than a file, so
+    they are not taken for the same one here.
     """
     old = previous.get(finding_key(finding))
     if old is not None:
-        return None if old.get("triage") == "rejected" else old
+        return old.get("triage") != "rejected"
     for entry in previous.values():
-        if entry.get("triage") != "rejected" and _same_locus(finding, entry):
-            return entry
-    return None
+        if entry.get("triage") != "rejected" and _near(finding, entry):
+            return True
+    return False
 
 
-def _prior_triage(
-    entry: Dict[str, Any],
-    previous: Dict[str, Dict[str, Any]],
-    held: Dict[str, Dict[str, Any]],
-) -> Optional[Dict[str, Any]]:
+def _near(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    """Same file, and line numbers on both within 10 of each other."""
+    if left.get("file") != right.get("file"):
+        return False
+    lnum, rnum = _line_number(left.get("line", "")), _line_number(right.get("line", ""))
+    return lnum is not None and rnum is not None and abs(lnum - rnum) <= 10
+
+
+def _report_keys(entry: Dict[str, Any]) -> List[str]:
+    """The key of each report merged into ``entry``: a re-report may use any of their wordings."""
+    return [
+        finding_key({"file": entry.get("file", ""), "problem": report.get("problem", "")})
+        for report in entry.get("merged_reports") or []
+        if isinstance(report, dict)
+    ]
+
+
+def _prior_triage(entry: Dict[str, Any], previous: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """The earlier finding whose triage ``entry`` carries, or None.
 
-    Looked up by every report merged into it, not only by its final, longest
-    wording: a report recognised under its own words keeps that finding's
-    triage when another reviewer's new wording is merged with it. A match not
-    rejected wins over a rejected one.
+    Its own, final wording decides first, as it always has. Only when that
+    matches nothing are the wordings of the reports merged into it looked
+    up: a report recognised under its own words keeps that finding's triage
+    when another reviewer's new wording is merged with it. Among those, a
+    match not rejected wins over a rejected one.
     """
-    keys = [entry["key"]]
-    for report in entry.get("merged_reports") or []:
-        if isinstance(report, dict):
-            keys.append(finding_key({"file": entry.get("file", ""), "problem": report.get("problem", "")}))
-    matches = [found for found in (previous.get(key) or held.get(key) for key in keys) if found]
+    own = previous.get(entry["key"])
+    if own is not None:
+        return own
+    matches = [found for found in (previous.get(key) for key in _report_keys(entry)) if found]
     for found in matches:
         if found.get("triage") != "rejected":
             return found
@@ -564,10 +578,8 @@ def _previous_by_key(last: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     entries = [entry for entry in last.get("findings") or [] if isinstance(entry, dict)]
     previous = {finding_key(entry): entry for entry in entries}
     for entry in entries:
-        for report in entry.get("merged_reports") or []:
-            if isinstance(report, dict):
-                key = finding_key({"file": entry.get("file", ""), "problem": report.get("problem", "")})
-                previous.setdefault(key, entry)
+        for key in _report_keys(entry):
+            previous.setdefault(key, entry)
     return previous
 
 

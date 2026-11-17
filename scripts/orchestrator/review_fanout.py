@@ -259,7 +259,7 @@ def coverage_unverified_error(change_chars: int, inline_chars: Optional[int] = N
     )
 
 
-def _fenced(text: str, info: str) -> str:
+def fenced(text: str, info: str) -> str:
     """``text`` in a fence it cannot close, so none of it reads as the prompt's own."""
     body = text.rstrip()
     fence = context_mod.fence_for(body)
@@ -301,7 +301,7 @@ def build_review_prompt(
         guidance = guidance + "\n\n" + instructions
     delivery = prompt_delivery(diff_text, inline_chars)
     if delivery == "inline":
-        diff_section = _fenced(diff_text, "diff")
+        diff_section = fenced(diff_text, "diff")
     else:
         diff_section = (
             "Diff too large to inline. Read it from this file, frozen for this review:\n\n"
@@ -363,7 +363,7 @@ def build_design_review_prompt(
         guidance = guidance + "\n\n" + instructions
     delivery = prompt_delivery(plan_text, inline_chars)
     if delivery == "inline":
-        plan_section = _fenced(plan_text, "markdown")
+        plan_section = fenced(plan_text, "markdown")
     else:
         plan_section = (
             "Plan too large to inline. Read it from this file, frozen for this review:\n\n"
@@ -375,13 +375,13 @@ def build_design_review_prompt(
     if note:
         plan_section += "\n\n" + note
     request_section = (
-        _fenced(request_text, "markdown")
+        fenced(request_text, "markdown")
         if request_text.strip()
         else "Not recorded. Judge the plan against its own stated goal."
     )
     if decisions_text.strip():
         request_section += "\n\n" + DESIGN_DECISIONS_SECTION.format(
-            decisions=_fenced(decisions_text, "markdown")
+            decisions=fenced(decisions_text, "markdown")
         )
     prompt = DESIGN_REVIEW_PROMPT_TEMPLATE.format(
         reviewer_id=reviewer.get("id", "reviewer"),

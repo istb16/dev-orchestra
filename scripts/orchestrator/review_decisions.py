@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from . import context as context_mod
@@ -16,9 +15,9 @@ from .review_common import (
     CODE_DECISIONS_USER_LABEL,
 )
 from .review_consolidation import finding_key, recorded_rounds
-from .review_fanout import _fenced
+from .review_fanout import fenced
 from .review_plan import plan_section
-from .review_round_context import _one_line
+from .review_round_context import one_line
 
 #: The most one reviewer prompt carries of this section, the note on a cut aside.
 DECISIONS_CAP_CHARS = 6000
@@ -124,12 +123,12 @@ def _rejected_lines(workspace: ws.Workspace, lineage: str, meta: Dict[str, Any])
     for round_sha, finding in latest.values():
         if finding.get("triage") != "rejected" or round_sha == sha:
             continue
-        problem = _one_line(str(finding.get("problem") or ""))
+        problem = one_line(str(finding.get("problem") or ""))
         if len(problem) > PROBLEM_CHARS:
             problem = problem[: PROBLEM_CHARS - 3] + "..."
-        note = _one_line(str(finding.get("triage_note") or "").strip()) or "no reason recorded"
+        note = one_line(str(finding.get("triage_note") or "").strip()) or "no reason recorded"
         where = "%s:%s" % (str(finding.get("file") or "?"), str(finding.get("line") or "n/a"))
-        lines.append("- %s -- %s -- %s" % (_one_line(where), problem, note))
+        lines.append("- %s -- %s -- %s" % (one_line(where), problem, note))
     return lines
 
 
@@ -150,19 +149,10 @@ def _round_time(data: Dict[str, Any]) -> float:
     """``generated_at`` as seconds since the epoch; a missing or unreadable one sorts first.
 
     Compared as a moment, not as text: an offset or fractional seconds would
-    otherwise order a round by how its time is written. A time with no offset
-    is UTC, as every one this tool writes is.
+    otherwise order a round by how its time is written.
     """
-    value = data.get("generated_at")
-    if not isinstance(value, str) or not value:
-        return float("-inf")
-    try:
-        stamp = datetime.fromisoformat(value)
-    except ValueError:
-        return float("-inf")
-    if stamp.tzinfo is None:
-        stamp = stamp.replace(tzinfo=timezone.utc)
-    return stamp.timestamp()
+    stamp = ws.parse_stamp(data.get("generated_at"))
+    return float("-inf") if stamp is None else stamp.timestamp()
 
 
 def _cut(parts: List[_Part], cap: int) -> str:
@@ -194,7 +184,7 @@ def _cut(parts: List[_Part], cap: int) -> str:
                 kept.append(line)
                 used += len(line) + 1
             if kept and "\n".join(kept).strip():
-                block = part.label + "\n\n" + _fenced("\n".join(kept), part.info)
+                block = part.label + "\n\n" + fenced("\n".join(kept), part.info)
                 rendered.append(block)
                 size += separator + len(block)
         if len(kept) < len(part.lines):

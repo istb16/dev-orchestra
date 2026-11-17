@@ -37,8 +37,9 @@ authors can find it.
   `pre_existing`, and are not in `findings`, `counts`, the fix brief or the
   loop's decision, so a round with only those is clean. A critical or high
   one stays in `findings` and is triaged like any other, as does one that the
-  last report already holds and triage has not rejected, in the same words or
-  at the same place (same file, lines within 10), which keeps its triage. On
+  last report may already hold and triage has not rejected: in the same words,
+  which keeps its triage, or at the same place (same file, line numbers on
+  both within 10), which stays as `needs-triage` for triage to decide. On
   a fix-only re-review, reviewers are told that "this change"
   means the whole change, not the fix. `P` ids cannot be triaged. Reports
   written before this have no `pre_existing` and render as before.

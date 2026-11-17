@@ -239,14 +239,57 @@ class TestEarlierTriage(unittest.TestCase):
         self.assertFalse(review_loop.decide(True, data, {}, BLOCKING, 1, 2).finish)
 
     def test_new_words_at_the_same_place(self):
-        """A reviewer seldom repeats its words: the same file and nearby lines are enough."""
+        """A reviewer seldom repeats its words: the same file and nearby lines keep it in triage.
+
+        Kept, but undecided: standing near an accepted finding does not make
+        it that finding, so it never reaches the fix brief untriaged.
+        """
         reworded = dict(by_file("util.py"), line="9", problem=REWORDED)
         data = build([reworded], last=self.last_with("accepted"), scope="fix")
         self.assertEqual(data["pre_existing"], [])
         (entry,) = data["findings"]
-        self.assertEqual(entry["triage"], "accepted")
-        self.assertEqual(entry["triage_note"], "noted")
+        self.assertEqual(entry["triage"], "needs-triage")
+        self.assertEqual(entry.get("triage_note", ""), "")
+        self.assertNotIn("triage_set_at", entry)
+        self.assertEqual(review_consolidation.accepted_findings(data), [])
+        self.assertNotIn(REWORDED, review_consolidation.render_fix_brief(data))
         self.assertFalse(review_loop.decide(True, data, {}, BLOCKING, 1, 2).finish)
+
+    def test_duplicate_nearby_does_not_hide_a_new_report(self):
+        reworded = dict(by_file("util.py"), line="9", problem=REWORDED)
+        data = build([reworded], last=self.last_with("duplicate"))
+        (entry,) = data["findings"]
+        self.assertEqual(entry["triage"], "needs-triage")
+
+    def test_two_without_a_line_are_not_the_same_place(self):
+        """Sharing a file is not sharing a place: a line-less report is set apart as usual."""
+        last = build([dict(by_file("util.py"), category="correctness", line="n/a")])
+        review_consolidation.set_triage(last, "F1", "accepted", "noted")
+        unrelated = dict(by_file("util.py"), line="n/a", problem=REWORDED)
+        data = build([unrelated], last=last)
+        self.assertEqual(data["findings"], [])
+        self.assertEqual([f["id"] for f in data["pre_existing"]], ["P1"])
+
+    def test_own_rejected_wording_is_not_overruled_by_a_merged_report(self):
+        """A normal finding re-reported in the words triage rejected stays rejected,
+        whatever another report merged with it matches."""
+        key = review_consolidation.finding_key
+        noise = {"file": "util.py", "problem": "the helper swallows every exception"}
+        real = {"file": "util.py", "problem": "the helper ignores the timeout"}
+        previous = {
+            key(noise): dict(noise, triage="rejected", triage_note="noise"),
+            key(real): dict(real, triage="accepted", triage_note="real"),
+        }
+        entry = dict(noise, key=key(noise), merged_reports=[{"problem": real["problem"]}])
+        found = review_consolidation._prior_triage(entry, previous)
+        assert found is not None
+        self.assertEqual(found["triage"], "rejected")
+        # Its own wording matching nothing, the merged reports decide, a decision not rejected first.
+        stranger = dict(entry, problem="something else", key=key({"file": "util.py", "problem": "else"}))
+        stranger["merged_reports"] = [{"problem": noise["problem"]}, {"problem": real["problem"]}]
+        found = review_consolidation._prior_triage(stranger, previous)
+        assert found is not None
+        self.assertEqual(found["triage"], "accepted")
 
     def test_new_words_elsewhere_are_set_apart(self):
         far = dict(by_file("util.py"), line="40", problem=REWORDED)

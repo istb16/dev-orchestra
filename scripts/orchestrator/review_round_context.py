@@ -83,7 +83,7 @@ def render_units(meta: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _one_line(text: str) -> str:
+def one_line(text: str) -> str:
     """``text`` with each character that is not printable written as its escape, as ``repr`` does."""
     return "".join(char if char.isprintable() else repr(char)[1:-1] for char in text)
 
@@ -94,7 +94,7 @@ def _unit_file(path: Any, name: str) -> str:
     A unit chose the name, and a line break in it would put the rest of the
     name into the reviewer's instructions.
     """
-    return "- %s (unit %s)" % (_one_line(str(path)), _one_line(name))
+    return "- %s (unit %s)" % (one_line(str(path)), one_line(name))
 
 
 def carried_findings(workspace: ws.Workspace, meta: Dict[str, Any]) -> List[Dict[str, Any]]:

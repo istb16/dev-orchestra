@@ -135,6 +135,14 @@ class PlanSectionTest(unittest.TestCase):
         # Level 1 and level 4 headings do not count.
         self.assertIsNone(plan_section("# Risks\n\n#### Risks\n", "Risks"))
 
+    def test_plan_section_prefix(self):
+        """``prefix`` takes a heading that goes on past the name, on a word boundary only."""
+        plan = "# P\n\n## Added in this revision (round 2)\n\n- Flag.\n\n## Risks\n"
+        self.assertEqual(plan_section(plan, "Added in this revision", prefix=True), "- Flag.")
+        self.assertIsNone(plan_section(plan, "Added in this revision"))
+        self.assertIsNone(plan_section("# P\n\n## Risksome\n\nX.\n", "Risks", prefix=True))
+        self.assertEqual(review_mod.added_in_revision(plan), "- Flag.")
+
 
 class RenderTest(DecisionsCase):
     def test_empty_is_unchanged(self):
@@ -282,6 +290,12 @@ class RenderTest(DecisionsCase):
         later = "2026-01-01T00:00:00.500000+00:00"
         self.write_round("tokyo", "b" * 64, later, [finding("Offset", "rejected")])
         self.assertIn("Offset", self.render())
+
+    def test_out_of_range_timestamp_sorts_with_missing(self):
+        """A stamp that overflows once moved to UTC is unreadable, not a crash of the round."""
+        self.write_round("later", "b" * 64, "2026-01-02T00:00:00Z", [finding("Edge", "rejected")])
+        self.write_round("edge", "a" * 64, "0001-01-01T00:00:00+05:00", [finding("Edge", "accepted")])
+        self.assertIn("Edge", self.render())
 
     def test_unreadable_timestamp_sorts_with_missing(self):
         self.write_round("later", "b" * 64, "2026-01-02T00:00:00Z", [finding("Garbled", "rejected")])

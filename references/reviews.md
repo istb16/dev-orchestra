@@ -1090,14 +1090,18 @@ triaged like any other:
 - a critical or high one. The label is one reviewer's free text, which the
   reviewed diff can steer, and a severe finding set aside on it alone would
   let the round finish clean; triage decides whether it is the change's.
-- one the last report already holds and triage has not rejected: the same
-  wording (its `key`, or the wording of one of the reports merged into it),
-  or failing that the same place (same file, lines within 10 of each other),
-  since a reviewer seldom repeats its words between rounds. It keeps that
-  finding's triage, also when it is merged with another reviewer's new
-  wording: an accepted finding re-reported as pre-existing on a fix-only
-  round is still accepted, and still blocks until it is fixed. One whose
-  wording the last report rejected is set apart.
+- one the last report may already hold and triage has not rejected: the
+  same wording (its `key`, or the wording of one of the reports merged into
+  it), or failing that the same place (same file, and line numbers on both
+  within 10 of each other -- two without a line share only a file, which is
+  not enough), since a reviewer seldom repeats its words between rounds. One
+  found by its wording keeps that finding's triage, also when it is merged
+  with another reviewer's new wording: an accepted finding re-reported as
+  pre-existing on a fix-only round is still accepted, and still blocks until
+  it is fixed. One found only by its place may be another problem nearby, so
+  it carries no decision: it stays as `needs-triage`, for triage to decide,
+  and never reaches the fix brief on an earlier finding's acceptance. One
+  whose wording the last report rejected is set apart.
 
 `consolidated.md` lists
 them after the findings, under `## Pre-existing, not triaged`, with id,
