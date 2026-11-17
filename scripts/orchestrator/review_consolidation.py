@@ -540,7 +540,7 @@ def _near(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
     return lnum is not None and rnum is not None and abs(lnum - rnum) <= 10
 
 
-def _report_keys(entry: Dict[str, Any]) -> List[str]:
+def report_keys(entry: Dict[str, Any]) -> List[str]:
     """The key of each report merged into ``entry``: a re-report may use any of their wordings."""
     return [
         finding_key({"file": entry.get("file", ""), "problem": report.get("problem", "")})
@@ -561,7 +561,7 @@ def _prior_triage(entry: Dict[str, Any], previous: Dict[str, Dict[str, Any]]) ->
     own = previous.get(entry["key"])
     if own is not None:
         return own
-    matches = [found for found in (previous.get(key) for key in _report_keys(entry)) if found]
+    matches = [found for found in (previous.get(key) for key in report_keys(entry)) if found]
     for found in matches:
         if found.get("triage") != "rejected":
             return found
@@ -578,7 +578,7 @@ def _previous_by_key(last: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     entries = [entry for entry in last.get("findings") or [] if isinstance(entry, dict)]
     previous = {finding_key(entry): entry for entry in entries}
     for entry in entries:
-        for key in _report_keys(entry):
+        for key in report_keys(entry):
             previous.setdefault(key, entry)
     return previous
 

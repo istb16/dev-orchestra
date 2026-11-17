@@ -1171,7 +1171,11 @@ wrong. Its parts, each fenced under its own label, in this order:
 3. The findings rejected in earlier rounds of this review. Each finding is
    taken as the latest round of the same lineage that holds it left it --
    rounds of this snapshot included -- so one rejected and later accepted is
-   not listed, and one rejected and not reported again stays listed. Only a
+   not listed, and one rejected and not reported again stays listed. A
+   finding is recognised by its own wording and by the wording of each
+   report merged into it, so a rejection under a short wording does not
+   outlive a later decision on the longer one it was merged into, or the
+   other way round. Only a
    finding whose latest round is on another snapshot is listed, so a re-run
    of one snapshot is not shown its own rejections. Rounds are ordered by
    the moment `generated_at` names, not by its text, so an offset or

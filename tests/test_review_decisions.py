@@ -291,6 +291,25 @@ class RenderTest(DecisionsCase):
         self.write_round("tokyo", "b" * 64, later, [finding("Offset", "rejected")])
         self.assertIn("Offset", self.render())
 
+    def test_acceptance_under_a_merged_wording_supersedes_the_rejection(self):
+        """A rejected report later merged into a longer, accepted wording is accepted, both ways round."""
+        short, longer = "Short wording", "Short wording, now said at length"
+        self.write_round("r1", "a" * 64, "2026-01-01T00:00:00Z", [finding(short, "rejected", note="noise")])
+        merged = dict(finding(longer, "accepted"), merged_reports=[{"problem": short}])
+        self.write_round("r2", "b" * 64, "2026-01-02T00:00:00Z", [merged])
+        self.assertEqual(self.render(), "")
+        # The other way round: rejected under the merged wording, then accepted in the short one.
+        merged = dict(finding(longer, "rejected", note="noise"), merged_reports=[{"problem": short}])
+        self.write_round("r1", "a" * 64, "2026-01-01T00:00:00Z", [merged])
+        self.write_round("r2", "b" * 64, "2026-01-02T00:00:00Z", [finding(short, "accepted")])
+        self.assertEqual(self.render(), "")
+
+    def test_a_rejected_merged_finding_is_listed_once(self):
+        merged = dict(finding("Longer wording", "rejected", note="noise"))
+        merged["merged_reports"] = [{"problem": "Short"}]
+        self.write_round("r1", "a" * 64, "2026-01-01T00:00:00Z", [merged])
+        self.assertEqual(self.render().count("Longer wording"), 1)
+
     def test_out_of_range_timestamp_sorts_with_missing(self):
         """A stamp that overflows once moved to UTC is unreadable, not a crash of the round."""
         self.write_round("later", "b" * 64, "2026-01-02T00:00:00Z", [finding("Edge", "rejected")])

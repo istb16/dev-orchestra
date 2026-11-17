@@ -14,7 +14,7 @@ from .review_common import (
     CODE_DECISIONS_SECTION,
     CODE_DECISIONS_USER_LABEL,
 )
-from .review_consolidation import finding_key, recorded_rounds
+from .review_consolidation import finding_key, recorded_rounds, report_keys
 from .review_fanout import fenced
 from .review_plan import plan_section
 from .review_round_context import one_line
@@ -111,14 +111,22 @@ def _rejected_lines(workspace: ws.Workspace, lineage: str, meta: Dict[str, Any])
     ]
     rounds.sort(key=lambda pair: (_round_time(pair[1]), pair[0], _round_id(pair[1])))
     latest: Dict[str, Tuple[str, Dict[str, Any]]] = {}
+    # Each wording a finding was ever reported in, to the key it is held under
+    # in ``latest``: a finding merged under a longer wording is the same one as
+    # the shorter report merged into it, so a later decision on either
+    # supersedes an earlier one on the other.
+    owner: Dict[str, str] = {}
     for round_sha, data in rounds:
         findings = data.get("findings")
         for finding in findings if isinstance(findings, list) else []:
             if isinstance(finding, dict):
-                key = finding_key(finding)
-                # Re-inserted so the order is the order of the latest decisions.
-                latest.pop(key, None)
-                latest[key] = (round_sha, finding)
+                keys = [finding_key(finding), *report_keys(finding)]
+                for alias in keys:
+                    # Re-inserted so the order is the order of the latest decisions.
+                    latest.pop(owner.get(alias, alias), None)
+                latest[keys[0]] = (round_sha, finding)
+                for alias in keys:
+                    owner[alias] = keys[0]
     lines: List[str] = []
     for round_sha, finding in latest.values():
         if finding.get("triage") != "rejected" or round_sha == sha:
