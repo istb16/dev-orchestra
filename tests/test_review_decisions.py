@@ -271,6 +271,23 @@ class RenderTest(DecisionsCase):
         write("z-file", "round-a", "accepted")
         self.assertIn("Tied", self.render())
 
+    def test_timestamps_in_other_formats_order_by_time(self):
+        """An offset or fractional seconds orders by the moment, not by the string."""
+        # 08:00 at +09:00 is 23:00 UTC the day before: earlier, though it sorts later as text.
+        self.write_round("utc", "a" * 64, "2026-01-01T00:00:00Z", [finding("Offset", "rejected")])
+        self.write_round("tokyo", "b" * 64, "2026-01-01T08:00:00+09:00", [finding("Offset", "accepted")])
+        self.assertIn("Offset", self.render())
+        # Half a second later, though "." sorts before "Z" as text.
+        self.write_round("utc", "a" * 64, "2026-01-01T00:00:00Z", [finding("Offset", "accepted")])
+        later = "2026-01-01T00:00:00.500000+00:00"
+        self.write_round("tokyo", "b" * 64, later, [finding("Offset", "rejected")])
+        self.assertIn("Offset", self.render())
+
+    def test_unreadable_timestamp_sorts_with_missing(self):
+        self.write_round("later", "b" * 64, "2026-01-02T00:00:00Z", [finding("Garbled", "rejected")])
+        self.write_round("garbled", "a" * 64, "yesterday", [finding("Garbled", "accepted")])
+        self.assertIn("Garbled", self.render())
+
     def test_missing_timestamp_sorts_first(self):
         self.write_round("later", "b" * 64, "2026-01-02T00:00:00Z", [finding("Stamped", "rejected")])
         self.write_round("unstamped", "a" * 64, None, [finding("Stamped", "accepted")])

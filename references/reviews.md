@@ -1170,7 +1170,9 @@ wrong. Its parts, each fenced under its own label, in this order:
    not listed, and one rejected and not reported again stays listed. Only a
    finding whose latest round is on another snapshot is listed, so a re-run
    of one snapshot is not shown its own rejections. Rounds are ordered by
-   `generated_at`, then by snapshot and round id, so equal or missing
+   the moment `generated_at` names, not by its text, so an offset or
+   fractional seconds do not change the order; a missing or unreadable one
+   comes first. Ties go by snapshot, then round id, so equal or missing
    timestamps give the same answer every time. One line each,
    `- <file>:<line> -- <problem> -- <triage note>`, the problem on one line
    and cut at 160 characters, `no reason recorded` when the note is empty.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from . import context as context_mod
@@ -94,9 +95,9 @@ def _rejected_lines(workspace: ws.Workspace, lineage: str, meta: Dict[str, Any])
     latest occurrence is on another snapshot is listed, so a rerun of this
     snapshot is not told its own rejections.
 
-    Rounds are ordered by ``generated_at``, then by snapshot and round id, so
-    rounds with the same or no timestamp give the same answer every time. A
-    round whose ``findings`` is not a list holds none.
+    Rounds are ordered by the moment ``generated_at`` names, then by snapshot
+    and round id, so rounds with the same or no timestamp give the same answer
+    every time. A round whose ``findings`` is not a list holds none.
 
     Who reported it is never said: a rejection is a decision, not one
     reviewer's opinion against another's.
@@ -109,7 +110,7 @@ def _rejected_lines(workspace: ws.Workspace, lineage: str, meta: Dict[str, Any])
         for data in recorded_rounds(workspace)
         if str(data.get("lineage") or "") == lineage
     ]
-    rounds.sort(key=lambda pair: (str(pair[1].get("generated_at") or ""), pair[0], _round_id(pair[1])))
+    rounds.sort(key=lambda pair: (_round_time(pair[1]), pair[0], _round_id(pair[1])))
     latest: Dict[str, Tuple[str, Dict[str, Any]]] = {}
     for round_sha, data in rounds:
         findings = data.get("findings")
@@ -143,6 +144,25 @@ def _round_sha(data: Dict[str, Any]) -> str:
 
 def _round_id(data: Dict[str, Any]) -> str:
     return str(_snapshot_of(data).get("round_id") or "")
+
+
+def _round_time(data: Dict[str, Any]) -> float:
+    """``generated_at`` as seconds since the epoch; a missing or unreadable one sorts first.
+
+    Compared as a moment, not as text: an offset or fractional seconds would
+    otherwise order a round by how its time is written. A time with no offset
+    is UTC, as every one this tool writes is.
+    """
+    value = data.get("generated_at")
+    if not isinstance(value, str) or not value:
+        return float("-inf")
+    try:
+        stamp = datetime.fromisoformat(value)
+    except ValueError:
+        return float("-inf")
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.timestamp()
 
 
 def _cut(parts: List[_Part], cap: int) -> str:
