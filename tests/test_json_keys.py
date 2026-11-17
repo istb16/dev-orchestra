@@ -254,6 +254,7 @@ KEYS: Dict[str, Tuple[List[str], List[str]]] = {
             "paired",
             "panel_reduced",
             "ran",
+            "re_review",
             "refused",
             "refused_by",
             "relevance",
@@ -261,6 +262,7 @@ KEYS: Dict[str, Tuple[List[str], List[str]]] = {
             "rounds",
             "rounds_without_a_test_result",
             "scorecard",
+            "tiers",
             "tool_output_chars",
             "tool_output_chars_per_run",
             "tool_output_reported_runs",
@@ -291,6 +293,7 @@ KEYS: Dict[str, Tuple[List[str], List[str]]] = {
             "runtime",
             "runtime_remaining_seconds",
             "stalls",
+            "tiers",
             "tokens",
             "total_delegated_runs",
             "verdict",
@@ -475,6 +478,30 @@ class TestJsonTopLevelKeys(IsolatedCase):
         for job in payload["jobs"]:
             missing = sorted(set(KEYS["jobs wait"][1]) - set(job))
             self.assertEqual(missing, [], "jobs wait --json lost %s" % ", ".join(missing))
+
+    def test_tier_and_re_review_keys(self):
+        reason = "light: 1 file, none high-risk"
+        choice = {"tier": "light", "source": "auto", "reason": reason, "cause": "light"}
+        self.cli_workspace().record_event("implementer", "ok", {"tier": "light", "tier_choice": choice})
+        code, out, err = run_cli("status", "--json")
+        self.assertEqual(code, 0, err)
+        tiers = json.loads(out)["tiers"]
+        self.assertEqual(sorted(tiers), ["implementer", "review_fixer"])
+        self.assertEqual(sorted(tiers["implementer"]), ["cause", "reason", "source", "tier"])
+        self.assertEqual(tiers["implementer"]["cause"], "light")
+        self.assertIsNone(tiers["review_fixer"])
+        code, out, err = run_cli("optimization", "report", "--json")
+        self.assertEqual(code, 0, err)
+        report = json.loads(out)
+        self.assertEqual(sorted(report["re_review"]), sorted(report["relevance"]))
+        self.assertEqual(sorted(report["tiers"]), ["implementer", "review_fixer"])
+        for stage, group in report["tiers"].items():
+            with self.subTest(stage=stage):
+                self.assertEqual(
+                    sorted(group),
+                    ["by_source", "by_tier", "light_failed", "retried_on_role_model", "runs"],
+                )
+                self.assertEqual(sorted(group["by_source"]), ["auto", "explicit", "off"])
 
     def test_model_list_names_every_built_in_provider(self):
         payload = json.loads(run_cli("model", "list", "--json")[1])

@@ -5,13 +5,15 @@ The reporting half of ``optimization``, behind ``optimization report``.
 what refused rounds saved, ``reviewer_scorecard`` scores each reviewer by what
 it was paid and how its findings were triaged, and ``architect_revisions``
 prices the plan revisions an architect made, completed and failed alike.
+``tier_choices`` counts the model tiers the implementer and review fixer ran on.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
-from .optimization import HIGH_RISK_SLOT, REFUSED, USUAL_SLOT, WHEN_RELEVANCE
+from . import tier_record
+from .optimization import HIGH_RISK_SLOT, REFUSED, USUAL_SLOT, WHEN_RE_REVIEW, WHEN_RELEVANCE
 from .review_consolidation import round_key
 from .workspace import is_int
 
@@ -81,8 +83,11 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     ran = len(rounds) - code.refused
     billed = spend["billed_tokens"]
     per_round = billed // ran if (ran and billed) else None
-    relevance = _relevance_counts([event for event in rounds if event.get("status") != REFUSED])
+    ran_rounds = [event for event in rounds if event.get("status") != REFUSED]
+    relevance = _relevance_counts(ran_rounds)
     relevance["estimated_saving"] = _relevance_saving(relevance, billed, spend["reviewer_runs"])
+    re_review = _relevance_counts(ran_rounds, when=WHEN_RE_REVIEW)
+    re_review["estimated_saving"] = _relevance_saving(re_review, billed, spend["reviewer_runs"])
     design_billed = design_spend["billed_tokens"]
     design_relevance = _relevance_counts(design)
     design_relevance["estimated_saving"] = _relevance_saving(
@@ -107,6 +112,9 @@ def summarise_rounds(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         # The saving prices each seat left out at the stage's mean billed
         # tokens per reviewer run: an estimate, labelled as the gate's is.
         "relevance": relevance,
+        # Seats a re-review round left out or kept for an open finding, priced
+        # as ``relevance`` is and counted apart from it.
+        "re_review": re_review,
         "design_relevance": design_relevance,
         "rounds_without_a_test_result": code.unrecorded,
         "reviewer_runs": spend["reviewer_runs"],
@@ -192,9 +200,10 @@ def _tally_code_rounds(rounds: Sequence[Dict[str, Any]]) -> _CodeRounds:
             code.unrecorded += 1
         # Refused rounds too: the decision was made and recorded either way.
         # An event from before conditional reviewers carries neither key. A
-        # role relevance record is counted under `relevance` instead.
+        # role relevance record is counted under `relevance` instead, and a
+        # re-review record under `re_review`.
         for record in plan.get("conditional") or []:
-            if isinstance(record, dict) and record.get("when") != WHEN_RELEVANCE:
+            if isinstance(record, dict) and record.get("when") not in (WHEN_RELEVANCE, WHEN_RE_REVIEW):
                 code.conditional["added" if record.get("runs") else "left_out"] += 1
         if plan.get("declared"):
             code.conditional["declared_rounds"] += 1
@@ -592,8 +601,11 @@ def _bump(counter: Dict[str, int], key: str) -> None:
     counter[key] = counter.get(key, 0) + 1
 
 
-def _relevance_counts(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    """What the role relevance rules decided over ``events``, from their ``relevance`` records.
+def _relevance_counts(events: Sequence[Dict[str, Any]], when: str = WHEN_RELEVANCE) -> Dict[str, Any]:
+    """What the role relevance rules decided over ``events``, from their ``when`` records.
+
+    ``when`` is ``relevance`` by default; ``re-review`` counts what the
+    re-review cut decided instead, in the same shape.
 
     ``left_out_by_level`` is by the level the round's ``optimization`` block
     records -- the level in force on a code round, the configured one on a
@@ -608,7 +620,7 @@ def _relevance_counts(events: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             continue
         level = str(plan.get("level") or "?")
         for record in plan.get("conditional") or []:
-            if not isinstance(record, dict) or record.get("when") != WHEN_RELEVANCE:
+            if not isinstance(record, dict) or record.get("when") != when:
                 continue
             counts["judged"] += 1
             if record.get("runs"):
@@ -624,6 +636,58 @@ def _relevance_saving(counts: Dict[str, Any], billed: int, runs: int) -> int:
     if not (billed and runs):
         return 0
     return int(counts["left_out"]) * (billed // runs)
+
+
+#: The ``by_tier`` key of a run on the role's own model, which has no tier name.
+OWN_MODEL = "own_model"
+
+
+def tier_choices(per_workflow_events: Sequence[Sequence[Dict[str, Any]]]) -> Dict[str, Any]:
+    """Which tier the implementer and review fixer ran on, who chose it, and how it went.
+
+    ``per_workflow_events`` is each workflow's run log. Only the end events
+    that recorded a ``tier_choice`` are counted: a run with no ``light`` tier
+    configured, or from before the CLI chose tiers, records none and adds
+    nothing. Per stage:
+
+    * ``runs``, then ``by_source`` (``auto``, ``explicit``, ``off``) and
+      ``by_tier`` (the tier name, or ``own_model``);
+    * ``light_failed``: runs on ``light`` that did not end ``ok``, or ended
+      ``ok`` without answering (``tier_record.light_failed``, the predicate
+      the retry is decided by);
+    * ``retried_on_role_model``: runs the CLI sent to the role's own model
+      because the last light run of the stage had failed, counted on the
+      choice's ``cause``, never on its display ``reason``.
+    """
+    stages: Dict[str, Dict[str, Any]] = {}
+    for stage in tier_record.ROLES:
+        stages[stage] = {
+            "runs": 0,
+            "by_source": dict.fromkeys(
+                (tier_record.SOURCE_AUTO, tier_record.SOURCE_EXPLICIT, tier_record.SOURCE_OFF), 0
+            ),
+            "by_tier": {},
+            "light_failed": 0,
+            "retried_on_role_model": 0,
+        }
+    for events in per_workflow_events:
+        for event in events:
+            if not isinstance(event, dict) or event.get("stage") not in stages:
+                continue
+            choice = event.get("tier_choice")
+            if not isinstance(choice, dict):
+                continue
+            group = stages[str(event["stage"])]
+            group["runs"] += 1
+            _bump(group["by_source"], str(choice.get("source") or "?"))
+            tier = event.get("tier") or choice.get("tier")
+            _bump(group["by_tier"], str(tier) if tier else OWN_MODEL)
+            if tier_record.light_failed(dict(event, tier=tier)):
+                group["light_failed"] += 1
+            retried = choice.get("cause") == tier_record.CAUSE_RETRY
+            if retried and choice.get("source") == tier_record.SOURCE_AUTO:
+                group["retried_on_role_model"] += 1
+    return stages
 
 
 #: Below this many decided findings no rate is printed, and below this many

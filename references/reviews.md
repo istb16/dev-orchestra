@@ -640,8 +640,31 @@ an estimated saving that prices each seat left out at the stage's mean billed
 tokens per reviewer run (`roles skipped`; `--json` `relevance` and
 `design_relevance`).
 
+**Re-review rounds.** A fix-only round -- a snapshot with `incremental_from`
+set, as every round after the first of a lineage is -- asks a different
+question of every seat that always runs and that the role rules above would
+judge: did it report an accepted finding that is still open? One that did runs
+to re-check it (`has open accepted finding F3 (and 1 more)`); a seat judged by
+the security rule also runs when that rule finds the fix's paths
+(`src/handler.py matches *handler*`); any other
+sits the round out (`re-review round: reported no open accepted finding
+(optimization.narrow_re_reviews)`), with the same `--only` hint in its note.
+That question replaces the role rules above on such a round. The `general`
+seats, a seat with `relevance: always` and a security seat that has not named
+`relevance: security` always run, a `when: high-risk` or `when: paths` seat is
+judged by its condition as before, and a high-risk hit, `--high-risk` or
+`--only` gives the round its usual panel. The whole-change recheck round
+(`recheck: true`, even when its snapshot also has `incremental_from`) and a
+whole round after a clean or all-rejected review are not re-review rounds and
+keep the full panel. If no seat would be left, one is kept, as above. The
+records have `when: re-review`, and `optimization report` counts them apart
+(`re-review seats`; `--json` `re_review`). `config set
+optimization.narrow_re_reviews false` turns the cut off
+([configuration](configuration.md#field-reference)).
+
 **Two off switches.** `config set optimization.skip_unneeded_roles false`
-restores every always-on seat to every round; `reviewer set claude-test
+restores every always-on seat to every round, fix-only re-review rounds
+included; `reviewer set claude-test
 --relevance always` (add `--design` for the design panel) restores one seat.
 The pattern lists are yours to replace whole (`optimization.security_paths`,
 `optimization.architecture_paths`) or add to (`extra_security_paths`,

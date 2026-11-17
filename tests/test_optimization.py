@@ -25,7 +25,7 @@ from typing import Optional
 
 from helpers import IsolatedCase, has_git, run_cli
 
-from orchestrator import cli, optimization_render, review_snapshot
+from orchestrator import cli, optimization_render, review_snapshot, round_progress
 from orchestrator import config as config_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator import optimization as opt
@@ -542,6 +542,257 @@ class TestTheDefaultPanelsRounds(unittest.TestCase):
     def test_an_ordinary_large_change_runs_the_four_that_always_run(self):
         _plan, ids = self.running(["app.py"], 500)
         self.assertEqual(ids, ["claude-general", "codex-general", "claude-security", "claude-test"])
+
+
+# --------------------------------------------------------------------------- re-review rounds
+
+
+SEC_ALWAYS = {"id": "sec2", "role": "security"}
+#: A security seat that opted in to its role's relevance rule.
+SEC_OPTED = dict(SEC_ALWAYS, relevance="security")
+TST = {"id": "tst", "role": "test"}
+CARRIED_BY_TST = [{"id": "F5", "reported_by": ["tst", "gen"]}, {"id": "F3", "reported_by": ["tst"]}]
+RE_REVIEW_LEFT_OUT = "re-review round: reported no open accepted finding (optimization.narrow_re_reviews)"
+
+
+def decide_re_review(panel=(GEN, SEC_OPTED, TST), paths=("app.py",), settings=None, **keywords):
+    """``decide`` on a small, tested change whose reviewed files are ``paths``."""
+    options = dict(config_mod.default_config()["optimization"], **(settings or {}))
+    review = dict(config_mod.default_config()["review"])
+    return opt.decide(
+        options,
+        review,
+        list(paths),
+        10,
+        "ok",
+        len(panel),
+        panel=list(panel),
+        reviewed=list(paths),
+        **keywords,
+    )
+
+
+def running_ids(panel, plan):
+    return [r["id"] for r in panel if opt.qualifies(r, plan.conditional)]
+
+
+class TestReReviewPanel(unittest.TestCase):
+    def test_seats_with_no_open_finding_sit_out_and_carriers_stay(self):
+        panel = (GEN, SEC_OPTED, TST)
+        plan = decide_re_review(panel, re_review=True, carried=CARRIED_BY_TST)
+        self.assertEqual(
+            plan.conditional,
+            [
+                {"id": "sec2", "when": "re-review", "runs": False, "reason": RE_REVIEW_LEFT_OUT},
+                {
+                    "id": "tst",
+                    "when": "re-review",
+                    "runs": True,
+                    "reason": "has open accepted finding F3 (and 1 more)",
+                },
+            ],
+        )
+        self.assertEqual(running_ids(panel, plan), ["gen", "tst"])
+        self.assertIsNone(plan.reviewer_limit, "a carried finding keeps the panel whole")
+
+    def test_general_and_conditional_seats_are_not_judged(self):
+        panel = (GEN, GEN2, SEC, TST)
+        plan = decide_re_review(panel, re_review=True)
+        self.assertEqual(
+            [(r["id"], r["when"], r["runs"]) for r in plan.conditional],
+            [("sec", "high-risk", False), ("tst", "re-review", False)],
+        )
+        self.assertEqual(running_ids(panel, plan), ["gen", "gen2"])
+        self.assertEqual(plan.reviewer_limit, 1, "a seat left out does not keep the panel whole")
+
+    def test_without_re_review_the_round_is_judged_as_before(self):
+        plan = decide_re_review((GEN, SEC_ALWAYS, TST), carried=CARRIED_BY_TST)
+        self.assertEqual([r["when"] for r in plan.conditional], ["relevance"])
+        self.assertEqual(running_ids((GEN, SEC_ALWAYS, TST), plan), ["gen", "sec2", "tst"])
+
+    def test_a_high_risk_hit_a_declaration_or_only_gives_todays_records(self):
+        for paths, keywords in (
+            (("auth.py",), {}),
+            (("app.py",), {"declared": True}),
+            (("app.py",), {"only": True}),
+        ):
+            with self.subTest(paths=paths, **keywords):
+                today = decide_re_review(paths=paths, **keywords)
+                plan = decide_re_review(paths=paths, re_review=True, **keywords)
+                self.assertEqual(plan.conditional, today.conditional)
+                self.assertNotIn("re-review", [r["when"] for r in plan.conditional])
+                self.assertEqual(plan.reviewer_limit, today.reviewer_limit)
+
+    def test_the_switch_off_gives_todays_records(self):
+        off = {"narrow_re_reviews": False}
+        today = decide_re_review(settings=off, carried=CARRIED_BY_TST)
+        plan = decide_re_review(settings=off, re_review=True, carried=CARRIED_BY_TST)
+        self.assertEqual(plan.conditional, today.conditional)
+        self.assertEqual(plan.reviewer_limit, today.reviewer_limit)
+        self.assertNotIn("re-review", [r["when"] for r in plan.conditional])
+        self.assertFalse(opt.narrow_re_reviews(off))
+        self.assertTrue(opt.narrow_re_reviews({}))
+
+    def test_a_panel_with_no_general_seat_keeps_one(self):
+        panel = (SEC_OPTED, TST)
+        plan = decide_re_review(panel, re_review=True)
+        self.assertEqual(
+            plan.conditional,
+            [
+                {
+                    "id": "sec2",
+                    "when": "re-review",
+                    "runs": True,
+                    "reason": "kept: no other reviewer would run",
+                },
+                {"id": "tst", "when": "re-review", "runs": False, "reason": RE_REVIEW_LEFT_OUT},
+            ],
+        )
+        self.assertEqual(running_ids(panel, plan), ["sec2"])
+
+    def test_a_seat_left_out_is_told_how_to_include_it(self):
+        plan = decide_re_review(re_review=True, carried=CARRIED_BY_TST)
+        self.assertEqual(
+            plan.conditional_notes(),
+            [
+                "sec2 (when: re-review) left out: %s; --only sec2 to include it" % RE_REVIEW_LEFT_OUT,
+                "tst (when: re-review) added: has open accepted finding F3 (and 1 more)",
+            ],
+        )
+
+    def test_an_unjudged_security_seat_and_relevance_always_are_not_narrowed(self):
+        pinned = {"id": "tst2", "role": "test", "relevance": "always"}
+        panel = (GEN, SEC_ALWAYS, pinned, TST)
+        plan = decide_re_review(panel, re_review=True)
+        self.assertEqual(
+            [(r["id"], r["when"], r["runs"]) for r in plan.conditional], [("tst", "re-review", False)]
+        )
+        self.assertEqual(running_ids(panel, plan), ["gen", "sec2", "tst2"])
+
+    def test_an_opted_in_security_seat_stays_when_the_fix_touches_a_security_path(self):
+        panel = (GEN, SEC_OPTED, TST)
+        plan = decide_re_review(panel, paths=("src/handler.py",), re_review=True)
+        self.assertEqual(
+            plan.conditional,
+            [
+                {
+                    "id": "sec2",
+                    "when": "re-review",
+                    "runs": True,
+                    "reason": "src/handler.py matches *handler*",
+                },
+                {"id": "tst", "when": "re-review", "runs": False, "reason": RE_REVIEW_LEFT_OUT},
+            ],
+        )
+        self.assertEqual(running_ids(panel, plan), ["gen", "sec2"])
+
+    def test_a_carried_finding_wins_over_a_security_path(self):
+        panel = (GEN, SEC_OPTED, TST)
+        carried = [{"id": "F2", "reported_by": ["sec2"]}]
+        plan = decide_re_review(panel, paths=("src/handler.py",), re_review=True, carried=carried)
+        kept = {"id": "sec2", "when": "re-review", "runs": True, "reason": "has open accepted finding F2"}
+        self.assertEqual(plan.conditional[0], kept)
+
+    def test_the_security_seat_reads_the_configured_security_paths(self):
+        panel = (GEN, SEC_OPTED, TST)
+        cases = (
+            ({"security_paths": []}, "src/handler.py", False, RE_REVIEW_LEFT_OUT),
+            ({"extra_security_paths": ["lib/*.py"]}, "lib/util.py", True, "lib/util.py matches lib/*.py"),
+            ({}, "lib/util.py", False, RE_REVIEW_LEFT_OUT),
+        )
+        for settings, path, runs, reason in cases:
+            with self.subTest(settings=settings, path=path):
+                plan = decide_re_review(panel, paths=(path,), settings=settings, re_review=True)
+                self.assertEqual(
+                    plan.conditional[0], {"id": "sec2", "when": "re-review", "runs": runs, "reason": reason}
+                )
+
+    def test_skip_unneeded_roles_off_keeps_every_seat_on_a_re_review_round(self):
+        panel = (GEN, SEC_OPTED, TST)
+        off = {"skip_unneeded_roles": False}
+        today = decide_re_review(panel, settings=off)
+        plan = decide_re_review(panel, settings=off, re_review=True)
+        self.assertEqual(plan.conditional, today.conditional)
+        self.assertNotIn("re-review", [r["when"] for r in plan.conditional])
+        self.assertEqual(running_ids(panel, plan), ["gen", "sec2", "tst"])
+
+    def test_a_finding_carried_only_by_a_general_seat_keeps_no_other_seat(self):
+        panel = (GEN, SEC_OPTED, TST)
+        plan = decide_re_review(panel, re_review=True, carried=[{"id": "F1", "reported_by": ["gen"]}])
+        self.assertEqual([(r["id"], r["runs"]) for r in plan.conditional], [("sec2", False), ("tst", False)])
+        self.assertEqual(running_ids(panel, plan), ["gen"])
+        self.assertIsNone(plan.reviewer_limit, "only one seat runs, so there is nothing to cut")
+
+    def test_a_malformed_reported_by_is_read_safely(self):
+        panel = (GEN, SEC_OPTED, TST)
+        for reported_by, expected in (("tst", ["gen", "tst"]), (None, ["gen"]), ("t", ["gen"])):
+            with self.subTest(reported_by=reported_by):
+                carried = [{"id": "F1", "reported_by": reported_by}]
+                plan = decide_re_review(panel, re_review=True, carried=carried)
+                self.assertEqual(running_ids(panel, plan), expected)
+                self.assertEqual([r["when"] for r in plan.conditional], ["re-review", "re-review"])
+
+    def test_only_a_carried_finding_keeps_the_panel_whole(self):
+        kept = {"id": "x", "when": "re-review", "runs": True, "reason": "kept: no other reviewer would run"}
+        carried = dict(kept, reason="has open accepted finding F1")
+        self.assertFalse(opt.keeps_whole([kept]))
+        self.assertTrue(opt.keeps_whole([carried]))
+
+
+@unittest.skipUnless(has_git(), "git is required")
+class TestRoundPlanReReview(IsolatedCase):
+    """``round_plan`` narrows the panel only on a snapshot with ``incremental_from``."""
+
+    PANEL = (GEN, SEC_ALWAYS, TST)
+
+    def setUp(self):
+        super().setUp()
+        self.fake_clis()
+        self.init_git_repo()
+        self.write("app.py", "x = 1\n")
+        self.write(".dev-orchestra.yaml", "version: 1\n")
+        self.commit_all("init")
+        self.workspace = self.cli_workspace()
+        path = self.workspace.consolidated_json_path
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        ws.write_json(
+            path,
+            {
+                "snapshot": {"sha256": "old"},
+                "findings": [{"id": "F1", "triage": "accepted", "reported_by": ["tst"]}],
+            },
+        )
+
+    def plan(self, **meta):
+        loaded = config_mod.load(self.project, validate_result=False)
+        snapshot = {
+            "files": ["app.py"],
+            "changed_paths": ["app.py"],
+            "condition_paths": ["app.py"],
+            "sha256": "new",
+        }
+        snapshot.update(meta)
+        return round_progress.round_plan(loaded, self.workspace, snapshot, list(self.PANEL))
+
+    def test_a_fix_only_round_is_narrowed(self):
+        plan = self.plan(incremental_from="abc123")
+        # The security seat has not opted in to relevance, so it is never narrowed.
+        self.assertEqual(
+            [(r["id"], r["when"], r["runs"]) for r in plan.conditional], [("tst", "re-review", True)]
+        )
+        self.assertEqual(running_ids(self.PANEL, plan), ["gen", "sec2", "tst"])
+
+    def test_a_recheck_round_keeps_the_full_panel(self):
+        for incremental_from in ("", "abc123"):
+            with self.subTest(incremental_from=incremental_from):
+                plan = self.plan(incremental_from=incremental_from, recheck=True)
+                self.assertNotIn("re-review", [r["when"] for r in plan.conditional])
+                self.assertEqual(running_ids(self.PANEL, plan), ["gen", "sec2", "tst"])
+
+    def test_a_whole_round_keeps_the_full_panel(self):
+        plan = self.plan()
+        self.assertNotIn("re-review", [r["when"] for r in plan.conditional])
+        self.assertEqual(running_ids(self.PANEL, plan), ["gen", "sec2", "tst"])
 
 
 # --------------------------------------------------------------------------- path-scoped reviewers
@@ -3893,6 +4144,7 @@ DECISION_NAMES = {
     "WHEN_PATHS",
     "REVIEWER_CONDITIONS",
     "WHEN_RELEVANCE",
+    "WHEN_RE_REVIEW",
     "RELEVANCE_RULES",
     "RELEVANCE_ALWAYS",
     "OPT_IN_RELEVANCE",
@@ -3933,6 +4185,7 @@ DECISION_NAMES = {
     "Evidence",
     "relevance_rule",
     "skip_unneeded_roles",
+    "narrow_re_reviews",
     "is_doc",
     "_top_dirs",
     "_matches",
@@ -3942,6 +4195,8 @@ DECISION_NAMES = {
     "_architecture_needed",
     "_rule_answer",
     "relevance_records",
+    "_reporters",
+    "re_review_records",
     "join_relevance",
     "_keep_one",
     "keeps_whole",
@@ -3955,10 +4210,12 @@ DECISION_NAMES = {
     "_has_extension",
     "_risk_candidates",
     "_folded_patterns",
-    "_token_matches",
+    "token_matches",
     "design_risk",
     "PlanFiles",
     "plan_files",
+    "judge_files",
+    "_judge_entries",
     "findings_cap",
     "_positive",
     "choose_reviewers",
@@ -4018,6 +4275,9 @@ REPORT_NAMES = {
     "_bump",
     "_relevance_counts",
     "_relevance_saving",
+    # Model tiers.
+    "OWN_MODEL",
+    "tier_choices",
     # Scorecard.
     "reviewer_scorecard",
     "_round_key_of_event",
@@ -4082,7 +4342,7 @@ class TestTheSplit(unittest.TestCase):
     must never need either of the others, nor the design half the report."""
 
     def test_the_split_partitions_the_old_module(self):
-        self.assertEqual((len(DECISION_NAMES), len(REPORT_NAMES), len(DESIGN_NAMES)), (83, 64, 4))
+        self.assertEqual((len(DECISION_NAMES), len(REPORT_NAMES), len(DESIGN_NAMES)), (89, 66, 4))
         self.assertEqual(_top_level_names(opt), DECISION_NAMES)
         self.assertEqual(_top_level_names(opt_report), REPORT_NAMES)
         self.assertEqual(_top_level_names(opt_design), DESIGN_NAMES)

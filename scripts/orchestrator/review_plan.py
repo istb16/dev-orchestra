@@ -199,3 +199,38 @@ def plan_tokens(plan_text: str) -> PlanScan:
             for word in _plain_words(BACKTICK_RE.sub(" ", line)):
                 tokens.append(PlanToken(word, section, True, bool(spans)))
     return PlanScan(tokens, has_files)
+
+
+_LIST_ENTRY_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(\S+)")
+
+
+def files_entries(plan_text: str) -> List[str]:
+    """The first word of each list item under ``Files to Modify``, outside fences.
+
+    Backticks, ``**`` and edge punctuation are dropped, and a trailing
+    ``:N`` line reference. Unlike ``plan_tokens`` a word with no ``/`` and no
+    extension is kept, so a bare ``Makefile`` or ``Dockerfile`` entry, with
+    or without backticks, is still a name the list gives.
+    """
+    stack: List[Tuple[int, str]] = []
+    entries: List[str] = []
+    for fenced in fenced_lines(plan_text.splitlines()):
+        if fenced.part:
+            continue
+        heading = HEADING_TEXT_RE.match(fenced.text)
+        if heading:
+            level = len(heading.group(1))
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            stack.append((level, heading_title(heading.group(2))))
+            continue
+        if not any(FILES_HEADING_RE.match(name) for _, name in stack):
+            continue
+        entry = _LIST_ENTRY_RE.match(fenced.text)
+        if not entry:
+            continue
+        word = entry.group(1).strip("*" + _EDGE_PUNCTUATION).rstrip(".")
+        word = _LINE_SUFFIX_RE.sub("", word) or word
+        if word:
+            entries.append(word)
+    return entries

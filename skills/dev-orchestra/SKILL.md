@@ -69,7 +69,7 @@ you write and redirects need. Templates, detail:
 | Fix | `review fix-brief --output .ai/execution/fix-brief.md`, then `run review_fixer --prompt-file .ai/execution/fix-brief.md` |
 | Re-test | as Test, then `review status` |
 
-Model tiers (`--tier light`), splitting a long implement run, units in
+Model tiers (the CLI picks; `--no-auto-tier` after red tests), splitting long runs, units in
 parallel: `references/workflow.md` (Implementation).
 
 **Long stages.** Run implementer, review_fixer and big architect runs (`on`:

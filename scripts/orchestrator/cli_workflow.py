@@ -8,7 +8,7 @@ import shutil
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, cast
 
 from . import approval as approval_mod
-from . import approval_auto, review_tests
+from . import approval_auto, review_tests, tier_record
 from . import config as config_mod
 from . import instructions as instructions_mod
 from . import jobs as jobs_mod
@@ -674,6 +674,9 @@ def _status_payload(
         # Reported, never enforced: no verdict here turns on what a run cost.
         "tokens": summary["tokens"],
         "optimization": plan.to_dict(),
+        # The tier each role's last run recorded choosing; None for a role
+        # whose runs recorded none.
+        "tiers": _last_tier_choices(events),
         "workflow": workspace.workflow,
         # Named here because status is the command the orchestrator consults
         # before every stage: if another session is working in this tree, that
@@ -684,6 +687,38 @@ def _status_payload(
         else [],
     }
     return _Status(payload, plan, decision, design_round.final_pass, architect_left, progress)
+
+
+def _last_tier_choices(events: List[Dict[str, Any]]) -> Dict[str, Optional[Dict[str, Any]]]:
+    """``{implementer, review_fixer}``: the ``tier_choice`` each stage's last run recorded, or None.
+
+    A run is read by its end event (``tier_record.is_run_end``). One that
+    recorded no choice -- a run after ``optimization.auto_tier`` was turned
+    off, say -- clears the one before it, so the line is about the stage's
+    latest run.
+    """
+    found: Dict[str, Optional[Dict[str, Any]]] = dict.fromkeys(tier_record.ROLES)
+    for event in events:
+        if not tier_record.is_run_end(event) or event.get("stage") not in found:
+            continue
+        choice = event.get("tier_choice")
+        found[str(event.get("stage"))] = (
+            {key: choice.get(key) for key in ("tier", "source", "reason", "cause")}
+            if isinstance(choice, dict)
+            else None
+        )
+    return found
+
+
+def _tier_line(tiers: Dict[str, Any]) -> str:
+    """``Tiers: implementer 'light' (auto: ...)``, or "" when no run recorded a choice."""
+    parts = []
+    for stage, choice in tiers.items():
+        if not isinstance(choice, dict):
+            continue
+        on = "%r tier" % choice["tier"] if choice.get("tier") else "own model"
+        parts.append("%s on its %s (%s: %s)" % (stage, on, choice.get("source"), choice.get("reason")))
+    return "Tiers: %s" % "; ".join(parts) if parts else ""
 
 
 def _approval_payload(
@@ -845,6 +880,9 @@ def _status_lines(status: _Status, plan_relative: str, warning: List[str]) -> Li
     for record in plan.conditional:
         line += "; %s %s (%s)" % (record["id"], "added" if record["runs"] else "left out", record["reason"])
     lines.append(line)
+    tier_line = _tier_line(payload.get("tiers") or {})
+    if tier_line:
+        lines.append(tier_line)
     tokens = payload["tokens"]["totals"]
     if tokens["runs"]:
         lines.append(

@@ -51,6 +51,36 @@ authors can find it.
   a fix-only re-review, reviewers are told that "this change"
   means the whole change, not the fix. `P` ids cannot be triaged. Reports
   written before this have no `pre_existing` and render as before.
+- **The CLI picks the light tier.** `run implementer` and `run review_fixer`
+  without `--tier` now choose the role's `light` tier themselves when it has
+  one (#384): the implementer for at most three planned files (a `--unit`
+  run, its unit's `files`) with none on a high-risk path, the review fixer
+  when every accepted finding is medium or lower and none is on a high-risk
+  path. Every Files to Modify entry, a bare `Dockerfile` included with or
+  without backticks, is checked against the high-risk paths, and a bare list
+  entry such as `Makefile` counts toward the three; a finding's `file` is
+  matched without regard to case. Any doubt (a finding with no usable `file`
+  among them), or a failed light run of the same stage just before (one whose
+  model could not be resolved included), means the role's own model. The
+  choice and its reason are printed on a `note:` line, recorded on the run
+  event as `tier_choice` with a stable `cause`, and shown in `status`
+  (`Tiers:`, `--json` `tiers`, `cause` included) and `optimization report` (`Model tiers`,
+  `--json` `tiers`). `--tier` still wins; the new `run --no-auto-tier` runs
+  the role's own model for one run (refused on other roles), and
+  `optimization.auto_tier: false` turns the choice off. A role with no
+  `light` tier runs as before.
+- **Re-review rounds run a smaller panel.** A fix-only re-review round runs
+  the seats the role relevance rules would not judge -- the `general` seats,
+  `relevance: always`, and a security seat that has not opted in -- plus each
+  seat that reported an accepted finding still open, and an opted-in security
+  seat when the security rule finds the fix's paths; the other always-on
+  seats sit it out with a note and a `when:
+  re-review` record, which `optimization report` counts as `re-review seats`
+  (`--json` `re_review`) (#384). A high-risk hit, `--high-risk`, `--only` and
+  the whole-change recheck round keep the usual panel, and
+  `optimization.skip_unneeded_roles: false` leaves no seat out.
+  `optimization.narrow_re_reviews: false` turns the cut off; a project file
+  that turns it back on over a `false` is reported as loosening.
 
 ## [1.3.2] - 2026-11-09
 

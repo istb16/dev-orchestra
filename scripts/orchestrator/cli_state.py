@@ -434,6 +434,7 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
     report["architect_revisions"] = opt_report.architect_revisions(
         [(item["events"], _wrote_plan(item["workspace"])) for item in workflows]
     )
+    report["tiers"] = opt_report.tier_choices([item["events"] for item in workflows])
     if args.json:
         _emit_json(report)
         return 0

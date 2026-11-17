@@ -893,12 +893,27 @@ worker gets it once, from the run that started it; `--resume` never gets it
 again, so a session started before an instruction was added never sees it --
 run fresh to pick it up. `run <reviewer-id>` and `run orchestrator` get none.
 
-**Small work goes to the light tier.** When the role has a `light` tier
-(`config show`; Model tiers in `references/configuration.md`), run the
-implementation with `--tier light` when the plan lists at most three Files to
-Modify and none of them is on a high-risk path (`optimization.high_risk_paths`
-and `extra_high_risk_paths`). A retry after a light run failed runs on the
-role's own model.
+**Small work goes to the light tier.** When the implementer has a `light`
+tier (`config show`; Model tiers in `references/configuration.md`) and no
+`--tier` is given, `run implementer` chooses it: `light` when the plan lists
+at most three Files to Modify and none of them is on a high-risk path
+(`optimization.high_risk_paths`, `extra_high_risk_paths` and the watched
+instruction files), the role's own model otherwise. A `--unit` run is judged
+on its unit's `files`, by the same rules as Files to Modify. Every entry of
+Files to Modify is checked against the high-risk paths, a bare name such as
+`Dockerfile` included, with or without backticks; a list entry with no `/`
+and no extension (`Makefile`) also counts toward the three. Any doubt -- a glob, a directory, a path through `..`,
+no Files to Modify, a plan that cannot be read -- means the role's own model.
+When the last run of the stage (and unit) was on `light` and did not end
+`ok` -- a run whose model could not be resolved included -- the next one
+runs on the role's own model. The choice and its reason are printed on a
+`note:` line, recorded on the run event as `tier_choice` (with a stable
+`cause`: `light`, `retry`, `size`, `risk`, `doubt` or `caller`), and shown on the
+`Tiers:` line of `status` and in `optimization report`. `--tier <name>`
+still picks the tier yourself. When a light run failed in a way the CLI
+cannot see -- it ended `ok` but the tests went red -- rerun with
+`--no-auto-tier` to use the role's own model. With no `light` tier, or with
+`optimization.auto_tier: false`, nothing is chosen and the run is as it was.
 
 Implementer failure is fatal: stop, report what happened, leave the tree in a
 state the user can inspect.
@@ -1007,10 +1022,16 @@ For each finding below:
 Do not fix anything that is not listed here.
 ```
 
-**Small fixes go to the light tier.** When `review_fixer` has a `light` tier,
-run it with `--tier light` when every accepted finding is medium or lower and
-the brief cites at most three files. A retry after a light run failed runs on
-the role's own model.
+**Small fixes go to the light tier.** When `review_fixer` has a `light` tier
+and no `--tier` is given, `run review_fixer` chooses it from the accepted
+findings in the live report: `light` when there is at least one, every one is
+medium or lower, and none is in a file on a high-risk path (matched without
+regard to case, as for the implementer); the role's own model otherwise. A finding whose `file` is missing, a placeholder such as
+`n/a`, or not a single file (a glob, a directory) cannot be judged and also
+means the role's own model. There is no file cap. As for the implementer, a retry after
+a failed light run goes to the role's own model, the choice is printed and
+recorded, `--tier` overrides it, `--no-auto-tier` runs the role's own model,
+and `optimization.auto_tier: false` turns the choice off.
 
 ## Re-test and re-review
 

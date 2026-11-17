@@ -19,23 +19,26 @@ _OPT_ROW = "  %%-%ds %%s" % _OPT_LABEL_WIDTH
 def report_lines(report: Dict[str, Any], source: str) -> List[str]:
     """The whole report, as ``cmd_optimization_report`` prints it line by line.
 
-    ``report`` is ``summarise_rounds`` with ``scorecard`` and
-    ``architect_revisions`` attached; ``source`` names what was read.
+    ``report`` is ``summarise_rounds`` with ``scorecard``,
+    ``architect_revisions`` and, where recorded, ``tiers`` attached;
+    ``source`` names what was read.
     """
     revisions = report["architect_revisions"]
+    tiers = _tier_lines(report.get("tiers") or {})
     if (
         not report["rounds"]
         and not report["design_rounds"]
         and not report["design_refused"]
         and not revisions["attempts"]
     ):
-        return [
+        nothing = [
             "No review rounds recorded in %s." % source,
             "Run a review, then ask again -- this reads what happened, not what would.",
         ]
+        return nothing + (["", *tiers] if tiers else [])
     if not report["rounds"] and not report["design_rounds"] and not report["design_refused"]:
         # Revisions alone: the review blocks below would all be zeroes.
-        return _revision_rows(revisions)
+        return _revision_rows(revisions) + (["", *tiers] if tiers else [])
 
     lines = _level_lines(report) + _spend_lines(report) + _tool_lines(report) + _context_lines(report)
     paired = report.get("paired") or {}
@@ -43,6 +46,9 @@ def report_lines(report: Dict[str, Any], source: str) -> List[str]:
         lines.append("")
         lines.extend(_paired_rows(paired))
     lines.extend(_scorecard_rows(report["scorecard"]))
+    if tiers:
+        lines.append("")
+        lines.extend(tiers)
     if revisions["attempts"]:
         lines.append("")
         lines.extend(_revision_rows(revisions))
@@ -81,6 +87,10 @@ def _level_lines(report: Dict[str, Any]) -> List[str]:
     relevance = report.get("relevance") or {}
     if relevance.get("judged"):
         lines.append(_OPT_ROW % ("roles skipped", _relevance_row(relevance)))
+    re_review = report.get("re_review") or {}
+    if re_review.get("judged"):
+        # Only once a re-review round has judged a seat, as for the row above.
+        lines.append(_OPT_ROW % ("re-review seats", _relevance_row(re_review)))
     lines.append(_OPT_ROW % ("escalated (high risk)", report["escalated"]))
     if report["escalation_patterns"]:
         lines.append(_OPT_ROW % ("  caused by", _counter_text(report["escalation_patterns"])))
@@ -144,6 +154,32 @@ def _relevance_row(relevance: Dict[str, Any]) -> str:
     if relevance.get("estimated_saving"):
         row += ", est. %s tokens" % ws.fmt_int(relevance["estimated_saving"])
     return row
+
+
+def _tier_lines(tiers: Dict[str, Any]) -> List[str]:
+    """``Model tiers``: one row per role whose runs recorded a tier choice; none without one.
+
+    ``implementer  5 run(s): light x3, own model x2; auto x4, explicit x1; 1 light run(s) failed;
+    1 retried on the role's model``.
+    """
+    lines: List[str] = []
+    for stage, group in tiers.items():
+        if not isinstance(group, dict) or not group.get("runs"):
+            continue
+        by_tier = {
+            ("own model" if name == opt_report.OWN_MODEL else name): count
+            for name, count in (group.get("by_tier") or {}).items()
+        }
+        by_source = {name: count for name, count in (group.get("by_source") or {}).items() if count}
+        row = "%d run(s): %s; %s" % (int(group["runs"]), _counter_text(by_tier), _counter_text(by_source))
+        if group.get("light_failed"):
+            row += "; %d light run(s) failed" % int(group["light_failed"])
+        if group.get("retried_on_role_model"):
+            row += "; %d retried on the role's model" % int(group["retried_on_role_model"])
+        lines.append(_OPT_ROW % (stage, row))
+    if not lines:
+        return lines
+    return ["Model tiers (run implementer and run review_fixer, as each run recorded its choice):", *lines]
 
 
 def _tool_lines(report: Dict[str, Any]) -> List[str]:

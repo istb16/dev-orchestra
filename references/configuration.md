@@ -627,6 +627,8 @@ review:
 
 optimization:
   skip_unneeded_roles: true           # a test/architecture seat sits out a round with nothing for it
+  auto_tier: true                     # run picks a role's light tier itself when no --tier is given
+  narrow_re_reviews: true             # a fix-only re-review round runs only the seats with open findings
 
 design:
   require_approval: auto              # implementer waits for the user's yes (true, false or auto)
@@ -705,6 +707,8 @@ implementation:
 | `optimization.low_risk_max_files` | int | Below `quality`, at most this many files still counts as a small change (default 5). |
 | `optimization.low_risk_max_lines` | int | And at most this many changed lines (default 150). |
 | `optimization.skip_unneeded_roles` | bool | `true` (default): a `test` or `architecture` seat that always runs sits out a round with nothing for it, in code review and design review and at every level, `quality` included -- and so does a `security` seat that opts in with `relevance: security`; one that does not always runs. `false` runs every such seat every round, as before. See `references/reviews.md` ("Roles a round does not need"). |
+| `optimization.auto_tier` | bool | `true` (default): `run implementer` and `run review_fixer` without `--tier` choose the role's `light` tier for small, low-risk work and the role's own model otherwise, and say why on a `note:` line. Only a role with a `light` tier is affected. `false` runs the role's own model unless `--tier` names a tier, as before; `run --no-auto-tier` does the same for one run. See [Model tiers](#model-tiers) and `references/workflow.md`. |
+| `optimization.narrow_re_reviews` | bool | `true` (default): a fix-only re-review round (a snapshot with `incremental_from`) runs the seats the role relevance rules would not judge (the `general` seats, `relevance: always`, a security seat that has not opted in) plus the always-on seats that reported an accepted finding still open, and an opted-in security seat when the fix touches `optimization.security_paths`; the others sit it out. A high-risk hit, `--high-risk` or `--only` keeps the usual panel, and with `optimization.skip_unneeded_roles: false` no seat sits it out. `false` runs the usual panel on every round, as before. See `references/reviews.md` ("Roles a round does not need"). |
 | `optimization.security_paths` | list | What the `security` rule looks for, for a seat with `relevance: security`, beside the high-risk patterns: request handling and input, file, URL, client, query and database access, execution and deserialisation, configuration and dependency manifests, plus every default high-risk pattern. Replaces the default list wholesale; `[]` leaves only the high-risk patterns (`doctor` reports that). |
 | `optimization.extra_security_paths` | list | Globs added to `security_paths` (default `[]`). |
 | `optimization.architecture_paths` | list | What the `architecture` rule looks for: contracts and schemas, module surface, configuration and record formats, the CLI, the build. Replaces the default list wholesale; `[]` leaves only the size and directory tests (`doctor` reports that). |
@@ -906,6 +910,7 @@ read as a run reads it. Looser means:
 | `optimization.high_risk_paths` | leaves out a pattern, counting `extra_high_risk_paths` with it |
 | `optimization.low_risk_max_files`, `optimization.low_risk_max_lines` | raises it |
 | `optimization.skip_unneeded_roles` | turns it on over a `false` |
+| `optimization.narrow_re_reviews` | turns it on over a `false` |
 | `optimization.security_paths`, `optimization.architecture_paths` | leaves out a pattern, counting its `extra_` list with it |
 
 A `reviewers_extra` only adds, so it is never one. A stricter value is not
@@ -1342,9 +1347,14 @@ definitions of what the implementer *is* would be the expensive part. Only
 `provider`, `model` and `options` can be overridden; anything else is a
 configuration error rather than a silently ignored key.
 
-**Who picks is the caller.** Nothing infers a tier from the size of a diff.
-The orchestrator is the only thing that knows how hard the task is, and a
-wrong guess spends exactly what tiers exist to control.
+**Who picks.** `--tier` always wins. Without it, the implementer and the
+review fixer go to their `light` tier when the work is small and low-risk --
+at most three planned files, none high-risk; or accepted findings all medium
+or lower, none on a high-risk path -- and to the role's own model otherwise,
+or after a failed light run (`optimization.auto_tier`; `references/workflow.md`
+has the rules). Only the tier named `light` is ever chosen this way, and a
+role without one is never given a tier it was not asked for. `--no-auto-tier`
+runs the role's own model for one run.
 
 **An unknown tier is an error, never a fallback.** A tier quietly ignored runs
 the work on the default model and says nothing -- the expensive one when you

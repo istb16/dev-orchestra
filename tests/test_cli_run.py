@@ -9,7 +9,7 @@ import re
 import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from unittest import mock
 
 from helpers import (
@@ -23,8 +23,9 @@ from helpers import (
     spend_the_runtime_budget,
 )
 
-from orchestrator import cli, cli_workflow
+from orchestrator import cli, cli_run, cli_workflow, tier_record
 from orchestrator import config as config_mod
+from orchestrator import jobs as jobs_mod
 from orchestrator import ledger as ledger_mod
 from orchestrator import workspace as ws
 
@@ -1192,6 +1193,360 @@ class TestRunJsonInTheForeground(IsolatedCase):
         code, out, _ = run_cli("run", "orchestrator", "--prompt", "hi")
         self.assertEqual(code, 0)
         self.assertEqual(out.strip(), "the answer")
+
+
+SMALL_PLAN = "# Plan\n\n## Goal\nSomething.\n\n## Files to Modify\n- `src/alpha.py`\n- `src/beta.py`\n"
+
+
+class AutoTierCase(IsolatedCase):
+    """A mock implementer with a ``light`` tier, a plan of two plain files, and no approval gate."""
+
+    def setUp(self):
+        super().setUp()
+        run_cli("config", "setup", "--defaults")
+        run_cli("config", "set", "design.require_approval", "false")
+        self.with_light_tier(True)
+        self.workspace = self.cli_workspace()
+        ws.write_text(self.workspace.plan_path, SMALL_PLAN)
+
+    def with_light_tier(self, light: bool, family: str = "mock-small", role: str = "implementer") -> None:
+        data = config_mod.load(self.project).data
+        data[role]["provider"] = "mock"
+        data[role]["model"] = {"family": "mock-large", "version": "latest"}
+        if light:
+            light_model = {"family": family, "version": "latest"}
+            data[role]["model_tiers"] = {"light": {"model": light_model}}
+        else:
+            data[role].pop("model_tiers", None)
+        config_mod.write_config_file(config_mod.global_config_path(), data)
+
+    def last_run(self, stage: str = "implementer") -> Dict[str, Any]:
+        events = self.workspace.read_state().get("events") or []
+        runs = [event for event in events if event.get("stage") == stage]
+        self.assertTrue(runs)
+        return runs[-1]
+
+    def runs_of(self, stage: str = "implementer") -> List[Dict[str, Any]]:
+        return [e for e in self.workspace.read_state().get("events") or [] if e.get("stage") == stage]
+
+
+class AutoTierRun(AutoTierCase):
+    def test_without_tier_a_small_plan_runs_light(self):
+        code, _, err = run_cli("run", "implementer", "--prompt", "go")
+        self.assertEqual(code, 0, err)
+        reason = "light: 2 files in Files to Modify, none high-risk"
+        self.assertIn("note: running implementer on its 'light' tier (auto: %s)" % reason, err)
+        event = self.last_run()
+        self.assertEqual(event["tier"], "light")
+        self.assertEqual(
+            event["tier_choice"], {"tier": "light", "source": "auto", "reason": reason, "cause": "light"}
+        )
+        report = json.loads(run_cli("tokens", "show", "--json")[1])
+        self.assertIn("implementer:light", report["by_label"])
+
+    def test_a_larger_plan_runs_the_role_s_model_and_says_why(self):
+        files = "".join("- `src/f%d.py`\n" % index for index in range(4))
+        ws.write_text(self.workspace.plan_path, "# Plan\n\n## Files to Modify\n" + files)
+        code, _, err = run_cli("run", "implementer", "--prompt", "go")
+        self.assertEqual(code, 0, err)
+        self.assertIn("note: running implementer on its own model (auto: own model: 4 files", err)
+        event = self.last_run()
+        self.assertIsNone(event["tier"])
+        self.assertEqual(event["tier_choice"]["source"], "auto")
+
+    def test_a_failed_light_run_is_retried_on_the_role_s_model(self):
+        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "1"
+        try:
+            self.assertEqual(run_cli("run", "implementer", "--prompt", "go")[0], 1)
+        finally:
+            del os.environ["DEV_ORCHESTRA_MOCK_FAIL"]
+        self.assertEqual(self.last_run()["tier"], "light")
+        code, _, err = run_cli("run", "implementer", "--prompt", "go")
+        self.assertEqual(code, 0, err)
+        event = self.last_run()
+        self.assertIsNone(event["tier"])
+        self.assertEqual(event["tier_choice"]["reason"], tier_record.RETRY_REASON)
+        self.assertEqual(event["tier_choice"]["cause"], "retry")
+
+    def test_a_light_model_that_cannot_be_resolved_is_retried_on_the_role_s_model(self):
+        self.with_light_tier(True, family="unresolvable")
+        code, _, err = run_cli("run", "implementer", "--prompt", "go")
+        self.assertNotEqual(code, 0, err)
+        failed = self.last_run()
+        self.assertEqual(failed["status"], "failed")
+        self.assertEqual(failed["tier"], "light")
+        self.assertEqual(failed["tier_choice"]["cause"], "light")
+        code, _, err = run_cli("run", "implementer", "--prompt", "go")
+        self.assertEqual(code, 0, err)
+        event = self.last_run()
+        self.assertIsNone(event["tier"])
+        self.assertEqual(event["tier_choice"]["cause"], "retry")
+        report = json.loads(run_cli("optimization", "report", "--json")[1])["tiers"]["implementer"]
+        self.assertEqual((report["light_failed"], report["retried_on_role_model"]), (1, 1))
+
+    def test_a_missing_or_undecodable_plan_runs_as_without_a_light_tier(self):
+        def undecodable(path: str) -> None:
+            with open(path, "wb") as handle:
+                handle.write(b"# Plan\n\n## Files to Modify\n- `src/\xff\xfe.py`\n")
+
+        for name, write in (("missing", os.remove), ("undecodable", undecodable)):
+            with self.subTest(plan=name):
+                ws.write_text(self.workspace.plan_path, SMALL_PLAN)
+                write(self.workspace.plan_path)
+                self.with_light_tier(False)
+                code, _, err = run_cli("run", "implementer", "--force", "--prompt", "go")
+                self.assertEqual(code, 0, err)
+                self.with_light_tier(True)
+                code, _, err = run_cli("run", "implementer", "--force", "--prompt", "go")
+                self.assertEqual(code, 0, err)
+                self.assertIn("(auto: own model: the plan could not be read)", err)
+                event = self.last_run()
+                self.assertIsNone(event["tier"])
+                self.assertEqual(event["tier_choice"]["cause"], "doubt")
+
+    def test_an_explicit_tier_is_recorded_as_explicit(self):
+        code, _, err = run_cli("run", "implementer", "--prompt", "go", "--tier", "light")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("auto:", err)
+        self.assertIn("mock-small", err)
+        self.assertEqual(
+            self.last_run()["tier_choice"],
+            {"tier": "light", "source": "explicit", "reason": "--tier light", "cause": "caller"},
+        )
+
+    def test_no_auto_tier_runs_the_role_s_model(self):
+        code, _, err = run_cli("run", "implementer", "--prompt", "go", "--no-auto-tier")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("note: running implementer", err)
+        event = self.last_run()
+        self.assertIsNone(event["tier"])
+        off = {"tier": None, "source": "off", "reason": "--no-auto-tier", "cause": "caller"}
+        self.assertEqual(event["tier_choice"], off)
+
+    def test_tier_and_no_auto_tier_are_refused_together(self):
+        code, _, err = run_cli("run", "implementer", "--prompt", "go", "--tier", "light", "--no-auto-tier")
+        self.assertEqual(code, 2)
+        self.assertIn("--tier and --no-auto-tier do not combine", err)
+        self.assertFalse(self.runs_of())
+
+    def test_no_auto_tier_is_refused_on_a_role_it_does_not_apply_to(self):
+        for role in ("architect", "orchestrator"):
+            with self.subTest(role=role):
+                code, _, err = run_cli("run", role, "--prompt", "go", "--no-auto-tier")
+                self.assertEqual(code, 2)
+                self.assertIn("--no-auto-tier applies to implementer and review_fixer", err)
+                self.assertFalse(self.runs_of(role))
+
+    def test_a_tier_reason_outside_a_worker_is_refused(self):
+        for extra in (("--tier", "light"), ("--no-auto-tier",)):
+            with self.subTest(extra=extra):
+                code, _, err = run_cli(
+                    "run", "implementer", "--prompt", "go", *extra, "--tier-reason", "light: 1 file"
+                )
+                self.assertEqual(code, 2)
+                self.assertIn("--tier-reason and --tier-cause are for a detached worker only", err)
+        self.assertFalse(self.runs_of())
+
+    def test_handed_tier_flags_are_refused_unless_a_worker_gets_both_with_a_tier(self):
+        jobs_mod.write_job(self.workspace, {"id": "w-9", "stage": "implementer", "status": "running"})
+        job_file = jobs_mod.job_path(self.workspace, "w-9")
+        worker = ("--job-file", job_file)
+        need = "--tier-reason and --tier-cause need --tier or --no-auto-tier"
+        together = "--tier-reason and --tier-cause go together"
+        cases = (
+            (("--tier-cause", "light"), "--tier-reason and --tier-cause are for a detached worker only"),
+            ((*worker, "--tier-cause", "size"), need),
+            ((*worker, "--tier-reason", "why"), need),
+            ((*worker, "--tier", "light", "--tier-reason", "why"), together),
+            ((*worker, "--no-auto-tier", "--tier-cause", "size"), together),
+            (
+                (*worker, "--tier", "light", "--tier-reason", "why", "--tier-cause", "bogus"),
+                "--tier-cause must be one of light, retry, size, risk, doubt, caller",
+            ),
+        )
+        for extra, sentence in cases:
+            with self.subTest(extra=extra):
+                code, _, err = run_cli("run", "implementer", "--force", "--prompt", "go", *extra)
+                self.assertEqual(code, 2)
+                self.assertIn(sentence, err)
+        self.assertFalse(self.runs_of())
+
+    def test_auto_tier_off_runs_as_before(self):
+        run_cli("config", "set", "optimization.auto_tier", "false")
+        code, _, err = run_cli("run", "implementer", "--prompt", "go")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("note: running implementer", err)
+        event = self.last_run()
+        self.assertIsNone(event["tier"])
+        self.assertNotIn("tier_choice", event)
+
+    def test_without_a_light_tier_the_event_has_no_choice(self):
+        self.with_light_tier(False)
+        code, _, err = run_cli("run", "implementer", "--prompt", "go")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("note: running implementer", err)
+        event = self.last_run()
+        self.assertIsNone(event["tier"])
+        self.assertNotIn("tier_choice", event)
+
+
+class DetachedAutoTier(AutoTierCase):
+    def argv(self, choice: Optional[tier_record.TierChoice], *extra: str) -> list:
+        args = cli.build_parser().parse_args(["run", "implementer", "--prompt", "go", "--detach", *extra])
+        return cli_run._detached_argv(args, "implementer", "named", choice)
+
+    def test_a_light_choice_goes_on_as_tier_light_with_its_reason(self):
+        argv = self.argv(tier_record.TierChoice("light", "auto", "light: 1 file", "light"), "--extra", "--x")
+        self.assertEqual(argv[argv.index("--tier") + 1], "light")
+        self.assertEqual(argv[argv.index("--tier-reason") + 1], "light: 1 file")
+        self.assertEqual(argv[argv.index("--tier-cause") + 1], "light")
+        self.assertNotIn("--no-auto-tier", argv)
+        self.assertLess(argv.index("--tier-reason"), argv.index("--extra"))
+
+    def test_the_role_s_model_goes_on_as_no_auto_tier_with_its_reason(self):
+        argv = self.argv(tier_record.TierChoice(None, "auto", "own model: 4 files", "size"))
+        self.assertIn("--no-auto-tier", argv)
+        self.assertNotIn("--tier", argv)
+        self.assertEqual(argv[argv.index("--tier-reason") + 1], "own model: 4 files")
+
+    def test_an_explicit_or_off_choice_goes_on_as_given(self):
+        argv = self.argv(
+            tier_record.TierChoice("light", "explicit", "--tier light", "caller"), "--tier", "light"
+        )
+        self.assertEqual(argv[argv.index("--tier") + 1], "light")
+        self.assertNotIn("--tier-reason", argv)
+        argv = self.argv(tier_record.TierChoice(None, "off", "--no-auto-tier", "caller"), "--no-auto-tier")
+        self.assertIn("--no-auto-tier", argv)
+        self.assertNotIn("--tier-reason", argv)
+        self.assertNotIn("--no-auto-tier", self.argv(None))
+
+    def run_worker(self, job_id: str, *tier_args: str) -> None:
+        jobs_mod.write_job(self.workspace, {"id": job_id, "stage": "implementer", "status": "running"})
+        job_file = jobs_mod.job_path(self.workspace, job_id)
+        code, _, err = run_cli(
+            "run", "implementer", "--force", "--prompt", "go", *tier_args, "--job-file", job_file
+        )
+        self.assertEqual(code, 0, err)
+
+    def test_the_worker_records_the_parent_s_decision(self):
+        # A plan the worker would judge otherwise: it must not judge it again.
+        files = "".join("- `src/f%d.py`\n" % index for index in range(5))
+        ws.write_text(self.workspace.plan_path, "# Plan\n\n## Files to Modify\n" + files)
+        reason = "light: 2 files in Files to Modify, none high-risk"
+        self.run_worker("w-1", "--tier", "light", "--tier-reason", reason, "--tier-cause", "light")
+        event = self.last_run()
+        self.assertEqual(event["tier"], "light")
+        self.assertEqual(
+            event["tier_choice"], {"tier": "light", "source": "auto", "reason": reason, "cause": "light"}
+        )
+
+    def test_the_worker_keeps_the_parent_s_own_model_choice(self):
+        # SMALL_PLAN would go light if the worker judged it again.
+        reason = "own model: 4 files in Files to Modify (more than 3)"
+        self.run_worker("w-2", "--no-auto-tier", "--tier-reason", reason, "--tier-cause", "size")
+        event = self.last_run()
+        self.assertIsNone(event["tier"])
+        self.assertEqual(
+            event["tier_choice"], {"tier": None, "source": "auto", "reason": reason, "cause": "size"}
+        )
+
+    def test_a_detached_run_keeps_the_parent_s_choice(self):
+        _, out, err = run_cli("run", "implementer", "--prompt", "go", "--detach", "--json")
+        found = re.search(r"note: running implementer on its 'light' tier \(auto: (.*)\)", err)
+        assert found is not None, err
+        _, waited, _ = run_cli("jobs", "wait", json.loads(out)["id"], "--timeout", "60", "--json")
+        self.assertEqual(json.loads(waited)["status"], "succeeded")
+        event = self.last_run()
+        self.assertEqual(event["tier"], "light")
+        self.assertEqual(
+            event["tier_choice"],
+            {"tier": "light", "source": "auto", "reason": found.group(1), "cause": "light"},
+        )
+
+
+class FixerAutoTier(AutoTierCase):
+    """``run review_fixer`` reads the live consolidated report to choose its tier."""
+
+    def setUp(self):
+        super().setUp()
+        self.with_light_tier(True, role="review_fixer")
+
+    def write_report(self, *severities: str, file: Optional[str] = None) -> None:
+        findings = [
+            {"id": "F%d" % (index + 1), "severity": severity, "file": file or "src/f%d.py" % index}
+            for index, severity in enumerate(severities)
+        ]
+        for finding in findings:
+            finding["triage"] = "accepted"
+        path = self.workspace.consolidated_json_path
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        ws.write_json(path, {"findings": findings})
+
+    def test_medium_and_low_findings_run_light(self):
+        self.write_report("medium", "low")
+        code, _, err = run_cli("run", "review_fixer", "--prompt", "fix")
+        self.assertEqual(code, 0, err)
+        reason = "light: 2 accepted finding(s), all medium or lower, none on a high-risk path"
+        self.assertIn("note: running review_fixer on its 'light' tier (auto: %s)" % reason, err)
+        event = self.last_run("review_fixer")
+        self.assertEqual(event["tier"], "light")
+        self.assertEqual(
+            event["tier_choice"], {"tier": "light", "source": "auto", "reason": reason, "cause": "light"}
+        )
+
+    def test_a_high_finding_runs_the_role_s_model(self):
+        self.write_report("medium", "high")
+        code, _, err = run_cli("run", "review_fixer", "--prompt", "fix")
+        self.assertEqual(code, 0, err)
+        self.assertIn("note: running review_fixer on its own model (auto: own model: F2 is high)", err)
+        event = self.last_run("review_fixer")
+        self.assertIsNone(event["tier"])
+        self.assertEqual(
+            event["tier_choice"],
+            {"tier": None, "source": "auto", "reason": "own model: F2 is high", "cause": "risk"},
+        )
+
+    def test_findings_the_fixer_cannot_hand_to_light_run_the_role_s_model(self):
+        cases = (
+            (("medium",), "src/auth.py", "own model: F1 is on src/auth.py, which matches *auth*", "risk"),
+            (("low",), "n/a", "own model: F1 names no file", "doubt"),
+            ((), None, "own model: no accepted findings", "doubt"),
+        )
+        for severities, file, reason, cause in cases:
+            with self.subTest(file=file, severities=severities):
+                self.write_report(*severities, file=file)
+                code, _, err = run_cli("run", "review_fixer", "--prompt", "fix")
+                self.assertEqual(code, 0, err)
+                self.assertIn("note: running review_fixer on its own model (auto: %s)" % reason, err)
+                event = self.last_run("review_fixer")
+                self.assertIsNone(event["tier"])
+                self.assertEqual(
+                    event["tier_choice"], {"tier": None, "source": "auto", "reason": reason, "cause": cause}
+                )
+
+    def test_a_failed_light_fixer_run_is_retried_on_the_role_s_model(self):
+        self.write_report("medium")
+        os.environ["DEV_ORCHESTRA_MOCK_FAIL"] = "1"
+        try:
+            self.assertEqual(run_cli("run", "review_fixer", "--prompt", "fix")[0], 1)
+        finally:
+            del os.environ["DEV_ORCHESTRA_MOCK_FAIL"]
+        self.assertEqual(self.last_run("review_fixer")["tier"], "light")
+        code, _, err = run_cli("run", "review_fixer", "--prompt", "fix")
+        self.assertEqual(code, 0, err)
+        event = self.last_run("review_fixer")
+        self.assertIsNone(event["tier"])
+        self.assertEqual(event["tier_choice"]["cause"], "retry")
+        self.assertEqual(event["tier_choice"]["reason"], tier_record.RETRY_REASON)
+
+    def test_no_auto_tier_runs_the_fixer_on_its_own_model(self):
+        self.write_report("low")
+        code, _, err = run_cli("run", "review_fixer", "--prompt", "fix", "--no-auto-tier")
+        self.assertEqual(code, 0, err)
+        event = self.last_run("review_fixer")
+        self.assertIsNone(event["tier"])
+        off = {"tier": None, "source": "off", "reason": "--no-auto-tier", "cause": "caller"}
+        self.assertEqual(event["tier_choice"], off)
 
 
 if __name__ == "__main__":

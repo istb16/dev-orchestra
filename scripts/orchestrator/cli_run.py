@@ -12,7 +12,7 @@ import sys
 import time
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union, cast
 
-from . import activity, approval_auto, clocks, execution_tree, instructions, units_run
+from . import activity, approval_auto, auto_tier, clocks, execution_tree, instructions, tier_record, units_run
 from . import approval as approval_mod
 from . import config as config_mod
 from . import config_policy as policy_mod
@@ -224,6 +224,9 @@ class _Seat(NamedTuple):
     #: role, or ``architect_questions`` under ``--questions``. The role still
     #: picks the provider, the model, the mode and the deadline.
     stage: str
+    #: Which tier the run uses, who chose it and why; None when nothing was
+    #: chosen (no ``--tier``, and no ``light`` tier for the CLI to choose).
+    tier_choice: Optional[tier_record.TierChoice] = None
 
 
 class _UnitRun(NamedTuple):
@@ -283,7 +286,11 @@ class _Attempt(NamedTuple):
 
 def cmd_run(args: argparse.Namespace) -> int:
     loaded = _load_or_die(args.cwd)
-    seat = _resolve_seat(args, loaded)
+    # Before the tier is chosen: `_tier_choice` trusts --tier-reason.
+    problem = _tier_arg_refusal(args, args.role)
+    if problem:
+        return _refuse_run(args, [problem])
+    seat = _resolve_seat(args, loaded, _tier_choice(args, loaded))
     if seat is None:
         return 2
     # Refused before anything is printed, spent or started, and into the job
@@ -455,10 +462,65 @@ def _run_in_process(
     return _report_outcome(run, attempt, warned_before)
 
 
-def _resolve_seat(args: argparse.Namespace, loaded: config_mod.LoadedConfig) -> Optional[_Seat]:
-    """The seat ``args.role`` names; None, with the reason on stderr, if there is none."""
+def _tier_choice(
+    args: argparse.Namespace, loaded: config_mod.LoadedConfig
+) -> Optional[tier_record.TierChoice]:
+    """Which tier this run uses, who chose it and why; None when nothing is chosen.
+
+    ``--tier`` is the caller's choice and ``--no-auto-tier`` the role's own
+    model. A worker gets one of the two from its parent with ``--tier-reason``,
+    and records the parent's decision rather than making its own. Otherwise
+    the CLI chooses for the implementer and the review fixer, and only when
+    the role has a ``light`` tier: without one, the run is what it always was.
+    """
+    reason = getattr(args, "tier_reason", None)
+    # `_tier_arg_refusal` has already refused a reason outside a worker, and
+    # one handed without its cause.
+    cause = getattr(args, "tier_cause", None)
+    if args.tier:
+        if reason and cause:
+            return tier_record.TierChoice(args.tier, tier_record.SOURCE_AUTO, reason, cause)
+        return tier_record.TierChoice(
+            args.tier, tier_record.SOURCE_EXPLICIT, "--tier %s" % args.tier, tier_record.CAUSE_CALLER
+        )
     role = args.role
-    tier = args.tier
+    if role not in tier_record.ROLES:
+        return None
+    if getattr(args, "no_auto_tier", False):
+        if reason and cause:
+            return tier_record.TierChoice(None, tier_record.SOURCE_AUTO, reason, cause)
+        return tier_record.TierChoice(
+            None, tier_record.SOURCE_OFF, "--no-auto-tier", tier_record.CAUSE_CALLER
+        )
+    tiers = loaded.tiers(role)
+    settings = loaded.optimization_settings()
+    if tier_record.LIGHT not in tiers or not auto_tier.enabled(settings):
+        return None
+    workspace = _workspace(args)
+    unit = args.unit if role == "implementer" else None
+    return auto_tier.choose(
+        role,
+        settings,
+        tiers,
+        ws.read_text_strict(workspace.plan_path) if role == "implementer" else None,
+        unit,
+        (ws.read_json(workspace.consolidated_json_path, {}) or {}) if role == "review_fixer" else {},
+        list(workspace.read_state().get("events") or []),
+        instructions.watched_paths(loaded),
+    )
+
+
+def _resolve_seat(
+    args: argparse.Namespace,
+    loaded: config_mod.LoadedConfig,
+    choice: Optional[tier_record.TierChoice] = None,
+) -> Optional[_Seat]:
+    """The seat ``args.role`` names; None, with the reason on stderr, if there is none.
+
+    ``choice`` is ``_tier_choice``'s: its tier is the one the seat runs on.
+    """
+    role = args.role
+    tier = choice.tier if choice is not None else args.tier
     reviewer_index = None
     try:
         if role in config_mod.KNOWN_ROLES:
@@ -482,7 +544,7 @@ def _resolve_seat(args: argparse.Namespace, loaded: config_mod.LoadedConfig) -> 
     else:
         label = role
     stage = questions_mod.RUN_STAGE if getattr(args, "questions", False) else role
-    return _Seat(role, tier, reviewer_index, spec, mode, provider_name, label, stage)
+    return _Seat(role, tier, reviewer_index, spec, mode, provider_name, label, stage, choice)
 
 
 def _deadline(args: argparse.Namespace, loaded: config_mod.LoadedConfig, seat: _Seat) -> Tuple[int, str]:
@@ -671,7 +733,15 @@ def _spend_attempt(
     architect's ``--unit``, which claims no unit record.
     """
     book.clear_stalls()
-    if seat.tier:
+    choice = seat.tier_choice
+    if choice is not None and choice.source == tier_record.SOURCE_AUTO:
+        # The CLI chose: the note says so, and why, so the caller can overrule
+        # it with --tier or --no-auto-tier next time.
+        if seat.tier:
+            _err("note: running %s on its %r tier (auto: %s)" % (seat.role, seat.tier, choice.reason))
+        else:
+            _err("note: running %s on its own model (auto: %s)" % (seat.role, choice.reason))
+    elif seat.tier:
         _err("note: running %s on its %r tier (%s)" % (seat.role, seat.tier, describe_spec(seat.spec)))
     piece = unit.name if unit is not None else (args.unit or "")
     key = units_mod.pass_key(workspace, seat.stage) if piece else ""
@@ -709,7 +779,7 @@ def _detach(
     """``--detach``: start a worker for the run and return at once."""
     # Hand the work to a detached worker so this call cannot block. The
     # budget was already consumed above, so the worker must not do it again.
-    passthrough = _detached_argv(args, seat.role, workspace.workflow)
+    passthrough = _detached_argv(args, seat.role, workspace.workflow, seat.tier_choice)
     job = jobs_mod.start(
         workspace,
         seat.stage,
@@ -751,6 +821,8 @@ def _run_once(
         "job": args.job_file,
         "tier": seat.tier or None,
     }
+    if seat.tier_choice is not None:
+        begun["tier_choice"] = seat.tier_choice.to_dict()
     if resume_detail is not None:
         begun["resume"] = dict(resume_detail)
     token = book.begin(seat.stage, begun, deadline=run.timeout)
@@ -770,7 +842,7 @@ def _run_once(
             **resuming,
         )
     except ModelResolutionError as exc:
-        book.end(token, "failed", {"error": str(exc)})
+        book.end(token, "failed", dict(_tier_detail(run), error=str(exc)))
         _fail_job(args, str(exc))
         _err(str(exc))
         return None
@@ -780,42 +852,62 @@ def _run_once(
         # is closed and the job failed first, so the next command does not
         # report this run as abandoned or still running.
         error = redact("%s: %s" % (type(exc).__name__, exc))
-        book.end(token, "failed", {"error": error})
+        book.end(token, "failed", dict(_tier_detail(run), error=error))
         _fail_job(args, error)
         raise
     return _Attempt(token, result, resume_session, resume_detail)
+
+
+def _tier_detail(run: _Run) -> Dict[str, Any]:
+    """The part of every run end event that marks it as one (``tier_record.is_run_end``).
+
+    The tier, the choice and the unit. ``_end_detail`` starts from it, and a
+    run that failed before the provider answered records it alone, so a
+    light run whose model cannot be resolved is still a failed light run
+    (``tier_record.last_light_failure``) and the next one retries on the
+    role's own model.
+    """
+    detail: Dict[str, Any] = {"tier": run.seat.tier or None}
+    if run.seat.tier_choice is not None:
+        # Only when a tier was chosen, so a run's event is what it always was.
+        detail["tier_choice"] = run.seat.tier_choice.to_dict()
+    if run.unit is not None:
+        detail["unit"] = run.unit.name
+    return detail
 
 
 def _end_detail(run: _Run, attempt: _Attempt) -> Dict[str, Any]:
     """The detail of a run's end event."""
     seat = run.seat
     result, resume_detail = attempt.result, attempt.resume_detail
-    detail: Dict[str, Any] = {
-        "mode": seat.mode,
-        "provider": seat.provider_name,
-        # Recorded on the *end* event, not only on the start: the start
-        # entry is dropped from the ledger when the stage finishes, and
-        # the run log is what a report is written from.
-        "tier": seat.tier or None,
-        "model": result.resolved.display if result.resolved else None,
-        "model_source": result.resolved.source if result.resolved else None,
-        "duration_seconds": round(result.duration, 2),
-        "timed_out": result.timed_out,
-        "stalled": result.stalled,
-        "output": run.args.output,
-        "billed_tokens": result.usage.billed_tokens,
-        # Whether the run left a usable result: an ``ok`` over silence
-        # saved nothing, and `status` must not count it as the revision
-        # or fix that was asked for. Pure, so the order below stands.
-        "answered": _answered(result),
-        # The session this run ended in is what the next --resume
-        # continues; the rest is what comparing resumed and fresh
-        # revisions needs.
-        "session_id": result.session_id,
-        "context_tokens": result.context_tokens,
-        "cost_usd": result.usage.cost_usd,
-        "cache_read_tokens": result.usage.cache_read_tokens,
-    }
+    # The tier, the choice and the unit, recorded on the *end* event, not
+    # only on the start: the start entry is dropped from the ledger when the
+    # stage finishes, and the run log is what a report is written from.
+    detail = _tier_detail(run)
+    detail.update(
+        {
+            "mode": seat.mode,
+            "provider": seat.provider_name,
+            "model": result.resolved.display if result.resolved else None,
+            "model_source": result.resolved.source if result.resolved else None,
+            "duration_seconds": round(result.duration, 2),
+            "timed_out": result.timed_out,
+            "stalled": result.stalled,
+            "output": run.args.output,
+            "billed_tokens": result.usage.billed_tokens,
+            # Whether the run left a usable result: an ``ok`` over silence
+            # saved nothing, and `status` must not count it as the revision
+            # or fix that was asked for. Pure, so the order below stands.
+            "answered": _answered(result),
+            # The session this run ended in is what the next --resume
+            # continues; the rest is what comparing resumed and fresh
+            # revisions needs.
+            "session_id": result.session_id,
+            "context_tokens": result.context_tokens,
+            "cost_usd": result.usage.cost_usd,
+            "cache_read_tokens": result.usage.cache_read_tokens,
+        }
+    )
     if resume_detail is not None:
         detail["resume"] = dict(resume_detail, outcome="ok" if result.ok else None)
         if attempt.session_cost_kept:
@@ -826,7 +918,6 @@ def _end_detail(run: _Run, attempt: _Attempt) -> Dict[str, Any]:
             detail["resume"]["session_cost_usd"] = attempt.session_cost_usd
     if run.unit is not None:
         # Only for a unit: under the pass rule not every run spends an attempt.
-        detail["unit"] = run.unit.name
         detail["attempt_spent"] = run.unit.attempt_spent
     # Only when there are some, so a run's event is what it always was.
     if result.warnings:
@@ -1330,6 +1421,28 @@ def _refuse_run(args: argparse.Namespace, lines: List[str]) -> int:
 # --------------------------------------------------------------------------- work units
 
 
+def _tier_arg_refusal(args: argparse.Namespace, role: str) -> Optional[str]:
+    """Why the tier flags cannot go on this command line, as a fixed sentence."""
+    no_auto = getattr(args, "no_auto_tier", False)
+    if args.tier and no_auto:
+        return "--tier and --no-auto-tier do not combine: --tier already names the tier"
+    if no_auto and role not in tier_record.ROLES:
+        return "--no-auto-tier applies to implementer and review_fixer"
+    reason = getattr(args, "tier_reason", None)
+    cause = getattr(args, "tier_cause", None)
+    handed = reason is not None or cause is not None
+    if handed and not args.job_file:
+        # Only a detached worker records its parent's choice as the CLI's own.
+        return "--tier-reason and --tier-cause are for a detached worker only"
+    if handed and not (args.tier or no_auto):
+        return "--tier-reason and --tier-cause need --tier or --no-auto-tier"
+    if handed and (reason is None or cause is None):
+        return "--tier-reason and --tier-cause go together"
+    if cause is not None and cause not in tier_record.CAUSES:
+        return "--tier-cause must be one of %s" % ", ".join(tier_record.CAUSES)
+    return None
+
+
 def _unit_arg_refusal(args: argparse.Namespace, role: str) -> Optional[str]:
     """Why ``--unit`` cannot go on this command line, as a fixed sentence."""
     if getattr(args, "unit", None) and role not in ("implementer", "architect"):
@@ -1635,7 +1748,12 @@ def _announce_resume(session_id: Optional[str], detail: Dict[str, Any], note: st
         _err("note: %s" % note)
 
 
-def _detached_argv(args: argparse.Namespace, role: str, workflow: str) -> List[str]:
+def _detached_argv(
+    args: argparse.Namespace,
+    role: str,
+    workflow: str,
+    tier_choice: Optional[tier_record.TierChoice] = None,
+) -> List[str]:
     """Rebuild this invocation for the worker, prompt now coming from a file.
 
     The prompt's text is deliberately absent: ``jobs.start`` writes it to a
@@ -1655,10 +1773,19 @@ def _detached_argv(args: argparse.Namespace, role: str, workflow: str) -> List[s
     repository root, and the project file it found from there could be
     another than the one this run found from a subdirectory: the detached
     run then used a model the foreground one would not have.
+
+    ``tier_choice`` is the parent's. One the CLI made goes on as ``--tier``
+    or ``--no-auto-tier`` with ``--tier-reason``, so the worker records the
+    parent's decision, the one its note printed, instead of making its own.
     """
     start = getattr(args, "cwd", None) or os.getcwd()
     argv = ["--cwd", start, "--workflow", workflow, "run", role, "--force"]
-    if args.tier:
+    if tier_choice is not None and tier_choice.source == tier_record.SOURCE_AUTO:
+        argv += ["--tier", tier_choice.tier] if tier_choice.tier else ["--no-auto-tier"]
+        argv += ["--tier-reason", tier_choice.reason, "--tier-cause", tier_choice.cause]
+    elif getattr(args, "no_auto_tier", False):
+        argv.append("--no-auto-tier")
+    elif args.tier:
         # Left out, the worker ran the role's default model: a more expensive
         # run than the one asked for, recorded without the label a tier exists
         # to be read by.
@@ -1704,8 +1831,16 @@ def _add_run_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
     run_parser.add_argument(
         "--tier",
         default=None,
-        help="run this role on one of its configured model_tiers (e.g. light)",
+        help="run this role on one of its configured model_tiers (e.g. light); without it the "
+        "implementer and the review fixer go to their light tier when the work is small",
     )
+    run_parser.add_argument(
+        "--no-auto-tier",
+        action="store_true",
+        help="implementer, review_fixer: run on the role's own model, not a tier the CLI would choose",
+    )
+    run_parser.add_argument("--tier-reason", default=None, help=argparse.SUPPRESS)
+    run_parser.add_argument("--tier-cause", default=None, help=argparse.SUPPRESS)
     run_parser.add_argument("--prompt", default=None)
     run_parser.add_argument("--prompt-file", default=None, help="path, or - for stdin")
     run_parser.add_argument("--mode", choices=list(MODES), default=None)

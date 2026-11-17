@@ -455,6 +455,10 @@ def default_config() -> Dict[str, Any]:
             # nothing for it, in both stages and at every level -- see
             # optimization.relevance_records. false runs every seat as before.
             "skip_unneeded_roles": True,
+            # run picks a role's light tier itself when no --tier is given.
+            "auto_tier": True,
+            # A fix-only re-review round runs only the seats with open findings.
+            "narrow_re_reviews": True,
             # What the security and architecture rules look for. Replaced whole
             # by a list, or added to by the extra_ keys, as high_risk_paths is.
             "security_paths": list(opt_mod.DEFAULT_SECURITY_PATHS),

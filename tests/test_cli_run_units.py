@@ -388,6 +388,66 @@ class TestWorktreeRuns(UnitRunCase):
         self.assert_no_worktree()
 
 
+class UnitAutoTier(UnitRunCase):
+    """A ``--unit`` run is judged on its unit's files, not on the whole plan's."""
+
+    def test_a_one_file_unit_runs_light_in_a_six_file_plan(self):
+        run_cli("config", "set", "implementer.model_tiers.light.model.family", "small")
+        six = "\n".join("- `scripts/f%d.py`" % index for index in range(6))
+        ws.write_text(self.workspace.plan_path, plan(PAIR).replace("- `scripts/a.py`", six))
+        code, _, err = run_cli("design", "approve")
+        self.assertEqual(code, 0, err)
+        code, _, err = self.run_unit("a")
+        self.assertEqual(code, 0, err)
+        reason = "light: 1 file in unit a, none high-risk"
+        self.assertIn("note: running implementer on its 'light' tier (auto: %s)" % reason, err)
+        event = self.implementer_events()[-1]
+        self.assertEqual(event["unit"], "a")
+        self.assertEqual(event["tier"], "light")
+        self.assertEqual(
+            event["tier_choice"], {"tier": "light", "source": "auto", "reason": reason, "cause": "light"}
+        )
+
+    def assert_failed_light_unit_run(self) -> None:
+        failed = self.implementer_events()[-1]
+        self.assertEqual(failed["status"], "failed")
+        self.assertEqual(failed["unit"], "a")
+        self.assertEqual(failed["tier"], "light")
+        self.assertEqual(failed["tier_choice"]["cause"], "light")
+
+    def test_a_unit_run_whose_light_model_cannot_be_resolved_is_retried(self):
+        run_cli("config", "set", "implementer.model_tiers.light.model.family", "unresolvable")
+        self.approve(PAIR)
+        code, _, err = self.run_unit("a")
+        self.assertNotEqual(code, 0, err)
+        self.assert_failed_light_unit_run()
+        code, _, err = self.run_unit("a")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.implementer_events()[-1]["tier_choice"]["cause"], "retry")
+
+    def test_a_unit_run_that_raises_before_the_provider_answers_is_a_failed_light_run(self):
+        run_cli("config", "set", "implementer.model_tiers.light.model.family", "small")
+        self.approve(PAIR)
+
+        def crash(cwd: str) -> None:
+            raise RuntimeError("provider crashed")
+
+        self.during = crash
+        with self.assertRaises(RuntimeError):
+            self.run_unit("a")
+        self.assert_failed_light_unit_run()
+        self.assertIn("provider crashed", self.implementer_events()[-1]["error"])
+
+    def test_without_a_light_tier_a_unit_run_records_no_choice(self):
+        self.approve(PAIR)
+        code, _, err = self.run_unit("a")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("note: running implementer", err)
+        event = self.implementer_events()[-1]
+        self.assertIsNone(event["tier"])
+        self.assertNotIn("tier_choice", event)
+
+
 class TestPrintCommand(UnitRunCase):
     """``--print-command --unit``: where the unit's command would run, starting nothing."""
 

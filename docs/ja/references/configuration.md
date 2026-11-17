@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:ce2567023e8d25c6ba31b7d9f9d76d11ec60247c8dc9cdf62d5017b92a245e02 -->
+<!-- translated-from: references/configuration.md sha256:bb8c66cbffb589b2c1c533050af2c0b1244478a18dcce004e7453c56ef39d356 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -599,6 +599,8 @@ review:
 
 optimization:
   skip_unneeded_roles: true           # a test/architecture seat sits out a round with nothing for it
+  auto_tier: true                     # run picks a role's light tier itself when no --tier is given
+  narrow_re_reviews: true             # a fix-only re-review round runs only the seats with open findings
 
 design:
   require_approval: auto              # implementer waits for the user's yes (true, false or auto)
@@ -679,6 +681,8 @@ implementation:
 | `optimization.low_risk_max_files` | int | `quality` 未満のレベルで、小さな変更とみなすファイル数の上限（デフォルト 5）。 |
 | `optimization.low_risk_max_lines` | int | さらに、変更行数の上限（デフォルト 150）。 |
 | `optimization.skip_unneeded_roles` | bool | `true`（デフォルト）: 常に走る `test`、`architecture` の席は、見るもののないラウンドを休みます。コードレビューでも設計レビューでも、`quality` を含むどのレベルでもそうです。`relevance: security` でオプトインした `security` の席も同じで、オプトインしていない席は常に走ります。`false` にすると、そうした席を従来どおり毎ラウンドすべて走らせます。`references/reviews.md`（「ラウンドが必要としないロール」）を参照。 |
+| `optimization.auto_tier` | bool | `true`（デフォルト）: `--tier` を渡さない `run implementer` と `run review_fixer` は、小さく低リスクな作業なら role の `light` tier を、そうでなければ role 本来のモデルを自分で選び、理由を `note:` 行に出します。対象は `light` tier を持つ role だけです。`false` にすると、`--tier` でティアを指定しない限り従来どおり role 本来のモデルで走ります。1 回だけなら `run --no-auto-tier` で同じことができます。[Model tiers](#model-tiers) と `references/workflow.md` を参照。 |
+| `optimization.narrow_re_reviews` | bool | `true`（デフォルト）: 修正だけの再レビューのラウンド（`incremental_from` が付いたスナップショット）では、ロールの関連性の規則が判断しない席（`general` の席、`relevance: always` の席、自分で指定していないセキュリティの席）と、まだ開いている受け入れ済みの指摘を報告した常時実行の席、修正が `optimization.security_paths` に触れるときは指定済みのセキュリティの席が走り、ほかは休みます。高リスクの一致、`--high-risk`、`--only` があればいつものレビュアー陣で、`optimization.skip_unneeded_roles: false` のときはどの席も休みません。`false` にすると、従来どおり毎ラウンドいつものレビュアー陣で走ります。`references/reviews.md`（「ラウンドが必要としないロール」）を参照。 |
 | `optimization.security_paths` | list | `relevance: security` の席について、`security` の規則が高リスクパターンのほかに探すもの: リクエスト処理と入力、ファイル・URL・クライアント・クエリ・データベースへのアクセス、実行とデシリアライゼーション、設定と依存関係のマニフェスト、そしてデフォルトの高リスクパターンすべて。デフォルトのリストを丸ごと置き換えます。`[]` にすると高リスクパターンだけが残ります（`doctor` がそれを報告します）。 |
 | `optimization.extra_security_paths` | list | `security_paths` に追加する glob（デフォルト `[]`）。 |
 | `optimization.architecture_paths` | list | `architecture` の規則が探すもの: 契約とスキーマ、モジュールの表面、設定とレコードの形式、CLI、ビルド。デフォルトのリストを丸ごと置き換えます。`[]` にすると規模とディレクトリの判定だけが残ります（`doctor` がそれを報告します）。 |
@@ -873,6 +877,7 @@ project ファイルの `design.require_approval` は値にかかわらず、ま
 | `optimization.high_risk_paths` | パターンを外している（`extra_high_risk_paths` も合わせて数える） |
 | `optimization.low_risk_max_files`、`optimization.low_risk_max_lines` | 上げている |
 | `optimization.skip_unneeded_roles` | `false` の上で有効にしている |
+| `optimization.narrow_re_reviews` | `false` の上で有効にしている |
 | `optimization.security_paths`、`optimization.architecture_paths` | パターンを外している（それぞれの `extra_` のリストも合わせて数える） |
 
 `reviewers_extra` は足すだけなので、これに当たることはありません。厳しくする値は報告せず、
@@ -1297,9 +1302,13 @@ dev-orchestra run implementer --tier light --prompt-file .ai/execution/fix.md
 2 つ持つことこそが高くつくからです。上書きできるのは `provider`、`model`、`options` だけで、
 それ以外は黙って無視されるキーではなく設定エラーになります。
 
-**選ぶのは呼び出し側です。** diff のサイズからティアを推測するものは何もありません。
-タスクの難しさを知っているのはオーケストレーターだけで、推測を誤ると、ティアが制御する
-ために存在するまさにそのコストを費やしてしまいます。
+**誰が選ぶか。** `--tier` が常に優先します。渡さないとき、implementer と review fixer は、
+作業が小さく低リスクなら -- 計画のファイルが 3 つ以下でどれも高リスクでない、または受け入れた
+指摘がすべて medium 以下でどれも高リスクのパスにない -- `light` tier に、そうでなければ、
+あるいは light の実行が失敗した後は role 本来のモデルに回ります（`optimization.auto_tier`。
+規則は `references/workflow.md` にあります）。この方法で選ばれるのは `light` という名前の
+ティアだけで、`light` を持たない role に頼まれていないティアが付くことはありません。
+`--no-auto-tier` を付けると、その 1 回だけ role 本来のモデルで走ります。
 
 **未知のティアはエラーであり、決してフォールバックしません。** 黙って無視されたティアは、
 何も言わずにデフォルトのモデルで作業を実行します -- 安いものを求めたのに高価なもので、
