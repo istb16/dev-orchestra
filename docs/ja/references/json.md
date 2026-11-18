@@ -1,4 +1,4 @@
-<!-- translated-from: references/json.md sha256:5b53eadbdd59220fed6790e88efb67cb9a4e73cf28db8f3e13e2cf6ed16f5181 -->
+<!-- translated-from: references/json.md sha256:c5628b5a3befc315beba45818986696a248a06e1dba667089fff4bd9704b3fb3 -->
 
 > この文書は [references/json.md](../../../references/json.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -465,7 +465,7 @@ Object. plan を書く前にした質問で、`state.json` が `design_questions
 
 | キー | 型 | 意味 |
 | --- | --- | --- |
-| `mode` | string | `design.ask_questions` から決まる `off`、`auto`、`on`。 |
+| `mode` | string | `design.ask_questions` から決まる `off`、`auto`、`on`、`grill`。 |
 | `state` | string | `off`、`none`、`open`、`round-required`、`answered`。 |
 | `pending` | boolean | 未回答の質問がある間だけ `true`。 |
 | `questions` | list | 質問ごと、古い順（`--open` では未回答のものだけ）。`id`、`round`、`by`（`orchestrator` か `architect`）、`topic`、`question`、`why`、`options`（`key`、`text`）、`recommended`（`key`、`reason`。または `null`）、`asked_at`、`answer`（`kind`（`option`、`text`、`delegated`）、`text`、`answered_at`。未回答の間は `null`）、`history`（以前の回答。それぞれ `revised_at` 付き）。 |
@@ -493,7 +493,7 @@ Object.
 | `review` | object | `iteration`、`max_review_iterations`、`blocking`、`wanted`、`accepted`、`refused_for_size`、`identical_rounds`、`final_fix`、`final_fix_pending`、`next_review`、`round_tests`（値は `review status` と同じ。`round_tests` はそちらで省かれるときは `null`）。 |
 | `design_review` | object | `enabled`、`mode`、`reason`、`iteration`、`max_iterations`、`blocking`、`wanted`、`accepted`、`refused_for_size`、`identical_rounds`、`final_revision`、`final_revision_pending`、`optimization`（値は `review status --design` と同じ）。 |
 | `design_approval` | object | `required`、`state`（`pending`、`stale`、`approved`、`no-plan`、`not-required`、`implemented-unapproved`）、`pending`、`stale_reason`（`plan-changed`、`reviewed-since`、`decisions-changed`、`null`）など。[承認](workflow.md#approval) を参照。 |
-| `design_questions` | object | `mode`、`state`（`off`、`none`、`open`、`round-required`、`answered`）、`pending`、`open`、`answered`、`total`、`architect_rounds`、`max_rounds`、`decisions_file`。[Design の質問](workflow.md#design-questions) を参照。 |
+| `design_questions` | object | `mode`（`off`、`auto`、`on`、`grill`）、`state`（`off`、`none`、`open`、`round-required`、`answered`）、`pending`、`open`、`answered`、`total`、`architect_rounds`、`max_rounds`、`decisions_file`。[Design の質問](workflow.md#design-questions) を参照。 |
 | `progress` | object | `updates`（`on`、`off`、`auto` のいずれか）、`interval_seconds`、`quiet_notice_seconds`、`wait_seconds`（`jobs wait` の既定の待ち時間。null は解決済み）。[進み具合の報告](workflow.md#progress-reports) を参照。 |
 | `instructions` | object | `in_force`: 指示のソースごとに 1 つのエントリで、`role`（ロール。席なら `reviewers.<id>` か `design_reviewers.<id>`）、`layer`（`global` か `project`。席はそのパネルが来た層）、`kind`（`inline` か `file`）、`path`（相対パス。`inline` なら `""`）、`chars`、`problem`（ファイルから何も得られなかった理由。読めたら `""`）。`orchestrator`: orchestrator の本文をつないだもの。なければ `""`。[常設の指示](configuration.md#standing-instructions-instructions) を参照。 |
 | `implementation` | object | `unit_tests`（`worktree` か `after_merge`）。 |

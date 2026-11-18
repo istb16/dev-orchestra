@@ -194,11 +194,13 @@ and change what the reviewers are told ([configuration](configuration.md#standin
 
 Off by default (`design.ask_questions: false`). Turned on, the open points of a
 design go to the user before the plan is written, instead of being settled
-by the architect without anyone seeing the choice. `status` prints a `Design
+by the architect without anyone seeing the choice. `grill` turns it on as an
+interview: one question at a time, with follow-ups. `status` prints a `Design
 questions:` line whenever the setting is on or something is recorded.
 
 **When to ask.** Under `true`, always: your own questions when you have any,
-then one architect round. Under `auto`, ask when the request has any of:
+then one architect round. Under `grill`, always, as `true`, and one at a time.
+Under `auto`, ask when the request has any of:
 
 - an ambiguous requirement -- two readings that lead to different code;
 - new behaviour or a new spec -- something the user has to want, not something
@@ -222,12 +224,33 @@ go straight to the design; nothing is refused.
 3. Write the design request with a `## Decisions` section holding
    `<Artifacts>/decisions.md` as it is, and run the design as usual.
 
-Ask in batches: every open question of a round in one message, each with its
-options and the recommendation, so the user answers once. Their "leave it to
+Under `true` and `auto`, ask in batches: every open question of a round in
+one message, each with its options and the recommendation, so the user
+answers once. Their "leave it to
 you" -- for one question or all of them -- is `--delegate`. Record only what
 they said: `--option` for the option they chose, `--text` for their own words,
 verbatim. Never answer for them; this is theirs as the approval is (SKILL.md
 rule 10).
+
+**Interview (`grill`).** Ask one question per message and follow up on the
+answers. Your own questions come first, from these perspectives, skipping any
+the request already answers: the intent; how success is judged; what is out of
+scope; alternatives already rejected, and why; how reversible the change is,
+and what undoing it costs; how it could fail, and who would notice; whether a
+smaller change, or no change, would be enough. Ask them in order of
+importance, at most five. Once ten questions, follow-ups included, have been
+asked in the interview, ask the user whether to go on before asking more. The
+CLI counts none of this; keep to it yourself. For each, write one block,
+record it alone with `--by orchestrator`, ask it alone, and record the answer.
+Follow up when an answer is vague, contradicts an earlier one or adds a
+constraint: a new block, recorded and asked the same way, at most two per
+question. Begin its `Topic` with `Follow-up to Q<n>:` so a reader can tell
+which question it follows up. That is a naming convention: the tool records a
+follow-up as an ordinary orchestrator question and checks neither the link nor
+the limit, so keep to both yourself. Then run the architect round,
+batched as under `true`, and ask its recorded questions one at a time in id
+order, following up the same way. Run a second architect round only for what
+needs the code. When the user says "enough", `--delegate` the rest.
 
 The block format, the same for both askers:
 
@@ -318,8 +341,8 @@ does.
 **The gate.** While any recorded question is open, the `run architect` whose
 `--output` is the plan exits 6 -- before it spends anything and before
 `--detach` starts a worker; a worker checks again and writes the refusal into
-its job. `--force` does not apply: the answers are the user's. Under `true` it
-is also refused until an architect round is recorded, except a `--resume`
+its job. `--force` does not apply: the answers are the user's. Under `true` or
+`grill` it is also refused until an architect round is recorded, except a `--resume`
 revision; an open question refuses that one too, because a revision past it
 would contradict `decisions.md` -- answer it, or `--delegate`. An architect run
 with no plan output, and a `--questions` run, are not gated. With answers on
@@ -338,9 +361,9 @@ it, or while the setting was `false` -- before it spends anything and before
 | --- | --- | --- | --- |
 | `false` | anything | `off` | runs; what is recorded is shown, not enforced |
 | `auto` | nothing | `none` | runs |
-| `auto` or `true` | an open question | `open` | refused, exit 6, `--resume` included |
-| `true` | no architect round, nothing open | `round-required` | refused, exit 6, except `--resume` |
-| `auto` or `true` | every question answered | `answered` | runs |
+| `auto`, `true` or `grill` | an open question | `open` | refused, exit 6, `--resume` included |
+| `true` or `grill` | no architect round, nothing open | `round-required` | refused, exit 6, except `--resume` |
+| `auto`, `true` or `grill` | every question answered | `answered` | runs |
 
 The setting is read at each run: turned to `false`, the gate stops at once;
 turned back on, what is recorded gates again.
@@ -355,13 +378,15 @@ so only once nothing else refuses the run -- after the round check and once
 its attempt is spent, and with `--detach` before it starts the worker, which
 does not do it again -- so a run refused with exit 6 or 3 leaves them open.
 Under `true` the architect round is still required, and an answer that was
-given is kept.
+given is kept. `grill` behaves as `true`: record your questions as one batch,
+with no follow-ups.
 
 **The round cap.** After `design.max_question_rounds` (2) architect rounds,
 `run architect --questions` and `design questions record --by architect` exit
 6: present the open points together and ask the user how to proceed. `--force`
 runs or records one more, and only when the user asks for it. On the run it
 also overrides a spent budget, and names each one it overrides on stderr.
+Follow-ups, recorded `--by orchestrator`, don't count.
 
 `decisions.md` is rewritten from `state.json` on every change and says not to
 edit it. It is what the design request, the revision requests and the design
@@ -370,7 +395,7 @@ questions under `design_questions`, never as a reason to stop:
 
 | Field | Meaning |
 | --- | --- |
-| `mode` | `off`, `auto` or `on`, from `design.ask_questions` |
+| `mode` | `off`, `auto`, `on` or `grill`, from `design.ask_questions` |
 | `state` | `off`, `none`, `open`, `round-required` or `answered` |
 | `pending` | `true` only while a question is open |
 | `open` | the ids not answered yet |
@@ -1244,7 +1269,7 @@ open, and the plan (`.ai/plan.md`).
 | A command exits 3 | A budget is spent. Report what is unresolved; do not retry, and do not reach for `--force` |
 | `run implementer` exits 5 | The plan is not approved, or changed / was reviewed after approval. Present it and ask the user; record a yes with `design approve`. Do not retry and do not approve it yourself |
 | A detached implementer job is `failed` with "not approved" | Same cause, found by the worker; once the user approves, start it again |
-| `run architect` exits 6 | A design question is open, or `design.ask_questions` is `true` and no architect round is recorded, or the question rounds are at their cap. Ask the user; record their words with `design questions answer`. Do not retry and do not answer for them |
+| `run architect` exits 6 | A design question is open, or `design.ask_questions` is `true` or `grill` and no architect round is recorded, or the question rounds are at their cap. Ask the user; record their words with `design questions answer`. Do not retry and do not answer for them |
 | `run implementer` or `design approve` exits 6 | A recorded design question is open. Ask the user and record their answer; revise the plan if it changes it, then ask for approval again |
 | `status` says `stop-and-report` | Stop. It has already weighed budgets, stalls and open findings |
 

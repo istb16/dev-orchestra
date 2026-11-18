@@ -313,7 +313,8 @@ def _config_report(report: Dict[str, Any], start: Optional[str]) -> Optional[con
     if config_mod.approval_mode(design.get("require_approval")) == "off" and asking != "off":
         report["notes"].append(
             "design.ask_questions is %s while design.require_approval is false: the questions are "
-            "asked and recorded, but the plan run leaves any still open to the architect" % asking
+            "asked and recorded, but the plan run leaves any still open to the architect"
+            % config_mod.ask_questions_mode_shown(asking)
         )
     return loaded
 

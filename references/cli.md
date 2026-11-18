@@ -431,7 +431,7 @@ that resolves to the plan, and on any other role; past
 the `--force` its parent was given. The plan run's gate (exit 6) is checked
 where `run implementer`'s approval is: after the prompts are read, before any
 attempt is spent and before `--detach`; `--force` does not pass it. Under
-`design.ask_questions: true` it is also refused until an architect round is
+`design.ask_questions: true` or `grill` it is also refused until an architect round is
 recorded, except with `--resume`. A plan run whose prompt names neither
 `decisions.md` nor a `## Decisions` section while answers are recorded prints a
 `note:` and runs. With nobody watching (`design.require_approval: false`, or
@@ -688,7 +688,7 @@ given over the round that was current at the time.
 | `design approve [--json]` | Record the user's approval of `.ai/plan.md` as it is now (sha256 of the plan alone) together with the design review round it was given over. A later revision, or a design review that runs afterwards, needs approving again. The round is the last one with a consolidated report, read together with the findings it names; while a `review run --design` round has started but has no report yet (still running, or it crashed), nothing is recorded and it exits 2. A round that ran to the end with no reviewer's review -- every reviewer failed -- is approved over instead, with a note that the plan has no design review findings at all, so a panel that keeps failing never leaves the user unable to go ahead. Open design findings -- every one not rejected or marked a duplicate, whatever its severity -- are printed, not refused: approving over them is the user's call; findings from a review of an earlier revision of the plan (the frozen `review-target.md` differs from the plan) are labelled as such. Approving the same plan over the same round again says `already approved` and records nothing. While a recorded design question is open (with `design.ask_questions` not false) nothing is recorded and it exits 6, naming the open ids: unlike a finding, the answer is the user's to give; it is checked again, and the answers recorded with the approval are read, under the lock the approval is written under. No plan exits 2. Run it only after the user said yes in conversation. |
 | `design questions record --by orchestrator\|architect --file <path\|-> [--force]` | Record the `## Question` blocks in the file (`-` for stdin) as asked by the orchestrator or the architect, and print the ids given (`Q1`, `Q2`, ... across the workflow). All or none: a malformed block exits 2 naming the block and the field, and nothing is recorded. An architect question needs `Why it matters`, two options or more and a `Recommended` among them. A file that says exactly `No questions.` records an architect round with none; code fence lines, and a closing line after a block's last field, are ignored; prose with a field still to come in its block, and a list item that is not a field, are refused. An architect round past `design.max_question_rounds` exits 6 unless `--force`. With `design.ask_questions` false it records anyway and says the gate is off. |
 | `design questions answer <id>... --option <key>\|--text <words>\|--delegate [--revise]` | Record the user's answer: the option they chose (kept as `B: <its text>`), their own words as given, or `--delegate` for "leave it to the architect". Exactly one of the three; several ids only with `--delegate`. A question already answered needs `--revise`, which keeps the earlier answer in its `history`. An unknown id or option, or a `--text` with a line break, exits 2; an id given twice counts once. Run it only with the user's answer. |
-| `design questions show [--open] [--json]` | The recorded questions, their options and answers; `--open` only those not answered yet. `--json`: [json](json.md#design-questions-show). |
+| `design questions show [--open] [--json]` | The recorded questions, their options and answers; `--open` only those not answered yet. The first line names the setting as written, `(design.ask_questions: true)` or `false`, `auto`, `grill`. `--json`: [json](json.md#design-questions-show). |
 
 The approval lives in `state.json` under `design_approval`, written by this
 command only, with a `design_approval` / `approved` event beside it; `state
@@ -755,7 +755,11 @@ questions to put to the user before the plan is written. They are never a
 reason either: the plan run enforces them. The line is left out while
 `design.ask_questions` is false and nothing is recorded; otherwise it reads,
 for instance, `Design questions: 2 open of 5 (Q4, Q5), round 1/2 -- ask the
-user; the plan run is refused until they are answered`. An `architect_questions`
+user; the plan run is refused until they are answered`, or, under `true` with
+no architect round, `Design questions: true, no architect question round
+recorded -- run architect --questions first`. Under `grill` the open,
+answered and round-required lines begin `Design questions: grill,`, and the
+open one says `ask the user one at a time, following up`. An `architect_questions`
 budget with no attempts left is not a reason: the run itself refuses.
 
 `progress` and the `Progress:` line say how the orchestrator reports on a long

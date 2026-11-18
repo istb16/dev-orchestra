@@ -916,7 +916,7 @@ class TestValidateOrder(IsolatedCase):
                 "review.exclude[0]: must be a non-empty string (got '')",
                 "review.exclude[1]: must be a non-empty string (got 3)",
                 "design.require_approval: must be true, false or auto, or null",
-                "design.ask_questions: must be true, false or auto, or null",
+                "design.ask_questions: must be true, false, auto or grill, or null",
                 "design.max_question_rounds: must be a positive integer or null",
                 "design.resume.max_age_seconds: must be a non-negative integer or null",
                 "design.resume.max_context_tokens: must be a positive integer or null",
@@ -1180,8 +1180,11 @@ class TestValueRules(IsolatedCase):
             with self.subTest(check=check):
                 if check.kind == config_validation._BOOL:
                     self.assertTrue(check.message.startswith("must be true or false"))
-                elif check.kind == config_validation._AUTO:
-                    self.assertTrue(check.message.startswith("must be true, false or auto"))
+                elif check.kind == config_validation._BOOL_OR_WORD:
+                    # The message names every word the check accepts, after true and false.
+                    words = ("true", "false", *check.words)
+                    listed = "%s or %s" % (", ".join(words[:-1]), words[-1])
+                    self.assertTrue(check.message.startswith("must be " + listed), check.message)
                 elif check.kind == config_validation._GLOBS:
                     self.assertTrue(check.message.startswith("must be a list of glob patterns"))
                 else:

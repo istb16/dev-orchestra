@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optiona
 
 from . import miniyaml
 from .config_common import (  # noqa: F401 - re-exported
+    ASK_QUESTIONS_MODES,
     BUILTIN_ROLES,
     CONFIG_VERSION,
     KNOWN_ROLES,
@@ -30,6 +31,7 @@ from .config_common import (  # noqa: F401 - re-exported
     PROGRESS_INTERVAL_MIN,
     PROMPTED_ROLES,
     READ_ONLY_ROLES,
+    ROUND_REQUIRED_MODES,
     RUN_TIMEOUT_DEFAULTS,
     STALE_NOTICE_MAX_DAYS,
     WRITE_ROLES,
@@ -40,6 +42,7 @@ from .config_common import (  # noqa: F401 - re-exported
     approval_mode,
     approval_mode_shown,
     ask_questions_mode,
+    ask_questions_mode_shown,
     default_config,
     design_review_mode,
     implementation_settings_of,

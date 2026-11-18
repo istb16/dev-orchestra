@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:3a0b9fc8d7f44d0818022b200b4009319c80508bbc350079e54077ecdb99c73a -->
+<!-- translated-from: references/cli.md sha256:19c2a98ca100c9ce614004814acaae0f0d737464338f5f508a349236162c8e17 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -390,7 +390,7 @@ review fixer、`--mode implement` では 1200 秒で、その設定の方が大�
 使い切った `budgets.architect_questions` も上書きします（`note:` を表示します）。detach された
 ワーカーにもこのフラグが渡され、上限は親プロセスに与えられた `--force` に照らして確かめます。plan を書く
 実行の関門（終了コード 6）は、`run implementer` の承認と同じところで確かめます。プロンプトを読んだ後、
-試行を消費する前、`--detach` の前です。`--force` ではこれを通れません。`design.ask_questions: true` の
+試行を消費する前、`--detach` の前です。`--force` ではこれを通れません。`design.ask_questions: true` または `grill` の
 もとでは、architect のラウンドが記録されるまでも拒否されます。ただし `--resume` のときは除きます。回答が
 記録されているのに、プロンプトが `decisions.md` にも `## Decisions` セクションにも触れていない plan の
 実行は、`note:` を出して実行します。誰も見ていないとき（`design.require_approval: false`、または
@@ -613,7 +613,7 @@ id のまま作られたレポート -- どのレビュアーもレビューを�
 | `design approve [--json]` | 現時点の `.ai/plan.md` に対するユーザーの承認を（plan 単体の sha256 で）、承認の対象となった design レビューのラウンドと一緒に記録します。その後の修正や、その後に実行された design レビューがあれば、再度承認が必要です。ラウンドは統合レポートを持つ最後のものであり、そこに示された指摘と合わせて読み取られます。`review run --design` のラウンドが開始されたもののまだレポートがない間（実行中、またはクラッシュした場合）は、何も記録せず終了コード 2 で終了します。どのレビュアーのレビューもなく最後まで実行されたラウンド（すべてのレビュアーが失敗した）の場合は、代わりにそのラウンドに対して承認し、plan に design レビューの指摘がまったくないことを注記します。これにより、失敗し続けるパネルのせいでユーザーが先に進めなくなることはありません。未解決の design の指摘（重大度にかかわらず、却下されておらず重複ともされていないものすべて）は表示されますが、拒否はされません。それらを承知で承認するかどうかはユーザーの判断です。plan の以前の版に対するレビューからの指摘（固定された `review-target.md` が plan と異なる）はその旨がラベル付けされます。同じ plan を同じラウンドに対して再度承認すると `already approved` と表示し、何も記録しません。記録された design の質問に未回答のものがある間は（`design.ask_questions` が false でなければ）、何も記録せず、未回答の id を示して終了コード 6 で終了します。指摘と違い、答えはユーザーが出すものだからです。承認を書き込むときと同じロックの下で、改めてこれを確かめ、承認に記録する回答もそこで読み取ります。plan がない場合は終了コード 2 です。ユーザーが会話の中で了承した後にだけ実行してください。 |
 | `design questions record --by orchestrator\|architect --file <path\|-> [--force]` | ファイル（`-` なら stdin）にある `## Question` ブロックを、orchestrator または architect が出した質問として記録し、与えた id（ワークフロー全体で通しの `Q1`、`Q2`、...）を表示します。すべてを記録するか、何も記録しないかのどちらかです。形式の誤ったブロックがあれば、そのブロックとフィールドを示して終了コード 2 で終了し、何も記録しません。architect の質問には `Why it matters`、2 つ以上の選択肢、そのうちの 1 つを指す `Recommended` が必要です。中身がちょうど `No questions.` のファイルは、質問のない architect のラウンドとして記録します。コードフェンスの行と、ブロックの最後のフィールドの後の締めの一文は無視します。同じブロックでまだ後にフィールドが続く地の文と、フィールドではない箇条書きの行は拒否します。`design.max_question_rounds` を超えた architect のラウンドは、`--force` がない限り終了コード 6 で終了します。`design.ask_questions` が false でも記録はし、関門が無効であることを伝えます。 |
 | `design questions answer <id>... --option <key>\|--text <words>\|--delegate [--revise]` | ユーザーの回答を記録します。選んだ選択肢（`B: <その文>` の形で保存）、ユーザー自身の言葉そのまま、または「architect に任せる」を表す `--delegate` のいずれかです。3 つのうちちょうど 1 つを指定します。複数の id を指定できるのは `--delegate` のときだけです。回答済みの質問には `--revise` が必要で、以前の回答は `history` に残ります。未知の id や選択肢、改行を含む `--text` は終了コード 2 です。同じ id を 2 度指定しても 1 度として扱います。ユーザーの回答があるときにだけ実行してください。 |
-| `design questions show [--open] [--json]` | 記録された質問と、その選択肢と回答を表示します。`--open` ではまだ回答のないものだけです。`--json`: [json](json.md#design-questions-show)。 |
+| `design questions show [--open] [--json]` | 記録された質問と、その選択肢と回答を表示します。`--open` ではまだ回答のないものだけです。最初の行には設定が書かれたとおりに `(design.ask_questions: true)` のように出ます（ほかに `false`、`auto`、`grill`）。`--json`: [json](json.md#design-questions-show)。 |
 
 承認は `state.json` の `design_approval` の下に保存されます。書き込むのはこのコマンドだけで、隣に
 `design_approval` / `approved` イベントが記録されます。`state record` で偽造することはできません。
@@ -674,7 +674,11 @@ design の質問が記録されている場合、承認はその時点の回答�
 示します。これらも理由にはなりません。それを強制するのは plan を書く実行です。この行は、
 `design.ask_questions` が false で何も記録されていない間は出ません。それ以外ではたとえば
 `Design questions: 2 open of 5 (Q4, Q5), round 1/2 -- ask the
-user; the plan run is refused until they are answered` のようになります。試行が残っていない
+user; the plan run is refused until they are answered` のようになります。`true` で architect の
+ラウンドがないときは `Design questions: true, no architect question round
+recorded -- run architect --questions first` です。`grill` では、未回答、回答済み、ラウンドが必要の
+各行が `Design questions: grill,` で始まり、未回答の行には `ask the user one at a time, following up`
+と出ます。試行が残っていない
 `architect_questions` の予算は理由になりません。実行そのものが拒否するからです。
 
 `progress` と `Progress:` 行は、長い実行について orchestrator がどう報告するかを示します

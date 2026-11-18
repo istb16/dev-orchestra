@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:dcb3c8a96e15d00b93e2a6452155a4bc40e342be1f3f3859597d1a94380cd559 -->
+<!-- translated-from: references/configuration.md sha256:1daea2117bebdfab6c4833c4e07d6099c5e0c863ad475428faaa4ad554e3b8b3 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -604,7 +604,7 @@ optimization:
 
 design:
   require_approval: auto              # implementer waits for the user's yes (true, false or auto)
-  ask_questions: false                # auto/true: ask the user before the plan is written
+  ask_questions: false                # auto/true/grill: ask the user before the plan is written
   max_question_rounds: 2              # architect question rounds before asking how to proceed
   resume:                             # run architect --resume
     max_age_seconds: 3600             # older than this, the revision runs fresh
@@ -672,7 +672,7 @@ implementation:
 | `review.design.enabled` | bool \| `auto` \| null | 実装の前に `.ai/plan.md` を設計パネル（`review.design.reviewers` を参照）にかけるかどうか。このステージはラウンドごとにパネルのメンバー 1 人につきレビュアー実行 1 回分のコストがかかります。`true` は常に実行、`false` は実行しません。`auto`（デフォルト）は計画書から判断し、その答えと理由を `status` が表示します。計画書のどこにあってもバッククォートで囲まれたトークンと、計画書の `Files to Modify` 見出しの下にあるパスらしい語（バッククォートの有無を問わず、そこにあるフェンスブロックも含む）はすべて、大文字小文字を区別せずに高リスクパターン（`optimization.high_risk_paths` と `extra_high_risk_paths`）と照合され、一致すれば実行します。`db/migrate` のように `/` を含み拡張子のない名前はディレクトリとしても照合します。規模は、`Files to Modify` の下にあるファイル名らしいトークン（`/` かファイル拡張子を含むもの）のうち、フェンスブロックの中、`docs/`・`references/`・`tests/` と `.md`・`.rst`・`.txt` ファイルを除いたものを、ディスクを見ずに数え、6 個以上なら実行します。そこにグロブ、ディレクトリ、`/` を含み拡張子のない名前、`..` を通るパスがあれば実行します（`payload["mode"]` のようなコードはグロブとして読みません）。計画書が読めない、`Files to Modify` セクションがない、あってもファイルを 1 つも挙げていない場合も実行します。計画書がまだないときの答えは `auto -> run (once a plan is written)` です。そしてワークフローで設計レビューのラウンドが一度でも走ったら答えは実行のままなので、改訂によってループが途中で止まることはありません。`null` はデフォルトの `auto` を意味します。 |
 | `review.design.max_iterations` | int ≥ 0 | 設計レビューのラウンド数（レビュー → トリアージ → 修正）。`max_review_iterations` とは別にカウントされます（デフォルト 2）。上限に達したラウンドでも修正は行われます。上限が拒否するのはその後の再レビューだけです。`1`: 1 ラウンド、1 回の修正、その後ユーザーに確認。`0`: 設計レビューなし。`budgets.architect`（デフォルト 3）は、デフォルトでは設計とラウンドごとに 1 回の修正をまかないます。`max_iterations` に合わせて引き上げ、承認時に変更を求められることが予想される場合はさらに 1 つ増やしてください。 |
 | `design.require_approval` | bool \| `auto` \| null | `.ai/plan.md` が存在し、現時点の plan が `design approve` で承認されていない間に -- ユーザーが了承した後に承認するものです -- `run implementer` を拒否するか（exit 5）を決めます。`true` は常に承認を求めます。`false` は求めず、このゲートが導入される前の挙動に戻します。`auto`（デフォルト。`null` も同じ）は、次の3つがすべてそろったときだけ承認を省き、それ以外は求めます: 誰も見ていない（`DEV_ORCHESTRA_UNATTENDED` が `0`・`false`・`no`・`off` 以外の値で設定されている。未設定か空のときは `CI` を同じように読む。このため、プログラムに確認を出させないためだけに `CI` を設定する道具の中でも、`DEV_ORCHESTRA_UNATTENDED=0` なら承認を求め続ける）、plan が危ない変更でない（plan のどの語も `optimization.high_risk_paths` と `extra_high_risk_paths` に当たらず -- これらはデフォルトと global 設定の値に、project ファイルが足したものを加えたもので、project ファイルから減らすことはできない --、ワークフローのどの設計ラウンドも `--high-risk` で走っていない）、設計レビューで Low より上が残っていない（`review.design.enabled: auto` が小さくまとまった plan だとして省いた、または最新のラウンドで全レビュアーが最後まで終わり、plan 全体を見たうえでこの plan そのものをレビューし、Low より上 -- Medium 以上と、`review.re_review_severities` が止める重大度 -- の未解決の指摘がない）。報告のまだないラウンド、レビュアーが失敗したか `partial` で終わったラウンド、前の版の plan へのレビュー、走るべきなのにまだ走っていないレビュー、`review.design.enabled: false` は承認を求めます。project ファイルはレビュー対象のブランチと一緒に来ることがあるため、省いたことを認めるのは project ファイルを除いても（global 設定かデフォルトで）`review.design.enabled` が `auto` のときだけ、問題のないラウンドを認めるのは設計パネルが project ファイルの並べたものでないときだけです（project ファイルの `reviewers_extra` は席を足すだけなので数えません）。そうでなければどちらも承認を求めます。`status` は `Plan approval:` の行に答えと理由を出します。判定のあいだに plan が変わったときは承認を求めます。`review.design` の下ではなくトップレベルにあるのは、パネルが plan をレビューしたかどうかにかかわらず承認が重要だからです。`--force` ではバイパスできず、この設定だけがバイパスできます。global 設定からだけ受け付け、project ファイルにあっても無視します（[下記](#what-the-project-file-may-not-loosen)）。 |
-| `design.ask_questions` | bool \| `auto` \| null | plan を書く前に、設計の未決の点をユーザーに尋ねるかどうかです（[workflow](workflow.md#design-questions)）。`false`（デフォルト）は尋ねず、これまでどおりです。`auto` では、依頼があいまいなとき、新しい挙動や仕様のとき、いくつもの進め方がありうるときに orchestrator が尋ね、記録された質問が未回答の間は plan を書く `run architect` が拒否します（exit 6）。`true` は同じうえで、`run architect --questions` のラウンドが 1 回記録されるまでもその実行を拒否します。`design.require_approval: false`（誰も見ていない実行）でも質問は出して記録しますが、plan の実行は答えを待たず、未回答のものを architect に任せます。project ファイルでも設定できます。`null` はデフォルトの意味です。 |
+| `design.ask_questions` | bool \| `auto` \| `grill` \| null | plan を書く前に、設計の未決の点をユーザーに尋ねるかどうかです（[workflow](workflow.md#design-questions)）。`false`（デフォルト）は尋ねず、これまでどおりです。`auto` では、依頼があいまいなとき、新しい挙動や仕様のとき、いくつもの進め方がありうるときに orchestrator が尋ね、記録された質問が未回答の間は plan を書く `run architect` が拒否します（exit 6）。`true` は同じうえで、`run architect --questions` のラウンドが 1 回記録されるまでもその実行を拒否します。`grill` は `true` と同じように拒否したうえで、インタビューとして尋ねます。1 問ずつ尋ね、答えを掘り下げる質問は orchestrator の質問として記録します。architect のラウンドとその上限は変わりません。`design.require_approval: false`（誰も見ていない実行）でも質問は出して記録しますが、plan の実行は答えを待たず、未回答のものを architect に任せます。そのとき `grill` は `true` と同じに動きます。project ファイルでも設定できます。`null` はデフォルトの意味です。 |
 | `design.max_question_rounds` | int ≥ 1 \| null | architect の質問のラウンド数の上限です（デフォルト 2）。これを超えると `run architect --questions` と `design questions record --by architect` が拒否し（exit 6）、orchestrator はどう進めるかをユーザーに尋ねます。`--force` でもう 1 回実行できます。各ラウンドは `budgets.architect` ではなく `budgets.architect_questions`（デフォルト 3）を消費します。`null` はデフォルトの意味です。 |
 | `design.resume.max_age_seconds` | int ≥ 0 \| null | `run architect --resume` がセッションを継続できる、直前の architect の実行の古さの上限です（デフォルト 3600。測定時に CLI がプロンプトキャッシュを保持していた時間）。これより古ければ、改訂は全文プロンプトで新規に走ります。`0` は常に新規、`null` はデフォルトの意味です。 |
 | `design.resume.max_context_tokens` | int > 0 \| null | 継続を許す、セッション終了時の文脈の大きさ（トークン）の上限です（デフォルト `null`: 上限なし）。各実行は `context_tokens` を記録するので、測った値から上限を決められます。一方だけを設定しても、もう一方はデフォルトのままです。 |
@@ -873,7 +873,7 @@ project ファイルの `design.require_approval` は値にかかわらず、ま
 | `review.whole_change_recheck` | off にしている |
 | `review.design.enabled` | `true` → `auto` → `false` の順に下げている |
 | `review.design.max_iterations` | 下げている |
-| `design.ask_questions` | `true` → `auto` → `false` の順に下げている |
+| `design.ask_questions` | `grill` → `true` → `auto` → `false` の順に下げている |
 | `design.max_question_rounds` | 下げている |
 | `optimization.level` | `quality` → `balanced` → `aggressive` の順に下げている |
 | `optimization.high_risk_paths` | パターンを外している（`extra_high_risk_paths` も合わせて数える） |

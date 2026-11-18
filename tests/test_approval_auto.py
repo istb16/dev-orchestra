@@ -507,6 +507,18 @@ class TestTheGateUnderAuto(AutoCase):
         notes = doctor.collect(self.project, probe_models=False)["notes"]
         self.assertTrue(any("design.ask_questions is auto" in note for note in notes))
 
+    def test_doctor_note_grill(self):
+        run_cli("config", "set", "design.ask_questions", "grill")
+        run_cli("config", "set", "design.require_approval", "false")
+        notes = doctor.collect(self.project, probe_models=False)["notes"]
+        self.assertTrue(any("design.ask_questions is grill" in note for note in notes), notes)
+
+    def test_doctor_note_names_true_as_written(self):
+        run_cli("config", "set", "design.ask_questions", "true")
+        run_cli("config", "set", "design.require_approval", "false")
+        notes = doctor.collect(self.project, probe_models=False)["notes"]
+        self.assertTrue(any("design.ask_questions is true while" in note for note in notes), notes)
+
 
 if __name__ == "__main__":
     unittest.main()

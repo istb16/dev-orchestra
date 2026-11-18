@@ -39,7 +39,7 @@ report, not retry; with an unapproved plan, end on the approval question.
 Judge complexity and risk yourself; never ask the user which stages to run.
 
 Design: **Skip** for a mechanical, local edit: typo, comment, formatting, one
-obvious line, a config value, a version bump. **Run** for new behaviour,
+obvious line, config value, version bump. **Run** for new behaviour,
 ambiguity, several files, schema, API, performance, a bug of unknown cause
 (investigate first), architecture, security-sensitive paths. Full lists:
 `references/workflow.md` (Stage selection).
@@ -84,13 +84,14 @@ never a reason to cancel. A background `review run` (`on`: always background) ge
 alike. Never relay or guess what the model wrote; tool lines go as they are.
 Per `progress.updates`: `references/workflow.md` (Progress reports).
 
-**Questions.** When on, ask the user before designing (`auto`: only when it
-matters; say why). "Leave it to you" is `--delegate`; exit 6 means ask.
-Approval off: record, never wait. Steps: `references/workflow.md`.
+**Questions.** If on, ask the user before designing (`auto`: only when it
+matters; say why). `grill`: one at a time, following up. "Leave it to you" is
+`--delegate`; exit 6: ask. Approval off: record, never wait. Steps:
+`references/workflow.md`.
 
 **Design.** The architect must not change code. Write its request from the
 template with the history it cannot fetch (`git log --oneline`, blame).
-Vague or contradicted by the codebase → send back once; never paper over it.
+Vague or contradicted by the code → send back once; never paper over it.
 **Design review**: triage as for code, fold accepted findings into a revision
 request; re-review only when `review status --design` says so. A spent
 budget still gets one revision (no re-review), made before you ask for
@@ -124,7 +125,7 @@ change turns on one.
 
 - `unparsed` counts as failed and is **never** a clean review.
 - `partial`: the findings are real, the review is not clean. If `review
-  status` says `coverage` is `unverified`, report "not reviewed in full" and
+  status`'s `coverage` is `unverified`, report "not reviewed in full" and
   do not re-run that snapshot.
 - `review run` may shrink the panel, saying why: report it.
 
@@ -153,7 +154,7 @@ definition of done, output format.
 ## 4. Final report
 
 One line per stage with its outcome, then models used, files changed and
-anything left unresolved. The labels are the shape:
+anything unresolved. The labels are the shape:
 write them in the user's language (rule 11).
 
 ```
@@ -166,7 +167,7 @@ Remaining  F4 (medium, deferred — reviews/consolidated.md)
 ```
 
 Totals: `summary`; cost per stage and reviewer: `tokens show` (a floor if a
-run reported nothing).
+run reported none).
 Always name what failed and what you skipped.
 End with `summary`'s `Resume:` line and recommend a new session (also before
 unrelated new work).
@@ -217,7 +218,7 @@ their Claude Code user settings. Other requests (`config set`,
 
 ## References
 
-Read one only when you need its detail.
+Read one only when needed.
 
 - `references/workflow.md` — stages, templates, artifacts
 - `references/configuration.md` — schema, the user's requests

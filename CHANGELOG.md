@@ -15,6 +15,22 @@ authors can find it.
 
 ### Added
 
+- **`design.ask_questions: grill`: an opt-in interview.** The orchestrator
+  asks the design questions one at a time and follows up on answers that are
+  vague, contradict an earlier one or add a constraint, at most twice per
+  question. Its own questions, at most five and the most important first,
+  cover intent, success criteria, scope, rejected alternatives,
+  reversibility, failure scenarios and whether a smaller change, or none,
+  would do. After ten questions, follow-ups included, it asks the user whether
+  to go on. Follow-ups are recorded as ordinary orchestrator questions whose
+  topic begins `Follow-up to Q<n>:` by convention; the tool counts none of
+  these limits and checks neither the link nor them. `status` names `grill` on
+  each `Design questions:` line it prints. The gate is the one `true` has, the
+  architect rounds and their cap are unchanged, and unattended runs behave as
+  `true` (#397). `false`, `auto` and `true` behave as before; where a line
+  names the setting's value (`status`'s round-required line, `design
+  questions show`, `doctor`'s note), `true` now reads `true` rather than `on`.
+  `--json` still reports the mode as `on`.
 - **Code reviewers are told what was already decided.** Every code round's
   prompt now ends with a "Decisions already made" section: the user's answers
   in `decisions.md` (questions not answered yet left out), the plan's `Risks`

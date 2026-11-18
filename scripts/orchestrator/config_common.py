@@ -128,13 +128,28 @@ def approval_mode_shown(mode: str) -> str:
     )
 
 
+#: The ``design.ask_questions`` modes, from the least to the most careful.
+ASK_QUESTIONS_MODES = ("off", "auto", "on", "grill")
+
+#: The modes a ``design.ask_questions`` string names; true and false are the others.
+ASK_QUESTIONS_STRINGS = ("auto", "grill")
+
+#: The modes under which the plan run needs an architect question round.
+ROUND_REQUIRED_MODES = ("on", "grill")
+
+
 def ask_questions_mode(value: Any) -> str:
-    """``on``, ``off`` or ``auto`` for a ``design.ask_questions`` value; null is the default, off."""
-    if isinstance(value, str) and value.strip().lower() == "auto":
-        return "auto"
+    """One of ``ASK_QUESTIONS_MODES`` for a ``design.ask_questions`` value; null is off."""
+    if isinstance(value, str) and value.strip().lower() in ASK_QUESTIONS_STRINGS:
+        return value.strip().lower()
     if value is None:
         return "off"
     return "on" if value else "off"
+
+
+def ask_questions_mode_shown(mode: str) -> str:
+    """An ``ask_questions_mode`` as the setting is written: ``true``, ``false``, ``auto`` or ``grill``."""
+    return {"on": "true", "off": "false"}.get(mode, mode)
 
 
 def progress_updates_mode(value: Any) -> str:

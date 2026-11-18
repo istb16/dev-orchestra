@@ -135,13 +135,17 @@ class TestTheDefault(QuestionsCase):
 
 class TestValidation(unittest.TestCase):
     def test_ask_questions(self):
-        for value in (True, False, "auto", "AUTO", None):
+        for value in (True, False, "auto", "AUTO", "grill", " Grill ", None):
             with self.subTest(value=value):
                 self.assertEqual(config_validation._validate_design({"ask_questions": value}), [])
         for value in ("maybe", 1):
             with self.subTest(value=value):
                 [problem] = config_validation._validate_design({"ask_questions": value})
                 self.assertIn("design.ask_questions", problem)
+        self.assertEqual(
+            config_validation._validate_design({"ask_questions": "maybe"}),
+            ["design.ask_questions: must be true, false, auto or grill, or null"],
+        )
 
     def test_max_question_rounds(self):
         self.assertEqual(config_validation._validate_design({"max_question_rounds": 1}), [])
@@ -157,7 +161,15 @@ class TestValidation(unittest.TestCase):
         self.assertEqual(config_mod.default_config()["budgets"]["architect_questions"], 3)
 
     def test_the_modes(self):
-        cases = ((None, "off"), (False, "off"), (True, "on"), ("auto", "auto"), (" Auto ", "auto"))
+        cases = (
+            (None, "off"),
+            (False, "off"),
+            (True, "on"),
+            ("auto", "auto"),
+            (" Auto ", "auto"),
+            ("grill", "grill"),
+            (" GRILL ", "grill"),
+        )
         for value, expected in cases:
             with self.subTest(value=value):
                 self.assertEqual(config_mod.ask_questions_mode(value), expected)
@@ -781,6 +793,138 @@ class TestAlwaysAsk(QuestionsCase):
         self.assertEqual(self.revise()[0], 0)
 
 
+FOLLOW_UP = """## Question
+- Topic: Follow-up to Q1: Backfill scope
+- Question: Should the backfill cover cancelled orders too?
+"""
+
+
+class TestGrill(QuestionsCase):
+    """``design.ask_questions: grill``: gated as ``true``; follow-ups are orchestrator records."""
+
+    ROUND_REQUIRED_LINE = (
+        "Design questions: %s, no architect question round recorded -- run architect --questions first"
+    )
+    REFUSAL = (
+        "refusing to run architect: design.ask_questions is %s and no architect question round is recorded."
+    )
+
+    def setUp(self):
+        super().setUp()
+        self.write("follow-up.md", FOLLOW_UP)
+
+    def test_grill_requires_an_architect_round(self):
+        self.ask("grill")
+        self.assertEqual(self.questions_status()["state"], "round-required")
+        code, _, err = self.plan_run()
+        self.assertEqual(code, 6)
+        self.assertIn("design.ask_questions is grill", err)
+
+    def test_grill_status_line(self):
+        self.ask("grill")
+        self.assertIn(self.ROUND_REQUIRED_LINE % "grill", self.status_text())
+        self.assertEqual(self.questions_status()["mode"], "grill")
+
+    def test_true_texts_name_the_setting_as_written(self):
+        self.ask("true")
+        self.assertIn(self.ROUND_REQUIRED_LINE % "true", self.status_text())
+        self.assertEqual(questions_mod.refusal_lines(self.questions_status())[0], self.REFUSAL % "true")
+        self.assertIn(self.REFUSAL % "true", self.plan_run()[2])
+        out = run_cli("design", "questions", "show")[1]
+        self.assertTrue(out.startswith("Design questions: round-required (design.ask_questions: true)"), out)
+        # The JSON keeps the internal mode: it is a documented API value.
+        self.assertEqual(self.questions_status()["mode"], "on")
+
+    def test_grill_follow_ups_do_not_count_toward_the_cap(self):
+        self.ask("grill")
+        self.assertEqual(run_cli("config", "set", "design.max_question_rounds", "1")[0], 0)
+        self.assertEqual(self.record("architect", "architect.md")[0], 0)
+        self.assertIs(questions_mod.cap_reached(self.questions_status()), True)
+        code, _, err = self.record("orchestrator", "follow-up.md")
+        self.assertEqual(code, 0, err)
+        code, _, err = self.record("orchestrator", "orchestrator.md")
+        self.assertEqual(code, 0, err)
+        info = self.questions_status()
+        self.assertEqual(info["architect_rounds"], 1)
+        self.assertEqual(info["max_rounds"], 1)
+        self.assertEqual(self.record("architect", "none.md")[0], 6)
+        questions = self.recorded()["questions"]
+        self.assertEqual([q["id"] for q in questions], ["Q1", "Q2", "Q3"])
+        self.assertEqual([q["round"] for q in questions[1:]], [1, 1])
+        self.assertEqual(self.questions_status()["architect_rounds"], 1)
+
+    def test_grill_open_before_a_round_still_needs_one(self):
+        self.ask("grill")
+        self.record("orchestrator", "orchestrator.md")
+        info = json.loads(run_cli("status", "--json")[1])["design_questions"]
+        self.assertEqual((info["state"], info["mode"]), ("open", "grill"))
+        self.assertEqual(questions_mod.as_if_answered(info)["state"], "round-required")
+        self.assertIn(
+            "Design questions: grill, 1 open of 1 (Q1), round 0/2 -- ask the user one at a time, "
+            "following up; the plan run is refused until they are answered",
+            self.status_text(),
+        )
+        out = run_cli("design", "questions", "show")[1]
+        self.assertTrue(out.startswith("Design questions: open (design.ask_questions: grill)"), out)
+        self.assertEqual(self.plan_run()[0], 6)
+
+    def test_grill_answered_after_a_round_runs(self):
+        self.ask("grill")
+        self.record("orchestrator", "orchestrator.md")
+        self.record("architect", "architect.md")
+        info = self.questions_status()
+        self.assertEqual(info["state"], "open")
+        self.assertEqual(questions_mod.as_if_answered(info)["state"], "answered")
+        self.answer("Q1", "--text", "Yes")
+        self.answer("Q2", "--option", "B")
+        info = json.loads(run_cli("status", "--json")[1])["design_questions"]
+        self.assertEqual((info["state"], info["mode"]), ("answered", "grill"))
+        decisions = self.workspace.relative(self.workspace.decisions_path)
+        line = "Design questions: grill, 2 answered, round 1/2 -- decisions in %s" % decisions
+        self.assertIn(line, self.status_text())
+        code, _, err = self.plan_run()
+        self.assertEqual(code, 0, err)
+
+    def test_true_open_and_answered_lines_do_not_say_grill(self):
+        self.ask("true")
+        self.record("orchestrator", "orchestrator.md")
+        self.record("architect", "architect.md")
+        text = self.status_text()
+        self.assertIn("Design questions: 2 open of 2 (Q1, Q2), round 1/2", text)
+        self.assertNotIn("grill", text)
+        self.assertNotIn("one at a time, following up", text)
+        self.answer("Q1", "--text", "Yes")
+        self.answer("Q2", "--option", "B")
+        self.assertEqual(self.questions_status()["state"], "answered")
+        decisions = self.workspace.relative(self.workspace.decisions_path)
+        text = self.status_text()
+        self.assertIn("Design questions: 2 answered, round 1/2 -- decisions in %s" % decisions, text)
+        self.assertNotIn("grill", text)
+
+    def test_ask_questions_mode_shown(self):
+        cases = (("on", "true"), ("off", "false"), ("auto", "auto"), ("grill", "grill"))
+        for mode, shown in cases:
+            with self.subTest(mode=mode):
+                self.assertEqual(config_mod.ask_questions_mode_shown(mode), shown)
+
+    def test_grill_show_names_the_mode(self):
+        self.ask("grill")
+        out = run_cli("design", "questions", "show")[1]
+        self.assertTrue(out.startswith("Design questions: round-required (design.ask_questions: grill)"), out)
+
+    def test_grill_unattended_behaves_as_true(self):
+        self.ask("grill")
+        run_cli("config", "set", "design.require_approval", "false")
+        code, _, err = self.plan_run()
+        self.assertEqual(code, 6)
+        self.assertIn("design.ask_questions is grill", err)
+        self.record("architect", "architect.md")
+        code, _, err = self.plan_run()
+        self.assertEqual(code, 0, err)
+        self.assertIn("nobody is there to answer: Q1 left to the architect", err)
+        self.assertEqual(self.questions_status()["state"], "answered")
+
+
 class TestTheRoundCap(QuestionsCase):
     def setUp(self):
         super().setUp()
@@ -1229,6 +1373,29 @@ class TestProjectConfig(QuestionsCase):
                 found = any(line.startswith("design.ask_questions: the project config") for line in notes)
                 self.assertIs(found, noticed, notes)
 
+    def test_project_cannot_loosen_grill(self):
+        cases = (
+            ("grill", "true", True),
+            ("grill", "auto", True),
+            ("grill", "false", True),
+            ("true", "grill", False),
+            ("auto", "grill", False),
+            ("auto", '" Grill "', False),
+            ("grill", "null", False),
+        )
+        for user, project, noticed in cases:
+            with self.subTest(user=user, project=project):
+                self.ask(user)
+                self.write(".dev-orchestra.yaml", "version: 1\ndesign:\n  ask_questions: %s\n" % project)
+                notes = doctor.collect(self.project, probe_models=False)["notes"]
+                found = any(line.startswith("design.ask_questions: the project config") for line in notes)
+                self.assertIs(found, noticed, notes)
+
+    def test_a_mixed_case_grill_is_normalised(self):
+        self.ask("auto")
+        self.write(".dev-orchestra.yaml", 'version: 1\ndesign:\n  ask_questions: " Grill "\n')
+        self.assertEqual(self.questions_status()["mode"], "grill")
+
     def test_a_null_setting_is_the_users(self):
         self.ask("auto")
         self.write(".dev-orchestra.yaml", "version: 1\ndesign:\n  ask_questions: null\n")
@@ -1288,6 +1455,10 @@ class TestStatusAndDoctor(QuestionsCase):
         self.assertIn("design questions: off  (design.ask_questions)", run_cli("config", "show")[1])
         self.ask("auto")
         self.assertIn("design questions: auto  (design.ask_questions)", run_cli("config", "show")[1])
+
+    def test_config_show_grill(self):
+        self.ask("grill")
+        self.assertIn("design questions: grill  (design.ask_questions)", run_cli("config", "show")[1])
 
 
 class TestProgressLines(ApprovalCase):
