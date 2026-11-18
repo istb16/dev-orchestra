@@ -84,6 +84,14 @@ authors can find it.
 
 ### Changed
 
+- **Commands start faster where the host turns bytecode caching off.** A
+  host may run every command with `PYTHONDONTWRITEBYTECODE` set (Claude Code
+  does), so each run compiled every module from source again. The entry point
+  now caches them anyway, in the directory `PYTHONPYCACHEPREFIX` names or else
+  under the user's cache (`%LOCALAPPDATA%`, `$XDG_CACHE_HOME` or
+  `~/.cache`, then `dev-orchestra/pycache`), never next to the code; a
+  command such as `status` takes about 0.3 s less.
+
 - **The implementer and the review fixer run only the related tests.** The
   implementation and fix request templates, and the skill, now ask for the
   tests the change touches rather than the whole suite, which runs once at the
