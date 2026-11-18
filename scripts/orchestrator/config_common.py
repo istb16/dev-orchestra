@@ -30,6 +30,11 @@ PROGRESS_INTERVAL_MAX = 3600
 #: 600 s command limit allows with a margin, and below the default stuck notice.
 PROGRESS_OFF_WAIT_SECONDS = 540
 
+#: The longest default wait of ``jobs wait``. A host runs it as one command,
+#: and Claude Code's Bash tool stops a command at 600 s, so a longer wait would
+#: be cut off before it printed anything. ``--timeout`` can still go past it.
+PROGRESS_WAIT_MAX = 570
+
 #: Ceiling on ``implementation.max_parallel``: the number of concurrent ledger
 #: charges measured to be safe.
 MAX_PARALLEL_UNITS = 8
@@ -158,13 +163,12 @@ class Progress(NamedTuple):
     wait_seconds: int
 
 
-def _progress_seconds(value: Any) -> Optional[int]:
-    """``value`` when it is a usable ``interval_seconds`` or ``wait_seconds``, else None."""
-    if (
-        isinstance(value, int)
-        and not isinstance(value, bool)
-        and PROGRESS_INTERVAL_MIN <= value <= PROGRESS_INTERVAL_MAX
-    ):
+def progress_seconds(value: Any, maximum: int = PROGRESS_INTERVAL_MAX) -> Optional[int]:
+    """``value`` when it is a usable ``interval_seconds`` (or, with ``maximum``, ``wait_seconds``), else None.
+
+    The one test both the lenient reader and ``validate`` apply.
+    """
+    if isinstance(value, int) and not isinstance(value, bool) and PROGRESS_INTERVAL_MIN <= value <= maximum:
         return value
     return None
 
@@ -178,18 +182,18 @@ def progress_settings_of(data: Dict[str, Any]) -> Progress:
     defaults = default_config()["progress"]
     configured = data.get("progress")
     block = configured if isinstance(configured, dict) else {}
-    interval = _progress_seconds(block.get("interval_seconds"))
+    interval = progress_seconds(block.get("interval_seconds"))
     if interval is None:
         interval = int(defaults["interval_seconds"])
     quiet = block.get("quiet_notice_seconds")
     if not (isinstance(quiet, int) and not isinstance(quiet, bool) and 0 <= quiet <= MAX_SECONDS):
         quiet = defaults["quiet_notice_seconds"]
     updates = progress_updates_mode(block.get("updates"))
-    wait = _progress_seconds(block.get("wait_seconds"))
+    wait = progress_seconds(block.get("wait_seconds"), PROGRESS_WAIT_MAX)
     if wait is None:
         # Null: one report's worth, or under `off`, where no report is
-        # wanted, the long wait.
-        wait = PROGRESS_OFF_WAIT_SECONDS if updates == "off" else interval
+        # wanted, the long wait; never past what a host lets one command run.
+        wait = PROGRESS_OFF_WAIT_SECONDS if updates == "off" else min(interval, PROGRESS_WAIT_MAX)
     return Progress(updates, interval, quiet, wait)
 
 

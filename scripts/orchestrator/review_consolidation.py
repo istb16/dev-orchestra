@@ -999,6 +999,11 @@ def render_brief(data: Dict[str, Any], command: str = "review show") -> str:
     full. ``consolidated.md`` is still the whole report.
     """
     lines = _summary_lines(data)
+    shown = len(data.get("findings", []))
+    total = (data.get("counts") or {}).get("findings_total")
+    if isinstance(total, int) and shown != total:
+        # The head counts the whole report; a narrowed view says how much of it is listed.
+        lines.append("- Shown: %d of %d finding(s)" % (shown, total))
     candidates = shown_duplicate_candidates(data)
     if candidates:
         lines += ["", "## Possible duplicates (confirm during triage)", ""]

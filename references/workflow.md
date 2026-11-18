@@ -1180,8 +1180,8 @@ the start of a session: `Progress: auto, every 180s, stuck notice after 600s
 `progress.interval_seconds` (default 180, 30 to 3600) is how often: how often a
 `review run --progress` checks its reviewers and, by default, how long one
 `jobs wait <id> --since <n>` without `--timeout` waits. That wait is
-`progress.wait_seconds` (30 to 3600, or null): null means
-`interval_seconds` under `auto` and `true`, and 540 under `false`, where no
+`progress.wait_seconds` (30 to 570, or null): null means
+`interval_seconds` (at most 570) under `auto` and `true`, and 540 under `false`, where no
 report is wanted, so the orchestrator waits less often. `status` then reads
 `Progress: off, every 180s, stuck notice after 600s, wait 540s`. The `next:`
 line of each report names the wait that follows.

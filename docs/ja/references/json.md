@@ -1,4 +1,4 @@
-<!-- translated-from: references/json.md sha256:1ff4f681438697ad03d3b77eae25a8a11a22b0a5f5254073c26611bc18ce8fee -->
+<!-- translated-from: references/json.md sha256:5b53eadbdd59220fed6790e88efb67cb9a4e73cf28db8f3e13e2cf6ed16f5181 -->
 
 > この文書は [references/json.md](../../../references/json.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -397,7 +397,7 @@ Object. `review consolidate` と同じ、まとめたレポートです。`--acc
 | `coverage` | object | `review consolidate` と同じ。 |
 | `reviewers` | list | `review consolidate` と同じ。 |
 | `counts` | object | `review consolidate` と同じ。 |
-| `duplicate_candidates` | list | `review consolidate` と同じ。`--brief` のときは、両方の指摘が `findings` にある組だけです。 |
+| `duplicate_candidates` | list | `review consolidate` と同じ。`--brief` のときや指摘の id を渡したときは、両方の指摘が `findings` にある組だけです。 |
 | `findings` | list | `review consolidate` と同じ。`--brief` のときは上の短い項目です。 |
 | `pre_existing` | list | `review consolidate` と同じ。`--accepted` や指摘の id を渡してもそのままです。 |
 | `pre_existing_count` | integer | Only: `--brief` のときだけ。既存の指摘の数で、`pre_existing` の代わりです。 |

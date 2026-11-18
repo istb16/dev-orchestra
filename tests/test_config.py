@@ -1723,7 +1723,7 @@ class TestProgress(IsolatedCase):
             ".dev-orchestra.yaml", "version: 1\nprogress:\n  updates: true\n  interval_seconds: 3600\n"
         )
         self.assertEqual(
-            config_mod.load(self.project).progress_settings(), config_mod.Progress("on", 3600, 600, 3600)
+            config_mod.load(self.project).progress_settings(), config_mod.Progress("on", 3600, 600, 570)
         )
 
     def test_config_set_round_trips(self):
@@ -1740,7 +1740,7 @@ class TestProgress(IsolatedCase):
         import json
 
         self.cli_workspace()
-        for value, stored, effective in (("600", 600, 600), ("null", None, 180)):
+        for value, stored, effective in (("500", 500, 500), ("null", None, 180)):
             code, _, err = self.run_cli("config", "set", "progress.wait_seconds", value)
             self.assertEqual(code, 0, err)
             self.assertNotIn("progress", err)
@@ -1776,7 +1776,7 @@ class TestProgress(IsolatedCase):
                 "progress.quiet_notice_seconds: must be a non-negative integer or null (0 = off)",
             ),
             ("updates", "maybe", "maybe", "progress.updates: must be true, false or auto, or null"),
-            ("wait_seconds", "29", 29, "progress.wait_seconds: must be an integer from 30 to 3600 or null"),
+            ("wait_seconds", "29", 29, "progress.wait_seconds: must be an integer from 30 to 570 or null"),
         )
         for key, value, stored, problem in cases:
             with self.subTest(key=key, value=value):

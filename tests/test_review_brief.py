@@ -220,6 +220,31 @@ class ReviewBriefTest(IsolatedCase):
         # Not accepted, so not among the findings --accepted leaves.
         self.assertEqual(run_cli("review", "show", "--design", "--accepted", "F1")[0], 2)
 
+    def test_an_id_left_out_by_accepted_says_so(self):
+        """An existing finding --accepted leaves out is named as not accepted, not as unknown."""
+        code, out, err = run_cli("review", "show", "--accepted", "F1")
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("F1: not accepted", err)
+        self.assertNotIn("no finding with id", err)
+        code, _, err = run_cli("review", "show", "--accepted", "F9")
+        self.assertEqual(code, 2)
+        self.assertIn("no finding with id F9", err)
+
+    def test_ids_json_keeps_only_the_pairs_it_shows(self):
+        data = json.loads(run_cli("review", "show", "F2", "--json")[1])
+        self.assertEqual(data["duplicate_candidates"], [])
+        data = json.loads(run_cli("review", "show", "F1", "F2", "--json")[1])
+        self.assertEqual([pair["ids"] for pair in data["duplicate_candidates"]], [["F1", "F2"]])
+        # --accepted alone keeps the document as it always was.
+        data = json.loads(run_cli("review", "show", "--accepted", "--json")[1])
+        self.assertEqual([pair["ids"] for pair in data["duplicate_candidates"]], [["F1", "F2"]])
+
+    def test_a_narrowed_brief_says_how_much_it_lists(self):
+        out = run_cli("review", "show", "--brief", "F1")[1]
+        self.assertIn("- Shown: 1 of 2 finding(s)\n", out)
+        self.assertNotIn("- Shown:", run_cli("review", "show", "--brief")[1])
+
     def test_brief_with_nothing_accepted(self):
         report = copy.deepcopy(REPORT)
         report["findings"][1]["triage"] = "rejected"

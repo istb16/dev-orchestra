@@ -95,11 +95,14 @@ authors can find it.
   shows) and one line per finding (its problem's first line, at most 140
   characters), without evidence or fixes;
   `--brief --json` has its own small shape. `review show F3 F5` prints only
-  those findings in full, or with `--json` the report with `findings`
-  filtered; an unknown id exits 2. Both compose with `--accepted` and
+  those findings in full, or with `--json` the report with `findings` and
+  the duplicate pairs filtered; an unknown id exits 2, and one `--accepted`
+  leaves out says it is not accepted. A narrowed brief view adds
+  `- Shown: N of M finding(s)` under the head. Both compose with `--accepted` and
   `--design`, and the skill triages from the brief view (#394).
 - **`progress.wait_seconds`.** The default wait of `jobs wait` has its own
-  setting (30 to 3600, or null). Null keeps `interval_seconds` under `auto`
+  setting (30 to 570, or null: Claude Code's Bash tool stops a command at
+  600 s). Null keeps `interval_seconds` (at most 570) under `auto`
   and `true`, and is 540 under `progress.updates: false`, where no report is
   wanted; `--timeout` still wins. `status --json` carries the effective value
   in `progress.wait_seconds`, and the `Progress:` line adds `, wait <n>s` only

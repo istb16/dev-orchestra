@@ -60,10 +60,10 @@ class TestDefaultWait(_WaitCase):
         self.assertEqual(self.waited_timeout(), 60)
 
     def test_wait_seconds_wins_and_timeout_wins_over_it(self):
-        self.set("wait_seconds", "900")
-        self.assertEqual(self.waited_timeout(), 900)
+        self.set("wait_seconds", "300")
+        self.assertEqual(self.waited_timeout(), 300)
         self.set("updates", "false")
-        self.assertEqual(self.waited_timeout(), 900)
+        self.assertEqual(self.waited_timeout(), 300)
         self.assertEqual(self.waited_timeout("--timeout", "45"), 45)
 
     def test_several_jobs_use_it_too(self):
@@ -141,10 +141,10 @@ class TestSettings(IsolatedCase):
 
     def test_validation_bounds(self):
         self.assertIsNone(config_mod.default_config()["progress"]["wait_seconds"])
-        for value in (30, 540, 3600, None):
+        for value in (30, 540, 570, None):
             self.assertEqual(self.problems({"wait_seconds": value}), [], value)
-        problem = "progress.wait_seconds: must be an integer from 30 to 3600 or null"
-        for value in (29, 3601, 0, -1, True, "540", 540.0):
+        problem = "progress.wait_seconds: must be an integer from 30 to 570 or null"
+        for value in (29, 571, 3600, 0, -1, True, "540", 540.0):
             self.assertEqual(self.problems({"wait_seconds": value}), [problem], value)
 
     def test_unusable_values_read_as_null(self):

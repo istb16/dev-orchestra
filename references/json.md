@@ -396,7 +396,7 @@ entry per finding: `id`, `severity`, `category`, `file`, `line`,
 | `coverage` | object | As in `review consolidate`. |
 | `reviewers` | list | As in `review consolidate`. |
 | `counts` | object | As in `review consolidate`. |
-| `duplicate_candidates` | list | As in `review consolidate`; with `--brief`, only the pairs whose findings are all in `findings`. |
+| `duplicate_candidates` | list | As in `review consolidate`; with `--brief` or finding ids, only the pairs whose findings are all in `findings`. |
 | `findings` | list | As in `review consolidate`; with `--brief`, the short entries above. |
 | `pre_existing` | list | As in `review consolidate`; `--accepted` and finding ids leave it as it is. |
 | `pre_existing_count` | integer | Only with `--brief`: how many pre-existing findings there are, in place of `pre_existing`. |

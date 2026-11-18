@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:3ad756ec21150e16b61224c92ce2101ae815342fe907b28af1f9817d635533e0 -->
+<!-- translated-from: references/configuration.md sha256:dcb3c8a96e15d00b93e2a6452155a4bc40e342be1f3f3859597d1a94380cd559 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -694,7 +694,7 @@ implementation:
 | `language.rewrite` | bool \| null | `true`（デフォルト）: Claude Code の Stop フックによる判定が有効です。`false` にすると、リマインダーは残したまま判定を止めます。判定があなたの返答を誤判定するときのためのものです。`null` はデフォルトを意味します。 |
 | `progress.updates` | bool \| `auto` \| null | 長い実行の間に、orchestrator がユーザーに何を伝えるか（[workflow](workflow.md#progress-reports)）。`auto`（デフォルト）はこのキーができる前の動きです。implementer、review_fixer、大きな architect の実行を detach して待つたびに報告し、バックグラウンドの `review run` の行を伝えます。`true` はさらに、すべての architect の実行を detach し、すべての `review run` を `--progress` 付きでバックグラウンドで走らせます。`false` は同じ実行を detach したまま、定期の報告をやめます。`may be stuck` の印は伝えます。`status` と `config show` は `on`、`off`、`auto` と表示します。`validate` が断る値は `auto` として読みます。`null` はデフォルトを意味します。 |
 | `progress.interval_seconds` | int 30–3600 \| null | orchestrator が報告する間隔（デフォルト 180）で、`wait_seconds` が別の値を言わない限り、`--timeout` なしの `jobs wait` の待ち時間でもあります。`review run --progress` はこの間隔でレビュアーに止まっていそうな印を出すか確かめます。`null` はデフォルトを意味します。 |
-| `progress.wait_seconds` | int 30–3600 \| null | `--timeout` なしの `jobs wait` 1 回の待ち時間。`null`（デフォルト）は、`auto` と `true` では `interval_seconds`、報告を求めない `false` では 540 を意味します。`--timeout` があればそちらが優先です。長さにかかわらず、ジョブが `may be stuck` になると待機は早めに終わります。ホストのコマンドのタイムアウトより短くしてください（[進み具合の報告](workflow.md#progress-reports) を参照）。間隔と違うときは、`status` の `Progress:` 行に `, wait <n>s` が付きます。 |
+| `progress.wait_seconds` | int 30–570 \| null | `--timeout` なしの `jobs wait` 1 回の待ち時間。`null`（デフォルト）は、`auto` と `true` では `interval_seconds`（最大 570）、報告を求めない `false` では 540 を意味します。`--timeout` があればそちらが優先です。上限が 570 なのは、ホストがこの待機を 1 つのコマンドとして走らせ、Claude Code の Bash ツールが 600 秒でコマンドを止めるためです。長さにかかわらず、ジョブが `may be stuck` になると待機は早めに終わります。ホストのコマンドのタイムアウトより短くしてください（[進み具合の報告](workflow.md#progress-reports) を参照）。間隔と違うときは、`status` の `Progress:` 行に `, wait <n>s` が付きます。 |
 | `progress.quiet_notice_seconds` | int 0–1,000,000,000 \| null | 新しいツール行がこの時間出ていない実行の報告に `may be stuck: no new tool line for 12m03s` を付けます（デフォルト 600）。実行が黙っている間は、報告のたびにまた付けます。`0` で止めます。この印は知らせるだけで、そのために実行を取り消すことはありません。agy のように CLI がツールの活動をまったく書かない実行には付きません。`null` はデフォルトを意味します。 |
 | `implementation.max_parallel` | int 1–8 \| null | plan の `## Units` の作業単位を同時にいくつまで走らせるか（デフォルト 2）。これを超える 1 つは `run implementer --unit` が拒否します（exit 2）。8 は、台帳への同時の記録が安全だと測れた数です。`units check` はこの幅で波を表示します。`null` はデフォルトを意味します。[workflow](workflow.md#implementation) を参照してください。 |
 | `implementation.hub_paths` | list \| null | どの作業単位も触りがちなファイルを示す glob（デフォルト `["CHANGELOG*", "**/CHANGELOG*"]`）。作業単位が 2 つ以上あるとき、これに当たるファイルを挙げてよいのは `integration` の作業単位だけで、ほかが挙げると `units check` が拒否します。`docs/ja/**` や CLI のパーサーなど、プロジェクト固有のものを足してください。`[]` は何も指しません。`null` はデフォルトを意味します。 |
@@ -1428,7 +1428,7 @@ codex: installed
 | 「長い実行の様子を知らせて」/「どの実行でも報告して」 | `config set progress.updates true` |
 | 「進み具合は報告しないで」/「止まっていそうなときだけ教えて」 | `config set progress.updates false`（`may be stuck` の印は残ります） |
 | 「報告の間隔を空けて」/「5 分ごとに報告して」 | `config set progress.interval_seconds 300`（30 から 3600） |
-| 「実行の確認を減らして」/「10 分ごとに確認して」 | `config set progress.wait_seconds 600`（30 から 3600。ホストのコマンドのタイムアウトを超えるなら、ホストがそれを許す必要があります） |
+| 「実行の確認を減らして」/「確認の間隔を長くして」 | `config set progress.wait_seconds 570`（30 から 570。ホストのコマンドのタイムアウトはそれより長くしてください） |
 | 「止まっていそうという知らせは要らない」 | `config set progress.quiet_notice_seconds 0` |
 
 書き込みの後は必ず結果の設定を表示し、ユーザーが確認できるようにしてください。

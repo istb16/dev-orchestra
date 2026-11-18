@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:46f19be25fe96bf93bd66d890f56cd9c401e15d8329c891488efaeaba02bc49d -->
+<!-- translated-from: references/workflow.md sha256:b3a5cdf88e6ed8a8c2b9e7e96673f7227c21874052857acb625ec5ddf3072897 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -1149,8 +1149,8 @@ dev-orchestra summary
 
 `progress.interval_seconds`（デフォルト 180、30 から 3600）は報告の間隔です。`review run --progress` が
 レビュアーを確かめる間隔であり、デフォルトでは `--timeout` なしの `jobs wait <id> --since <n>` の
-待ち時間でもあります。この待ち時間は `progress.wait_seconds`（30 から 3600、または null）です。null は、
-`auto` と `true` では `interval_seconds`、報告を求めない `false` では 540 を意味し、orchestrator が待つ回数を
+待ち時間でもあります。この待ち時間は `progress.wait_seconds`（30 から 570、または null）です。null は、
+`auto` と `true` では `interval_seconds`（最大 570）、報告を求めない `false` では 540 を意味し、orchestrator が待つ回数を
 減らします。そのとき `status` は `Progress: off, every 180s, stuck notice after 600s, wait 540s` と
 表示します。各報告の `next:` 行が、次の待機を示します。
 

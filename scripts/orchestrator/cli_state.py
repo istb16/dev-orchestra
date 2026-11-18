@@ -105,8 +105,10 @@ def cmd_jobs_wait(args: argparse.Namespace) -> int:
 
 
 #: How often the early return of ``jobs wait`` reads a job's activity, and so
-#: how late the stuck note can reach the user however long the wait is.
-STUCK_CHECK_SECONDS = 10.0
+#: how late the stuck note can reach the user however long the wait is. The
+#: same figure caps the wait's sleep (``jobs.UNTIL_POLL_SECONDS``), so the two
+#: cannot drift apart.
+STUCK_CHECK_SECONDS = jobs_mod.UNTIL_POLL_SECONDS
 
 
 def _turns_stuck(

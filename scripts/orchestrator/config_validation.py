@@ -19,11 +19,13 @@ from .config_common import (
     MAX_PARALLEL_UNITS,
     PROGRESS_INTERVAL_MAX,
     PROGRESS_INTERVAL_MIN,
+    PROGRESS_WAIT_MAX,
     STALE_NOTICE_MAX_DAYS,
     UNIT_TESTS_MODES,
     default_config,
     is_valid_reviewer_id,
     normalise_language_tag,
+    progress_seconds,
     whole_seconds,
 )
 from .config_keys import get_path
@@ -609,14 +611,12 @@ def _validate_progress(progress: Any) -> List[str]:
     if not isinstance(progress, dict):
         return ["progress: must be a mapping"]
     problems = _check(progress, _PROGRESS_RULES)
-    for key in ("interval_seconds", "wait_seconds"):
+    for key, maximum in (("interval_seconds", PROGRESS_INTERVAL_MAX), ("wait_seconds", PROGRESS_WAIT_MAX)):
         seconds = progress.get(key)
-        if seconds is not None and not (
-            _int_at_least(seconds, PROGRESS_INTERVAL_MIN) and seconds <= PROGRESS_INTERVAL_MAX
-        ):
+        if seconds is not None and progress_seconds(seconds, maximum) is None:
             problems.append(
                 "progress.%s: must be an integer from %d to %d or null"
-                % (key, PROGRESS_INTERVAL_MIN, PROGRESS_INTERVAL_MAX)
+                % (key, PROGRESS_INTERVAL_MIN, maximum)
             )
     quiet = progress.get("quiet_notice_seconds")
     if quiet is not None:

@@ -964,18 +964,26 @@ def cmd_review_show(args: argparse.Namespace) -> int:
     if not data:
         _no_review_yet(args)
         return 2
-    if args.accepted:
-        data = dict(data, findings=review_mod.accepted_findings(data))
     ids = list(dict.fromkeys(args.ids or []))
     if ids:
-        # Among the findings left after --accepted; pre-existing ones are not
-        # triaged, so they are never picked by id.
+        # Pre-existing findings are not triaged, so they are never picked by id.
         known = {finding.get("id") for finding in data.get("findings", [])}
         unknown = [finding_id for finding_id in ids if finding_id not in known]
         if unknown:
             _err("no finding with id %s" % ", ".join(unknown))
             return 2
-        data = dict(data, findings=[f for f in data.get("findings", []) if f.get("id") in ids])
+    if args.accepted:
+        data = dict(data, findings=review_mod.accepted_findings(data))
+    if ids:
+        left = {finding.get("id") for finding in data.get("findings", [])}
+        not_accepted = [finding_id for finding_id in ids if finding_id not in left]
+        if not_accepted:
+            _err("%s: not accepted (--accepted shows accepted findings only)" % ", ".join(not_accepted))
+            return 2
+        picked = [f for f in data.get("findings", []) if f.get("id") in ids]
+        # The pairs too: a narrowed document names no finding it leaves out.
+        data = dict(data, findings=picked)
+        data["duplicate_candidates"] = review_mod.shown_duplicate_candidates(data)
     if args.brief:
         if args.json:
             _emit_json(_brief_payload(data))
