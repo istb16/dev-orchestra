@@ -23,6 +23,7 @@ from test_units import plan
 
 from orchestrator import approval as approval_mod
 from orchestrator import jobs as jobs_mod
+from orchestrator import review as review_mod
 from orchestrator import units as units_mod
 from orchestrator import workspace as ws
 from orchestrator import worktrees as worktrees_mod
@@ -302,12 +303,36 @@ KEYS: Dict[str, Tuple[List[str], List[str]]] = {
     ),
     "summary": (
         [],
-        ["counts", "design_counts", "instructions", "models", "reviewers", "skipped", "stages", "tokens"],
+        [
+            "counts",
+            "design_counts",
+            "instructions",
+            "models",
+            "resume",
+            "reviewers",
+            "skipped",
+            "stages",
+            "tokens",
+        ],
     ),
     # Last: the plan with units they need replaces the approved one.
     "units status": ([], ["failed", "plan_sha256", "ready", "unit_tests", "units"]),
     "units merge": (["one"], ["files", "outside_files", "status", "unit"]),
 }
+
+# `review show --brief --json`: its own small object, and each finding entry.
+BRIEF_KEYS = ["counts", "duplicate_candidates", "findings", "iteration", "pre_existing_count"]
+BRIEF_FINDING_KEYS = [
+    "category",
+    "file",
+    "id",
+    "line",
+    "possible_duplicates",
+    "problem",
+    "reported_by",
+    "severity",
+    "triage",
+]
 
 # A list of entries, or a mapping of name to entry: the keys are each entry's.
 LISTS = ("reviewer list", "jobs list")
@@ -357,6 +382,16 @@ class TestTheListIsCovered(unittest.TestCase):
                 self.assertEqual(
                     sorted(set(always) - set(keys)), [], "documented as always printed, not here"
                 )
+
+    def test_the_json_reference_lists_the_brief_shape(self):
+        text = (pathlib.Path(REPO_ROOT) / "references" / "json.md").read_text(encoding="utf-8")
+        body = dict(SECTION.findall(text))["review show"]
+        for key in BRIEF_KEYS + BRIEF_FINDING_KEYS:
+            with self.subTest(key=key):
+                self.assertIn("`%s`" % key, body)
+        finding = {"id": "F1", "severity": "high", "file": "app.py", "line": 2, "problem": "p"}
+        entries = review_mod.brief_findings({"findings": [finding]})
+        self.assertEqual(sorted(entries[0]), BRIEF_FINDING_KEYS)
 
 
 @unittest.skipUnless(has_git(), "git is required for review snapshot")

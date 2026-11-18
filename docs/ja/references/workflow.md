@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:061d83af69ce19a41ee2703ad070121ae50711246e9454fe51903f2eb2b82333 -->
+<!-- translated-from: references/workflow.md sha256:b3a5cdf88e6ed8a8c2b9e7e96673f7227c21874052857acb625ec5ddf3072897 -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -24,6 +24,7 @@
 - [再テストと再レビュー](#re-test-and-re-review)
 - [記録と報告](#recording-and-reporting)
   - [進み具合の報告](#progress-reports)
+  - [新しいセッションで続ける](#continuing-in-a-new-session)
 - [問題が起きたとき](#when-something-goes-wrong)
 - [ワークフローの例](#example-workflows)
 - [Skill のチェックアウトからのインストール](#installing-from-a-skill-checkout)
@@ -980,6 +981,17 @@ dev-orchestra review snapshot --base main
 
 出力スキーマ、重複排除、トリアージについては `references/reviews.md` を参照してください。
 
+トリアージは、レポート全体ではなく短い表示から始めます。
+
+```bash
+dev-orchestra review show --brief     # the head, duplicate pairs, one line per finding
+dev-orchestra review show F3 F5       # the findings being judged, in full
+```
+
+そのうえで、受け入れ・却下・統合の前に、それぞれが挙げるコードを読みます。`consolidated.md` は
+今までどおりレポートの全体です。短い表示は、必要になるまで各指摘の根拠と修正案を orchestrator の
+コンテキストに入れないためのものです。
+
 <a id="fix"></a>
 
 ## 修正
@@ -1135,17 +1147,48 @@ dev-orchestra summary
 | `true`（`on`） | 同じものに加えて、`--questions` と `--resume` を含むすべての architect の実行 | 同じ | 常に `--progress` 付きでバックグラウンドで走らせ、新しい行を伝える |
 | `false`（`off`） | `auto` と同じ | `may be stuck` の印があるときはそれだけ | バックグラウンドで走らせるときは `--progress` を付け、`may be stuck` の行だけを伝える |
 
-`progress.interval_seconds`（デフォルト 180、30 から 3600）は報告の間隔です。`--timeout` なしの
-`jobs wait <id> --since <n>` の待ち時間であり、`review run --progress` がレビュアーを確かめる間隔でも
-あります。各報告の `next:` 行が、次の待機を示します。
+`progress.interval_seconds`（デフォルト 180、30 から 3600）は報告の間隔です。`review run --progress` が
+レビュアーを確かめる間隔であり、デフォルトでは `--timeout` なしの `jobs wait <id> --since <n>` の
+待ち時間でもあります。この待ち時間は `progress.wait_seconds`（30 から 570、または null）です。null は、
+`auto` と `true` では `interval_seconds`（最大 570）、報告を求めない `false` では 540 を意味し、orchestrator が待つ回数を
+減らします。そのとき `status` は `Progress: off, every 180s, stuck notice after 600s, wait 540s` と
+表示します。各報告の `next:` 行が、次の待機を示します。
+
+ホストのコマンドには、待ち時間より長いタイムアウトを与えてください。Claude Code の Bash ツールは、
+指定がなければ 120 秒でコマンドを止めます（最大 600 秒）。ほかのホストにもそれぞれの上限があります。
+ホストがそれほど待てないときは、代わりにその上限より短い `--timeout` を渡してください。
 
 `progress.quiet_notice_seconds`（デフォルト 600。`0` で止まります）は、新しいツール行がその時間出ていない
 実行の報告に `may be stuck: no new tool line for 12m03s` を付けます。`jobs wait` では `note:` 行として、
 レビューのログでは `[<reviewer> +mm:ss] may be stuck: ...` として出ます。実行が黙っている間は、
-`progress.updates` の値にかかわらず報告のたびにまた付きます。伝えたうえで待ち続けてください。
+`progress.updates` の値にかかわらず報告のたびにまた付きます。`jobs wait` の途中でジョブが止まっていそうに
+なると、およそ 10 秒以内に待機が早めに終わるので、長い待機でも印が遅れることはありません。待機を始めた
+時点ですでに止まっていそうだったジョブでは、一度戻ってから再び止まっていそうにならない限り、待機は短くなりません。伝えたうえで待ち続けてください。
 黙って長く走るテストや、ツールを使わずに考えているモデルも同じように見えるので、取り消す理由には
 なりません。実行を止めるのはこれまでどおり期限です。この印が見られるもの・見られないものは
 `references/limits.md`（「そもそもブロックしない」）にあります。
+
+<a id="continuing-in-a-new-session"></a>
+
+### 新しいセッションで続ける
+
+ワークフローに必要なものはすべて会話ではなく `.ai/` にあるので、新しいセッションは前のセッションが
+止まったところから、ずっと少ないコンテキストで続けられます。ワークフローの区切りごとに、新しい
+セッションを勧めてください。最終レポートのあとと、長いセッションで関係のない新しい作業を頼まれたときです。
+`summary` の最後に、渡すための行があります。
+
+```text
+Resume:  in a new session, continue workflow 5942d94f5248: pass --workflow 5942d94f5248 to every command (or set DEV_ORCHESTRA_WORKFLOW=5942d94f5248)
+```
+
+（`summary --json` では `resume`）。新しいセッションでは、毎回コマンドの前に `--workflow <id>` を渡すか、
+環境に `DEV_ORCHESTRA_WORKFLOW=<id>` を設定します。Claude Code と Codex では `workflow use` だけでは
+足りません。セッション id が `current.json` のポインターより優先されるので（上の順序を参照）、新しい
+セッションは新しいワークフローに解決されてしまいます。セッション id を出さないホストではポインターでも
+足りますが、フラグはどこでも使えます。
+
+状態は前の会話ではなくファイルから組み立て直してください。`status`（判定と次の手順）、`summary`、
+レビューが開いていれば `review show --brief`、そして計画（`.ai/plan.md`）です。
 
 <a id="when-something-goes-wrong"></a>
 

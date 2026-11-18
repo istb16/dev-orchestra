@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import argparse
 import os
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import activity as activity_mod
 from . import config as config_mod
@@ -75,12 +76,14 @@ def cmd_jobs_wait(args: argparse.Namespace) -> int:
     cursors = _cursors(args)
     if cursors is None:
         return 2
-    # Without --timeout, one wait is one report's worth: progress.interval_seconds.
+    # Without --timeout, one wait is progress.wait_seconds: one report's worth,
+    # or longer when no report is wanted.
     progress = loaded.progress_settings()
-    timeout = progress.interval_seconds if args.timeout is None else args.timeout
+    timeout = progress.wait_seconds if args.timeout is None else args.timeout
+    until = _turns_stuck(workspace, args.job_ids, progress.quiet_notice_seconds)
     if len(args.job_ids) > 1:
-        return _wait_for_jobs(args, workspace, progress, timeout, cursors)
-    job = jobs_mod.wait(workspace, args.job_ids[0], timeout=timeout, poll=args.poll)
+        return _wait_for_jobs(args, workspace, progress, timeout, cursors, until)
+    job = jobs_mod.wait(workspace, args.job_ids[0], timeout=timeout, poll=args.poll, until=until)
     since = cursors.get(args.job_ids[0], 0)
     act = jobs_mod.read_activity(workspace, job, since, args.activity, progress.quiet_notice_seconds)
     if args.json:
@@ -99,6 +102,53 @@ def cmd_jobs_wait(args: argparse.Namespace) -> int:
     if job.get("output_written") is False:
         return 1
     return 0 if job.get("status") == "succeeded" else 1
+
+
+#: How often the early return of ``jobs wait`` reads a job's activity, and so
+#: how late the stuck note can reach the user however long the wait is. The
+#: same figure caps the wait's sleep (``jobs.UNTIL_POLL_SECONDS``), so the two
+#: cannot drift apart.
+STUCK_CHECK_SECONDS = jobs_mod.UNTIL_POLL_SECONDS
+
+
+def _turns_stuck(
+    workspace: ws.Workspace, job_ids: List[str], quiet_notice_seconds: int
+) -> Optional[Callable[[Dict[str, Any]], bool]]:
+    """The ``until`` of ``jobs wait``: true once a job becomes ``may_be_stuck``.
+
+    True only on the change from not stuck to stuck: one already stuck when
+    the wait begins has its note in each report, and ending every wait on it
+    would undo the long wait. Once it recovers, turning stuck again ends the
+    wait like any other. None when the stuck notice is off. Each job's
+    activity is read at most every :data:`STUCK_CHECK_SECONDS`.
+    """
+    if quiet_notice_seconds <= 0:
+        return None
+    #: Each running job's last read: when, and whether it was stuck then.
+    seen: Dict[str, Tuple[float, bool]] = {}
+    started = time.monotonic()
+
+    def stuck(job: Dict[str, Any]) -> bool:
+        act = jobs_mod.read_activity(workspace, job, 0, 0, quiet_notice_seconds)
+        return bool(act and act.get("may_be_stuck"))
+
+    for job_id in job_ids:
+        job = jobs_mod.read_job(workspace, job_id)
+        if job is None or job.get("status") in jobs_mod.FINISHED:
+            continue
+        seen[job_id] = (started, stuck(job))
+
+    def until(job: Dict[str, Any]) -> bool:
+        job_id = str(job.get("id"))
+        last = seen.get(job_id)
+        now = time.monotonic()
+        if last is None or now - last[0] < STUCK_CHECK_SECONDS:
+            return False
+        now_stuck = stuck(job)
+        seen[job_id] = (now, now_stuck)
+        return now_stuck and not last[1]
+
+    return until
 
 
 def _cursors(args: argparse.Namespace) -> Optional[Dict[str, int]]:
@@ -127,6 +177,7 @@ def _wait_for_jobs(
     progress: config_mod.Progress,
     timeout: float,
     cursors: Dict[str, int],
+    until: Optional[Callable[[Dict[str, Any]], bool]] = None,
 ) -> int:
     """``jobs wait`` with several ids: all of them, or with ``--any`` the first to finish.
 
@@ -135,7 +186,9 @@ def _wait_for_jobs(
     out, 1 when a finished job failed (or its ``--output`` was refused),
     otherwise 0.
     """
-    found = jobs_mod.wait_many(workspace, args.job_ids, args.any, timeout=timeout, poll=args.poll)
+    found = jobs_mod.wait_many(
+        workspace, args.job_ids, args.any, timeout=timeout, poll=args.poll, until=until
+    )
     quiet = progress.quiet_notice_seconds
     reports = []
     for job in found:
@@ -550,7 +603,10 @@ def _add_jobs_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
         "--timeout",
         type=_seconds(allow_zero=True),
         default=None,
-        help="seconds to wait while it runs (default progress.interval_seconds, 180)",
+        help=(
+            "seconds to wait while it runs (default progress.wait_seconds: progress.interval_seconds,"
+            " 180, or 540 under progress.updates false); a job turning stuck ends the wait early"
+        ),
     )
     jobs_wait.add_argument("--poll", type=_seconds(), default=1.0)
     _add_json_flag(jobs_wait)

@@ -947,6 +947,100 @@ def render_consolidation(data: Dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+#: The longest problem a brief line shows, ``...`` included.
+BRIEF_PROBLEM_CHARS = 140
+
+
+def _one_line(text: Any, limit: int = BRIEF_PROBLEM_CHARS) -> str:
+    """The first line of ``text``, cut to ``limit`` characters.
+
+    Ends in ``...`` (ASCII, so any console prints it) when anything was left
+    out, a later line included.
+    """
+    lines = str(text or "").strip().splitlines()
+    first = lines[0].strip() if lines else ""
+    if len(first) > limit or len(lines) > 1:
+        first = first[: limit - 3].rstrip() + "..."
+    return first
+
+
+def brief_findings(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """One short entry per finding: where it is, who saw it, and its problem in one line."""
+    return [
+        {
+            "id": finding.get("id"),
+            "severity": finding.get("severity"),
+            "category": finding.get("category", "general"),
+            "file": finding.get("file"),
+            "line": finding.get("line"),
+            "reported_by": list(finding.get("reported_by", [])),
+            "triage": finding.get("triage", "needs-triage"),
+            "problem": _one_line(finding.get("problem", "")),
+            "possible_duplicates": list(dict.fromkeys(finding.get("possible_duplicates", []))),
+        }
+        for finding in data.get("findings", [])
+    ]
+
+
+def shown_duplicate_candidates(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The duplicate pairs whose findings are all in ``data["findings"]``.
+
+    A view narrowed by ``--accepted`` or by ids would otherwise point triage
+    at a finding it does not show.
+    """
+    shown = {finding.get("id") for finding in data.get("findings", [])}
+    return [pair for pair in data.get("duplicate_candidates") or [] if set(pair.get("ids", [])) <= shown]
+
+
+def render_brief(data: Dict[str, Any], command: str = "review show") -> str:
+    """The report's head and one line per finding, for triage to pick from.
+
+    Evidence and fixes are left out: ``<command> <id>`` prints a finding in
+    full. ``consolidated.md`` is still the whole report.
+    """
+    lines = _summary_lines(data)
+    shown = len(data.get("findings", []))
+    total = (data.get("counts") or {}).get("findings_total")
+    if isinstance(total, int) and shown != total:
+        # The head counts the whole report; a narrowed view says how much of it is listed.
+        lines.append("- Shown: %d of %d finding(s)" % (shown, total))
+    candidates = shown_duplicate_candidates(data)
+    if candidates:
+        lines += ["", "## Possible duplicates (confirm during triage)", ""]
+        lines += ["- %s  (%s)" % (" ~ ".join(pair["ids"]), pair.get("file", "?")) for pair in candidates]
+    lines += ["", "## Findings", ""]
+    entries = brief_findings(data)
+    if not entries:
+        lines.append("No findings were reported.")
+    for entry in entries:
+        line = entry.get("line")
+        lines.append(
+            "%s  %s  %s:%s  [%s]  %s  %s"
+            % (
+                entry["id"],
+                str(entry.get("severity") or "medium").upper(),
+                entry.get("file") or "?",
+                "n/a" if line in (None, "") else line,
+                ", ".join(entry["reported_by"]),
+                entry["triage"],
+                entry["problem"],
+            )
+        )
+    if entries:
+        lines += ["", "Full finding: %s <id> [<id> ...]" % command]
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_findings(data: Dict[str, Any], ids: Sequence[str]) -> str:
+    """The full block of each finding in ``ids``, in report order."""
+    wanted = set(ids)
+    lines: List[str] = []
+    for finding in data.get("findings", []):
+        if finding.get("id") in wanted:
+            lines += _finding_block(finding)
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _pre_existing_section(findings: Sequence[Dict[str, Any]]) -> List[str]:
     """Problems that were there before the change, or nothing when there are none."""
     if not findings:

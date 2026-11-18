@@ -354,7 +354,9 @@ class TestTokenLines(IsolatedCase):
         code, out, _ = run_cli("summary")
         self.assertEqual(code, 0)
         lines = out.splitlines()
-        return lines[lines.index("Tokens:") + 1 :]
+        block = lines[lines.index("Tokens:") + 1 :]
+        # The resume line follows the tokens after a blank line.
+        return block[: block.index("")] if "" in block else block
 
     def test_the_prompt_line_separates_thousands(self):
         self.record("implementer", Usage(source="claude", input_tokens=10, prompt_chars=12345))

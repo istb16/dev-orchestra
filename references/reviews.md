@@ -1060,12 +1060,30 @@ the fixer redundant work, while a wrong merge costs a bug.
 ## Triage
 
 ```bash
-dev-orchestra review show                       # the consolidated report
+dev-orchestra review show --brief               # one line per finding
+dev-orchestra review show F1 F4                 # those findings in full
 dev-orchestra review triage F1 F4 --status accepted --note "confirmed"
 dev-orchestra review triage F2 --status rejected --note "guarded by caller"
 dev-orchestra review triage F3 --status needs-investigation
 dev-orchestra review show --accepted            # what the fixer will see
 ```
+
+Start from the brief view: the report's head, the possible-duplicate pairs one
+per line, then one line per finding,
+
+```text
+F3  HIGH  app/api.py:42  [codex-general, claude-security]  needs-triage  request id is logged unescaped
+```
+
+with the problem's first line cut at 140 characters, and the command that
+opens a finding in full; the head counts the pre-existing findings when there
+are any. A view narrowed by `--accepted` or ids lists only the duplicate pairs
+whose findings it shows. Open the
+findings you are about to judge with `review show <ids>`, read the code they
+cite, and only then decide: the one-line problem is for choosing what to read,
+never a reason on its own. Both forms take `--accepted` and `--design`, and
+`--json` (see [json](json.md#review-show)). `review show` alone and
+`consolidated.md` are still the whole report.
 
 | Status | Meaning |
 | --- | --- |

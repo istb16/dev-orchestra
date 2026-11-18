@@ -1192,6 +1192,22 @@ def _summary_payload(
             "design_refused": decided["design_refused"],
             "panel_reduced": decided["panel_reduced"],
         },
+        "resume": _resume(workspace.workflow),
+    }
+
+
+def _resume(workflow: str) -> Optional[Dict[str, Any]]:
+    """How a new session continues this workflow, or None without a workflow id.
+
+    It names `--workflow`, not `workflow use`: a host session id outranks the
+    pointer, so a new Claude Code or Codex session would start a new workflow.
+    """
+    if not workflow:
+        return None
+    return {
+        "workflow": workflow,
+        "argument": "--workflow %s" % workflow,
+        "env": {"DEV_ORCHESTRA_WORKFLOW": workflow},
     }
 
 
@@ -1280,6 +1296,14 @@ def _summary_lines(payload: Dict[str, Any]) -> List[str]:
                 (" -- %s" % ws.fmt_usd(cost)) if cost else "",
                 "" if report["complete"] else " (partially reported: a floor)",
             )
+        )
+    resume = payload["resume"]
+    if resume:
+        workflow = resume["workflow"]
+        lines.append("")
+        lines.append(
+            "Resume:  in a new session, continue workflow %s: pass %s to every command"
+            " (or set DEV_ORCHESTRA_WORKFLOW=%s)" % (workflow, resume["argument"], workflow)
         )
     return lines
 

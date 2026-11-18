@@ -31,6 +31,8 @@ report, not retry; with an unapproved plan, end on the approval question.
 - First run (`Source: built-in defaults`) or config-only request →
   Configuration first.
 - Required CLI missing → say so, go on with working roles; never install one.
+- Named workflow or `Resume:` line → `--workflow <id>` before every command;
+  state from `status`, `summary`, `review show --brief`, `plan.md`.
 
 ## 1. Classify the request
 
@@ -74,12 +76,12 @@ parallel: `references/workflow.md` (Implementation).
 
 **Long stages.** Run implementer, review_fixer and big architect runs (`on`:
 all) with `--detach`; wait with `jobs wait <id> --since <n>`, again from
-`next:`. Each exit 4: tell the user elapsed time, tool count, **context
+`next:` (host timeout > `progress.wait_seconds`). Each exit 4: tell the user elapsed time, tool count, **context
 tokens** (never "tokens so far"), the last tool lines (`off`: only a `may be
-stuck` note). A `may be stuck` note is always relayed and never a reason to
-cancel. A background `review run` (`on`: always background) gets
+stuck` note). A `may be stuck` note ends a wait early; relay it,
+never a reason to cancel. A background `review run` (`on`: always background) gets
 `--progress > "<Artifacts>/execution/review-run.log" 2>&1`: relay new lines
-the same way. Never relay or guess what the model wrote; tool lines go as they are.
+alike. Never relay or guess what the model wrote; tool lines go as they are.
 Per `progress.updates`: `references/workflow.md` (Progress reports).
 
 **Questions.** When on, ask the user before designing (`auto`: only when it
@@ -127,7 +129,8 @@ change turns on one.
 - `review run` may shrink the panel, saying why: report it.
 
 **Triage.** **You** decide what is real; raw findings never reach the fixer.
-Per finding in `consolidated.md`: read the cited code, decide, record it;
+`review show --brief` → `review show <ids>`: read the cited code,
+decide, record it;
 investigate and re-triage every `needs-investigation`. Two reviewers agreeing is evidence, not proof. Clear
 **Possible duplicates** first: auto-merge leaves those pairs to you.
 
@@ -165,6 +168,8 @@ Remaining  F4 (medium, deferred — reviews/consolidated.md)
 Totals: `summary`; cost per stage and reviewer: `tokens show` (a floor if a
 run reported nothing).
 Always name what failed and what you skipped.
+End with `summary`'s `Resume:` line and recommend a new session (also before
+unrelated new work).
 
 ## Configuration
 

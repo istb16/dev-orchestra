@@ -1148,6 +1148,9 @@ SUMMARY_TEXT = [
     "  architect      3,000 billed",
     "  review         12,000 billed",
     "  total          15,000 billed over 3 run(s) -- $0.2500 (partially reported: a floor)",
+    "",
+    "Resume:  in a new session, continue workflow test: pass --workflow test to every command"
+    " (or set DEV_ORCHESTRA_WORKFLOW=test)",
 ]
 
 
@@ -1223,7 +1226,7 @@ class TestSummaryJson(SummaryCase):
         code, out, _ = self.summary("--json")
         self.assertEqual(code, 0)
         payload = json.loads(out)
-        added = {"design_counts", "models", "reviewers", "skipped", "instructions"}
+        added = {"design_counts", "models", "reviewers", "skipped", "instructions", "resume"}
         self.assertEqual(set(payload), {"stages", "counts", "tokens"} | added)
         self.assertEqual(payload["instructions"], [])
         self.assertEqual(payload["design_counts"], {"reviewers_ok": 1, "reviewers_total": 2})
