@@ -1296,7 +1296,7 @@ class TestProgressLines(ApprovalCase):
     def test_the_defaults(self):
         self.assertEqual(
             self.status()["progress"],
-            {"updates": "auto", "interval_seconds": 180, "quiet_notice_seconds": 600},
+            {"updates": "auto", "interval_seconds": 180, "quiet_notice_seconds": 600, "wait_seconds": 180},
         )
         line = "Progress: auto, every 180s, stuck notice after 600s"
         self.assertIn("\n%s (progress.*)\n" % line, run_cli("status")[1])
@@ -1306,9 +1306,10 @@ class TestProgressLines(ApprovalCase):
         for key, value in (("updates", "false"), ("interval_seconds", "60"), ("quiet_notice_seconds", "0")):
             self.assertEqual(run_cli("config", "set", "progress." + key, value)[0], 0)
         self.assertEqual(
-            self.status()["progress"], {"updates": "off", "interval_seconds": 60, "quiet_notice_seconds": 0}
+            self.status()["progress"],
+            {"updates": "off", "interval_seconds": 60, "quiet_notice_seconds": 0, "wait_seconds": 540},
         )
-        line = "Progress: off, every 60s, no stuck notice"
+        line = "Progress: off, every 60s, no stuck notice, wait 540s"
         self.assertIn("\n%s (progress.*)\n" % line, run_cli("status")[1])
         self.assertIn("  %s  (progress.*)\n" % line, run_cli("config", "show")[1])
         run_cli("config", "set", "progress.updates", "true")
@@ -1334,7 +1335,7 @@ class TestProgressLines(ApprovalCase):
         effective = json.loads(run_cli("config", "show", "--json")[1])
         self.assertEqual(
             effective["config"]["progress"],
-            {"updates": "auto", "interval_seconds": 60, "quiet_notice_seconds": 600},
+            {"updates": "auto", "interval_seconds": 60, "wait_seconds": None, "quiet_notice_seconds": 600},
         )
         scoped = json.loads(run_cli("config", "show", "--scope", "project", "--json")[1])
         self.assertEqual(scoped["config"]["progress"], {"interval_seconds": 60})

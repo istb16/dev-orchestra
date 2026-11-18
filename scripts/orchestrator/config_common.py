@@ -20,9 +20,15 @@ CONFIG_VERSION = 1
 STALE_NOTICE_MAX_DAYS = 36500
 
 #: Bounds on ``progress.interval_seconds``: how often the orchestrator reports
-#: on a long run, and so the default wait of ``jobs wait``.
+#: on a long run, and so the default wait of ``jobs wait``. They bound
+#: ``progress.wait_seconds`` too.
 PROGRESS_INTERVAL_MIN = 30
 PROGRESS_INTERVAL_MAX = 3600
+
+#: The wait of ``jobs wait`` under ``progress.updates: false`` with no
+#: ``wait_seconds``: no report is wanted, so the wait is as long as a host's
+#: 600 s command limit allows with a margin, and below the default stuck notice.
+PROGRESS_OFF_WAIT_SECONDS = 540
 
 #: Ceiling on ``implementation.max_parallel``: the number of concurrent ledger
 #: charges measured to be safe.
@@ -148,6 +154,19 @@ class Progress(NamedTuple):
     interval_seconds: int
     #: 0 means no stuck notice.
     quiet_notice_seconds: int
+    #: The default wait of ``jobs wait``, null already resolved.
+    wait_seconds: int
+
+
+def _progress_seconds(value: Any) -> Optional[int]:
+    """``value`` when it is a usable ``interval_seconds`` or ``wait_seconds``, else None."""
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and PROGRESS_INTERVAL_MIN <= value <= PROGRESS_INTERVAL_MAX
+    ):
+        return value
+    return None
 
 
 def progress_settings_of(data: Dict[str, Any]) -> Progress:
@@ -159,17 +178,19 @@ def progress_settings_of(data: Dict[str, Any]) -> Progress:
     defaults = default_config()["progress"]
     configured = data.get("progress")
     block = configured if isinstance(configured, dict) else {}
-    interval = block.get("interval_seconds")
-    if not (
-        isinstance(interval, int)
-        and not isinstance(interval, bool)
-        and PROGRESS_INTERVAL_MIN <= interval <= PROGRESS_INTERVAL_MAX
-    ):
-        interval = defaults["interval_seconds"]
+    interval = _progress_seconds(block.get("interval_seconds"))
+    if interval is None:
+        interval = int(defaults["interval_seconds"])
     quiet = block.get("quiet_notice_seconds")
     if not (isinstance(quiet, int) and not isinstance(quiet, bool) and 0 <= quiet <= MAX_SECONDS):
         quiet = defaults["quiet_notice_seconds"]
-    return Progress(progress_updates_mode(block.get("updates")), interval, quiet)
+    updates = progress_updates_mode(block.get("updates"))
+    wait = _progress_seconds(block.get("wait_seconds"))
+    if wait is None:
+        # Null: one report's worth, or under `off`, where no report is
+        # wanted, the long wait.
+        wait = PROGRESS_OFF_WAIT_SECONDS if updates == "off" else interval
+    return Progress(updates, interval, quiet, wait)
 
 
 class Implementation(NamedTuple):
@@ -504,10 +525,16 @@ def default_config() -> Dict[str, Any]:
         # What the orchestrator tells the user during a long run. ``updates``:
         # `auto` reports as SKILL.md "Long stages" says, `true` also detaches
         # every architect run and every `review run`, `false` keeps only the
-        # stuck notice. ``interval_seconds`` is how often, and the default wait
-        # of `jobs wait`. ``quiet_notice_seconds`` adds "may be stuck" to a
+        # stuck notice. ``interval_seconds`` is how often. ``wait_seconds`` is
+        # the default wait of `jobs wait`; null is ``interval_seconds``, or 540
+        # under `false`. ``quiet_notice_seconds`` adds "may be stuck" to a
         # report once a run has shown no new tool line for that long; 0 = off.
-        "progress": {"updates": "auto", "interval_seconds": 180, "quiet_notice_seconds": 600},
+        "progress": {
+            "updates": "auto",
+            "interval_seconds": 180,
+            "wait_seconds": None,
+            "quiet_notice_seconds": 600,
+        },
     }
 
 

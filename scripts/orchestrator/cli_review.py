@@ -966,12 +966,41 @@ def cmd_review_show(args: argparse.Namespace) -> int:
         return 2
     if args.accepted:
         data = dict(data, findings=review_mod.accepted_findings(data))
-    if args.json:
+    ids = list(dict.fromkeys(args.ids or []))
+    if ids:
+        # Among the findings left after --accepted; pre-existing ones are not
+        # triaged, so they are never picked by id.
+        known = {finding.get("id") for finding in data.get("findings", [])}
+        unknown = [finding_id for finding_id in ids if finding_id not in known]
+        if unknown:
+            _err("no finding with id %s" % ", ".join(unknown))
+            return 2
+        data = dict(data, findings=[f for f in data.get("findings", []) if f.get("id") in ids])
+    if args.brief:
+        if args.json:
+            _emit_json(_brief_payload(data))
+        else:
+            _out("Source: %s" % workspace.relative(workspace.consolidated_json_path))
+            _out(review_mod.render_brief(data, "review show --design" if args.design else "review show"))
+    elif args.json:
         _emit_json(data)
+    elif ids:
+        _out(review_mod.render_findings(data, ids))
     else:
         _out("Source: %s" % workspace.relative(workspace.consolidated_json_path))
         _out(review_mod.render_consolidation(data))
     return 0
+
+
+def _brief_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+    """``review show --brief --json``: the short view's own small document."""
+    return {
+        "iteration": data.get("iteration"),
+        "counts": data.get("counts", {}),
+        "duplicate_candidates": review_mod.shown_duplicate_candidates(data),
+        "findings": review_mod.brief_findings(data),
+        "pre_existing_count": len(data.get("pre_existing") or []),
+    }
 
 
 def _tests_gated(args: argparse.Namespace) -> bool:
@@ -1132,7 +1161,13 @@ def _add_review_parsers(subparsers: argparse._SubParsersAction[argparse.Argument
     consolidate.set_defaults(func=cmd_review_consolidate)
 
     review_show = review_sub.add_parser("show", help="show the consolidated review")
+    review_show.add_argument("ids", nargs="*", help="show only these findings, in full")
     review_show.add_argument("--accepted", action="store_true", help="only accepted findings")
+    review_show.add_argument(
+        "--brief",
+        action="store_true",
+        help="the report's head and one line per finding, without evidence or fixes",
+    )
     _add_json_flag(review_show)
     review_show.set_defaults(func=cmd_review_show)
 

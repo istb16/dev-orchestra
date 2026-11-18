@@ -337,27 +337,45 @@ def _entry_point() -> str:
     return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dev_orchestra.py")
 
 
+#: The longest a wait sleeps between polls while ``until`` watches the jobs:
+#: a ``--poll`` longer than this would otherwise hold back the check ``until``
+#: makes -- the stuck notice -- until the next poll, or the deadline.
+UNTIL_POLL_SECONDS = 10.0
+
+
+def _poll_step(poll: float, until: Optional[Callable[[Dict[str, Any]], bool]], deadline: float) -> float:
+    """How long to sleep before the next poll.
+
+    ``poll``, capped while ``until`` watches, and never past the deadline.
+    """
+    step = poll if until is None else min(poll, UNTIL_POLL_SECONDS)
+    return min(step, max(deadline - time.monotonic(), 0.01))
+
+
 def wait(
     workspace: ws.Workspace,
     job_id: str,
     timeout: float = 60.0,
     poll: float = 1.0,
+    until: Optional[Callable[[Dict[str, Any]], bool]] = None,
 ) -> Dict[str, Any]:
     """Wait for a job, but never longer than ``timeout``.
 
     Returning while the job is still running is a normal outcome, not an error:
-    the caller gets a bounded wait and can decide what to do next.
+    the caller gets a bounded wait and can decide what to do next. ``until``,
+    asked of the running job at each poll, ends the wait early the same way:
+    true returns the job marked ``waited_out``.
     """
     deadline = time.monotonic() + timeout
     while True:
         job = read_job(workspace, job_id) or {"id": job_id, "status": "unknown"}
         if job.get("status") in FINISHED:
             return job
-        if time.monotonic() >= deadline:
+        if time.monotonic() >= deadline or (until is not None and until(job)):
             job = dict(job)
             job["waited_out"] = True
             return job
-        time.sleep(min(poll, max(deadline - time.monotonic(), 0.01)))
+        time.sleep(_poll_step(poll, until, deadline))
 
 
 def wait_many(
@@ -366,12 +384,14 @@ def wait_many(
     any_: bool = False,
     timeout: float = 60.0,
     poll: float = 1.0,
+    until: Optional[Callable[[Dict[str, Any]], bool]] = None,
 ) -> List[Dict[str, Any]]:
     """Wait for every job of ``job_ids``, or with ``any_`` for the first to finish.
 
     Never longer than ``timeout``. Each job is returned as :func:`wait`
     returns one: a job still running when the deadline came is marked
-    ``waited_out``.
+    ``waited_out``. ``until`` true for any running job ends the wait as the
+    deadline would.
     """
     deadline = time.monotonic() + timeout
     while True:
@@ -379,9 +399,12 @@ def wait_many(
         done = [job for job in found if job.get("status") in FINISHED]
         if done and (any_ or len(done) == len(found)):
             return found
-        if time.monotonic() >= deadline:
+        # Every running job is asked, not only until the first true: a closure
+        # that remembers what it saw must see each job at each poll.
+        hit = until is not None and any([until(job) for job in found if job.get("status") not in FINISHED])  # noqa: C419
+        if hit or time.monotonic() >= deadline:
             return [job if job.get("status") in FINISHED else dict(job, waited_out=True) for job in found]
-        time.sleep(min(poll, max(deadline - time.monotonic(), 0.01)))
+        time.sleep(_poll_step(poll, until, deadline))
 
 
 def cancel(workspace: ws.Workspace, job_id: str) -> Dict[str, Any]:

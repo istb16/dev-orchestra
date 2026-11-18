@@ -907,6 +907,11 @@ class TestReviewPipeline(IsolatedCase):
         self.assertIn("Workflow:", out)
         self.assertIn("Models:", out)
         self.assertIn("Architect", out)
+        resume = (
+            "Resume:  in a new session, continue workflow test: pass --workflow test"
+            " to every command (or set DEV_ORCHESTRA_WORKFLOW=test)"
+        )
+        self.assertTrue(out.rstrip("\n").endswith("\n\n" + resume), out)
 
     def test_workspace_is_self_ignoring_by_default(self):
         run_cli("review", "snapshot")

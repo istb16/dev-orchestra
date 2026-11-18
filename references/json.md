@@ -380,7 +380,12 @@ Object: the consolidated report, as `consolidated.json` holds it.
 ### `review show`
 
 Object: the consolidated report, as for `review consolidate`; with
-`--accepted`, `findings` holds the accepted ones only.
+`--accepted`, `findings` holds the accepted ones only, and with finding ids
+(`review show F3 F5`) only those. With `--brief` it is instead a small object
+of its own: `iteration`, `counts`, `duplicate_candidates`, `findings` (one
+entry per finding: `id`, `severity`, `category`, `file`, `line`,
+`reported_by`, `triage`, `problem`, `possible_duplicates`) and
+`pre_existing_count`.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
@@ -391,9 +396,10 @@ Object: the consolidated report, as for `review consolidate`; with
 | `coverage` | object | As in `review consolidate`. |
 | `reviewers` | list | As in `review consolidate`. |
 | `counts` | object | As in `review consolidate`. |
-| `duplicate_candidates` | list | As in `review consolidate`. |
-| `findings` | list | As in `review consolidate`. |
-| `pre_existing` | list | As in `review consolidate`; `--accepted` leaves it as it is. |
+| `duplicate_candidates` | list | As in `review consolidate`; with `--brief`, only the pairs whose findings are all in `findings`. |
+| `findings` | list | As in `review consolidate`; with `--brief`, the short entries above. |
+| `pre_existing` | list | As in `review consolidate`; `--accepted` and finding ids leave it as it is. |
+| `pre_existing_count` | integer | Only with `--brief`: how many pre-existing findings there are, in place of `pre_existing`. |
 | `surrounding` | object | Only when the round carried surrounding context. |
 | `measurement` | object | Only after a `review run --surrounding`. |
 
@@ -478,7 +484,7 @@ Object.
 | `design_review` | object | `enabled`, `mode`, `reason`, `iteration`, `max_iterations`, `blocking`, `wanted`, `accepted`, `refused_for_size`, `identical_rounds`, `final_revision`, `final_revision_pending`, `optimization` (values as in `review status --design`). |
 | `design_approval` | object | `required`, `state` (`pending`, `stale`, `approved`, `no-plan`, `not-required` or `implemented-unapproved`), `pending`, `stale_reason` (`plan-changed`, `reviewed-since`, `decisions-changed` or `null`) and the rest -- see [Approval](workflow.md#approval). |
 | `design_questions` | object | `mode`, `state` (`off`, `none`, `open`, `round-required` or `answered`), `pending`, `open`, `answered`, `total`, `architect_rounds`, `max_rounds`, `decisions_file` -- see [Design questions](workflow.md#design-questions). |
-| `progress` | object | `updates` (`on`, `off` or `auto`), `interval_seconds`, `quiet_notice_seconds` -- see [Progress reports](workflow.md#progress-reports). |
+| `progress` | object | `updates` (`on`, `off` or `auto`), `interval_seconds`, `quiet_notice_seconds`, `wait_seconds` (the default wait of `jobs wait`, null already resolved) -- see [Progress reports](workflow.md#progress-reports). |
 | `instructions` | object | `in_force`: one entry per instruction source, `role` (a role, or `reviewers.<id>` / `design_reviewers.<id>` for a seat), `layer` (`global` or `project`; a seat's is the layer its panel came from), `kind` (`inline` or `file`), `path` (relative; `""` for `inline`), `chars`, `problem` (why a file gave nothing; `""` when read); `orchestrator`: the orchestrator's joined text, `""` when none -- see [Standing instructions](configuration.md#standing-instructions-instructions). |
 | `implementation` | object | `unit_tests` (`worktree` or `after_merge`). |
 | `budgets` | object | Per stage: `used`, `limit`, `remaining`. |
@@ -630,3 +636,4 @@ Object.
 | `reviewers` | list | `id`, `provider`, `model` (as the text prints it), `status`, in the text's order. |
 | `instructions` | list | The instruction sources in force, each as in `status`'s `instructions.in_force`; `[]` without any. |
 | `skipped` | object | `refused`, `refused_by`, `design_refused`, `panel_reduced`, named as `optimization report --json` names them. |
+| `resume` | object | How a new session continues this workflow: `workflow` (the id), `argument` (`--workflow <id>`), `env` (`{"DEV_ORCHESTRA_WORKFLOW": "<id>"}`); `null` without a workflow id -- see [Continuing in a new session](workflow.md#continuing-in-a-new-session). |

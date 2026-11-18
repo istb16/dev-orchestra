@@ -688,7 +688,12 @@ So a report also says how long the run has shown no new tool line, and from
 lasts. For a job the time is measured from the wall-clock `t` each tool line
 carries, so a reader in another process can measure it; a file written before
 `t` existed falls back to the line's offset from the start. A `review run --progress` measures each reviewer in its own process,
-every `progress.interval_seconds`. The note only informs: nothing is cancelled
+every `progress.interval_seconds`. A `jobs wait` does not hold the note back
+for the length of its wait: it reads each job's activity every 10 seconds or
+so, and a job that turns stuck during the wait ends it early (exit 4), so a
+long `progress.wait_seconds` still delivers the note promptly. A job already
+stuck when the wait began does not end it early; its note comes with each
+report. Once it recovers, turning stuck again does. The note only informs: nothing is cancelled
 for it, and the deadlines above still decide when a run is ended. It cannot
 tell a wedged model from a long silent test run or a model thinking without
 tools, so it can be wrong in that direction; a jump of the wall clock, or the

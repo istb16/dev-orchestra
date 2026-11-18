@@ -81,8 +81,37 @@ authors can find it.
   `optimization.skip_unneeded_roles: false` leaves no seat out.
   `optimization.narrow_re_reviews: false` turns the cut off; a project file
   that turns it back on over a `false` is reported as loosening.
+- **A workflow continues in a new session.** `summary` ends with a `Resume:`
+  line naming the workflow id, `--workflow <id>` and `DEV_ORCHESTRA_WORKFLOW`
+  (`--json` `resume`), and the skill ends its final report with it and
+  recommends a new session at each workflow boundary, so the orchestrator's
+  context does not grow across workflows (#394). A new session passes
+  `--workflow <id>` on every command and rebuilds its state from `status`,
+  `summary`, `review show --brief` and the plan; `references/workflow.md`
+  ("Continuing in a new session") says why `workflow use` is not enough in
+  Claude Code or Codex.
+- **A short triage view.** `review show --brief` prints the report's head,
+  the possible-duplicate pairs one per line (only those whose findings it
+  shows) and one line per finding (its problem's first line, at most 140
+  characters), without evidence or fixes;
+  `--brief --json` has its own small shape. `review show F3 F5` prints only
+  those findings in full, or with `--json` the report with `findings`
+  filtered; an unknown id exits 2. Both compose with `--accepted` and
+  `--design`, and the skill triages from the brief view (#394).
+- **`progress.wait_seconds`.** The default wait of `jobs wait` has its own
+  setting (30 to 3600, or null). Null keeps `interval_seconds` under `auto`
+  and `true`, and is 540 under `progress.updates: false`, where no report is
+  wanted; `--timeout` still wins. `status --json` carries the effective value
+  in `progress.wait_seconds`, and the `Progress:` line adds `, wait <n>s` only
+  when it differs from the interval (#394).
 
 ### Changed
+
+- **A job turning stuck ends `jobs wait` early.** The wait reads each running
+  job's activity about every 10 seconds and returns (exit 4) as soon as one
+  becomes `may be stuck`, so a long wait never holds the note back; a job
+  already stuck when the wait began does not cut it short unless it recovers
+  and turns stuck again (#394).
 
 - **The implementer and the review fixer run only the related tests.** The
   implementation and fix request templates, and the skill, now ask for the

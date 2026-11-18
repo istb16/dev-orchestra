@@ -1644,10 +1644,10 @@ class TestProgress(IsolatedCase):
     def test_the_defaults_are_todays_behaviour(self):
         self.assertEqual(
             config_mod.default_config()["progress"],
-            {"updates": "auto", "interval_seconds": 180, "quiet_notice_seconds": 600},
+            {"updates": "auto", "interval_seconds": 180, "wait_seconds": None, "quiet_notice_seconds": 600},
         )
         self.assertEqual(
-            config_mod.load(self.project).progress_settings(), config_mod.Progress("auto", 180, 600)
+            config_mod.load(self.project).progress_settings(), config_mod.Progress("auto", 180, 600, 180)
         )
 
     def test_updates_takes_true_false_or_auto(self):
@@ -1711,17 +1711,19 @@ class TestProgress(IsolatedCase):
             self.write(".dev-orchestra.yaml", "version: 1\n" + text)
             loaded = config_mod.load(self.project, validate_result=False)
             with self.subTest(text=text):
-                self.assertEqual(loaded.progress_settings(), config_mod.Progress("auto", 180, 600))
+                self.assertEqual(loaded.progress_settings(), config_mod.Progress("auto", 180, 600, 180))
         self.write(
             ".dev-orchestra.yaml",
             "version: 1\nprogress:\n  updates: false\n  interval_seconds: 30\n  quiet_notice_seconds: 0\n",
         )
-        self.assertEqual(config_mod.load(self.project).progress_settings(), config_mod.Progress("off", 30, 0))
+        self.assertEqual(
+            config_mod.load(self.project).progress_settings(), config_mod.Progress("off", 30, 0, 540)
+        )
         self.write(
             ".dev-orchestra.yaml", "version: 1\nprogress:\n  updates: true\n  interval_seconds: 3600\n"
         )
         self.assertEqual(
-            config_mod.load(self.project).progress_settings(), config_mod.Progress("on", 3600, 600)
+            config_mod.load(self.project).progress_settings(), config_mod.Progress("on", 3600, 600, 3600)
         )
 
     def test_config_set_round_trips(self):
@@ -1733,6 +1735,28 @@ class TestProgress(IsolatedCase):
             with self.subTest(value=value):
                 self.assertEqual(config_mod.get_path(loaded.data, "progress.updates"), stored)
                 self.assertEqual(loaded.progress_settings().updates, mode)
+
+    def test_wait_seconds_round_trips_and_shows_in_status(self):
+        import json
+
+        self.cli_workspace()
+        for value, stored, effective in (("600", 600, 600), ("null", None, 180)):
+            code, _, err = self.run_cli("config", "set", "progress.wait_seconds", value)
+            self.assertEqual(code, 0, err)
+            self.assertNotIn("progress", err)
+            loaded = config_mod.load(self.project)
+            with self.subTest(value=value):
+                self.assertEqual(config_mod.get_path(loaded.data, "progress.wait_seconds"), stored)
+                self.assertEqual(loaded.progress_settings().wait_seconds, effective)
+        # Null resolved: 540 under `false`, carried by `status --json` and on
+        # the `Progress:` line since it differs from the interval.
+        self.assertEqual(self.run_cli("config", "set", "progress.updates", "false")[0], 0)
+        code, out, err = self.run_cli("status", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["progress"]["wait_seconds"], 540)
+        code, out, err = self.run_cli("status")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Progress: off, every 180s, stuck notice after 600s, wait 540s (progress.*)\n", out)
 
     def test_config_set_warns_about_a_value_validate_refuses(self):
         # As for every other key: saved, warned about with the validation
@@ -1752,6 +1776,7 @@ class TestProgress(IsolatedCase):
                 "progress.quiet_notice_seconds: must be a non-negative integer or null (0 = off)",
             ),
             ("updates", "maybe", "maybe", "progress.updates: must be true, false or auto, or null"),
+            ("wait_seconds", "29", 29, "progress.wait_seconds: must be an integer from 30 to 3600 or null"),
         )
         for key, value, stored, problem in cases:
             with self.subTest(key=key, value=value):
@@ -1760,7 +1785,7 @@ class TestProgress(IsolatedCase):
                 self.assertIn("warning: %s" % problem, err)
                 self.assertEqual(config_mod.read_config_file(path)["progress"][key], stored)
                 loaded = config_mod.load(self.project, validate_result=False)
-                self.assertEqual(loaded.progress_settings(), config_mod.Progress("auto", 180, 600))
+                self.assertEqual(loaded.progress_settings(), config_mod.Progress("auto", 180, 600, 180))
                 config_mod.write_config_file(path, {"version": 1}, "project")
         # `yes` is YAML's true, so it is `on`, not a typo.
         code, _, err = self.run_cli("config", "set", "--scope", "project", "progress.updates", "yes")
@@ -1781,7 +1806,7 @@ class TestProgress(IsolatedCase):
             {"quiet_notice_seconds": 30},
         )
         self.assertEqual(
-            config_mod.load(self.project).progress_settings(), config_mod.Progress("auto", 60, 30)
+            config_mod.load(self.project).progress_settings(), config_mod.Progress("auto", 60, 30, 60)
         )
 
 

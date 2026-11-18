@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:ca941f4f04a5bae84f628b9e4d24d1c4aebb415be1ad9cd93fa595559361a6d3 -->
+<!-- translated-from: references/reviews.md sha256:0e9a801e90d92028ebf970ab3ee78e74bc31e233ad2435dd520dad397643d8b0 -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -1079,12 +1079,26 @@ dev-orchestra review triage F7 --status duplicate --note "same as F1"
 ## トリアージ
 
 ```bash
-dev-orchestra review show                       # the consolidated report
+dev-orchestra review show --brief               # one line per finding
+dev-orchestra review show F1 F4                 # those findings in full
 dev-orchestra review triage F1 F4 --status accepted --note "confirmed"
 dev-orchestra review triage F2 --status rejected --note "guarded by caller"
 dev-orchestra review triage F3 --status needs-investigation
 dev-orchestra review show --accepted            # what the fixer will see
 ```
+
+短い表示から始めます。レポートの先頭、重複かもしれない組（1 行に 1 組）、そして指摘ごとに 1 行です。
+
+```text
+F3  HIGH  app/api.py:42  [codex-general, claude-security]  needs-triage  request id is logged unescaped
+```
+
+problem の 1 行目は 140 文字で切られ、そのあとに指摘を全文で開くコマンドが続きます。既存の指摘があれば、
+その数は先頭に出ます。`--accepted` や id で絞った表示では、両方の指摘が表示に含まれる重複の組だけを出します。
+判断しようとする指摘を `review show <ids>` で開き、挙げられたコードを読んでから決めてください。1 行の
+problem は何を読むかを選ぶためのもので、それだけで判断の理由にはなりません。どちらの形も `--accepted`
+と `--design`、`--json` を受け付けます（[json](json.md#review-show) を参照）。`review show` だけのときと
+`consolidated.md` は、今までどおりレポートの全体です。
 
 | ステータス | 意味 |
 | --- | --- |

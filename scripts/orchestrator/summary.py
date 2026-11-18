@@ -213,12 +213,18 @@ def _reply_language(data: Dict[str, Any]) -> str:
 
 
 def describe_progress(progress: config_mod.Progress) -> str:
-    """``auto, every 180s, stuck notice after 600s``: the `Progress:` line of `status` and `config show`."""
+    """``auto, every 180s, stuck notice after 600s``: the `Progress:` line of `status` and `config show`.
+
+    ``, wait 540s`` follows when the default wait of `jobs wait` is not the interval.
+    """
     if progress.quiet_notice_seconds:
         notice = "stuck notice after %ds" % progress.quiet_notice_seconds
     else:
         notice = "no stuck notice"
-    return "%s, every %ds, %s" % (progress.updates, progress.interval_seconds, notice)
+    line = "%s, every %ds, %s" % (progress.updates, progress.interval_seconds, notice)
+    if progress.wait_seconds != progress.interval_seconds:
+        line += ", wait %ds" % progress.wait_seconds
+    return line
 
 
 def describe_unit_tests(mode: str) -> str:

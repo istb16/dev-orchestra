@@ -111,7 +111,8 @@ class TestSummary(VisibilityCase):
         out = run_cli("summary")[1]
         expected = "Instructions:\n  orchestrator (project, inline, %d chars)\n" % len(ORCHESTRATOR_TEXT)
         self.assertIn(expected, out)
-        self.assertIn("  reviewers (project, docs/missing.md, 0 chars: not found)", out)
+        self.assertIn("  reviewers (project, docs/missing.md, 0 chars: not found)\n", out)
+        self.assertIn("\nResume:  in a new session, continue workflow test:", out)
 
 
 class TestConfigShowAndDoctor(VisibilityCase):

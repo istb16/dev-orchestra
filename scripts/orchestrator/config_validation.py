@@ -609,14 +609,15 @@ def _validate_progress(progress: Any) -> List[str]:
     if not isinstance(progress, dict):
         return ["progress: must be a mapping"]
     problems = _check(progress, _PROGRESS_RULES)
-    interval = progress.get("interval_seconds")
-    if interval is not None and not (
-        _int_at_least(interval, PROGRESS_INTERVAL_MIN) and interval <= PROGRESS_INTERVAL_MAX
-    ):
-        problems.append(
-            "progress.interval_seconds: must be an integer from %d to %d or null"
-            % (PROGRESS_INTERVAL_MIN, PROGRESS_INTERVAL_MAX)
-        )
+    for key in ("interval_seconds", "wait_seconds"):
+        seconds = progress.get(key)
+        if seconds is not None and not (
+            _int_at_least(seconds, PROGRESS_INTERVAL_MIN) and seconds <= PROGRESS_INTERVAL_MAX
+        ):
+            problems.append(
+                "progress.%s: must be an integer from %d to %d or null"
+                % (key, PROGRESS_INTERVAL_MIN, PROGRESS_INTERVAL_MAX)
+            )
     quiet = progress.get("quiet_notice_seconds")
     if quiet is not None:
         if not _int_at_least(quiet, 0):

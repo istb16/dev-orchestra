@@ -1,4 +1,4 @@
-<!-- translated-from: references/json.md sha256:b6422bbac2e30ef552cc68ed296c716a5dfa2ac3bc586920bc17422a6feeb98f -->
+<!-- translated-from: references/json.md sha256:1ff4f681438697ad03d3b77eae25a8a11a22b0a5f5254073c26611bc18ce8fee -->
 
 > この文書は [references/json.md](../../../references/json.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -386,7 +386,7 @@ Object. `consolidated.json` が持つとおりの、まとめたレポートで�
 
 ### `review show`
 
-Object. `review consolidate` と同じ、まとめたレポートです。`--accepted` のときは、`findings` は受け入れたものだけです。
+Object. `review consolidate` と同じ、まとめたレポートです。`--accepted` のときは、`findings` は受け入れたものだけです。指摘の id を渡したとき（`review show F3 F5`）は、その指摘だけです。`--brief` のときは、代わりに独自の小さなオブジェクトになります。`iteration`、`counts`、`duplicate_candidates`、`findings`（指摘ごとに 1 つ。`id`、`severity`、`category`、`file`、`line`、`reported_by`、`triage`、`problem`、`possible_duplicates`）、`pre_existing_count` です。
 
 | キー | 型 | 意味 |
 | --- | --- | --- |
@@ -397,9 +397,10 @@ Object. `review consolidate` と同じ、まとめたレポートです。`--acc
 | `coverage` | object | `review consolidate` と同じ。 |
 | `reviewers` | list | `review consolidate` と同じ。 |
 | `counts` | object | `review consolidate` と同じ。 |
-| `duplicate_candidates` | list | `review consolidate` と同じ。 |
-| `findings` | list | `review consolidate` と同じ。 |
-| `pre_existing` | list | `review consolidate` と同じ。`--accepted` でもそのままです。 |
+| `duplicate_candidates` | list | `review consolidate` と同じ。`--brief` のときは、両方の指摘が `findings` にある組だけです。 |
+| `findings` | list | `review consolidate` と同じ。`--brief` のときは上の短い項目です。 |
+| `pre_existing` | list | `review consolidate` と同じ。`--accepted` や指摘の id を渡してもそのままです。 |
+| `pre_existing_count` | integer | Only: `--brief` のときだけ。既存の指摘の数で、`pre_existing` の代わりです。 |
 | `surrounding` | object | Only: ラウンドが周りの文脈を運んだときだけ。 |
 | `measurement` | object | Only: `review run --surrounding` のあとだけ。 |
 
@@ -493,7 +494,7 @@ Object.
 | `design_review` | object | `enabled`、`mode`、`reason`、`iteration`、`max_iterations`、`blocking`、`wanted`、`accepted`、`refused_for_size`、`identical_rounds`、`final_revision`、`final_revision_pending`、`optimization`（値は `review status --design` と同じ）。 |
 | `design_approval` | object | `required`、`state`（`pending`、`stale`、`approved`、`no-plan`、`not-required`、`implemented-unapproved`）、`pending`、`stale_reason`（`plan-changed`、`reviewed-since`、`decisions-changed`、`null`）など。[承認](workflow.md#approval) を参照。 |
 | `design_questions` | object | `mode`、`state`（`off`、`none`、`open`、`round-required`、`answered`）、`pending`、`open`、`answered`、`total`、`architect_rounds`、`max_rounds`、`decisions_file`。[Design の質問](workflow.md#design-questions) を参照。 |
-| `progress` | object | `updates`（`on`、`off`、`auto` のいずれか）、`interval_seconds`、`quiet_notice_seconds`。[進み具合の報告](workflow.md#progress-reports) を参照。 |
+| `progress` | object | `updates`（`on`、`off`、`auto` のいずれか）、`interval_seconds`、`quiet_notice_seconds`、`wait_seconds`（`jobs wait` の既定の待ち時間。null は解決済み）。[進み具合の報告](workflow.md#progress-reports) を参照。 |
 | `instructions` | object | `in_force`: 指示のソースごとに 1 つのエントリで、`role`（ロール。席なら `reviewers.<id>` か `design_reviewers.<id>`）、`layer`（`global` か `project`。席はそのパネルが来た層）、`kind`（`inline` か `file`）、`path`（相対パス。`inline` なら `""`）、`chars`、`problem`（ファイルから何も得られなかった理由。読めたら `""`）。`orchestrator`: orchestrator の本文をつないだもの。なければ `""`。[常設の指示](configuration.md#standing-instructions-instructions) を参照。 |
 | `implementation` | object | `unit_tests`（`worktree` か `after_merge`）。 |
 | `budgets` | object | 工程ごとの `used`、`limit`、`remaining`。 |
@@ -661,3 +662,4 @@ Object.
 | `reviewers` | list | `id`、`provider`、`model`（テキストに出るとおり）、`status`。並びはテキストと同じ。 |
 | `instructions` | list | 効いている指示のソース。各エントリは `status` の `instructions.in_force` と同じ形です。なければ `[]`。 |
 | `skipped` | object | `refused`、`refused_by`、`design_refused`、`panel_reduced`。名前は `optimization report --json` と同じ。 |
+| `resume` | object | 新しいセッションでこのワークフローを続ける方法。`workflow`（id）、`argument`（`--workflow <id>`）、`env`（`{"DEV_ORCHESTRA_WORKFLOW": "<id>"}`）。ワークフローの id がないときは `null`。[新しいセッションで続ける](workflow.md#continuing-in-a-new-session) を参照。 |

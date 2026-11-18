@@ -18,6 +18,7 @@
 - [Re-test and re-review](#re-test-and-re-review)
 - [Recording and reporting](#recording-and-reporting)
   - [Progress reports](#progress-reports)
+  - [Continuing in a new session](#continuing-in-a-new-session)
 - [When something goes wrong](#when-something-goes-wrong)
 - [Example workflows](#example-workflows)
 - [Installing from a skill checkout](#installing-from-a-skill-checkout)
@@ -1011,6 +1012,18 @@ dev-orchestra review snapshot --base main
 
 See `references/reviews.md` for the output schema, deduplication and triage.
 
+Triage from the short view rather than the whole report:
+
+```bash
+dev-orchestra review show --brief     # the head, duplicate pairs, one line per finding
+dev-orchestra review show F3 F5       # the findings being judged, in full
+```
+
+then read the code each one cites before accepting, rejecting or merging it.
+`consolidated.md` is still the whole report; the brief view only keeps every
+finding's evidence and fix out of the orchestrator's context until it is
+needed.
+
 ## Fix
 
 ```bash
@@ -1164,20 +1177,55 @@ the start of a session: `Progress: auto, every 180s, stuck notice after 600s
 | `true` (`on`) | the same, and every architect run, `--questions` and `--resume` included | the same | always in the background with `--progress`; its new lines relayed |
 | `false` (`off`) | the same as `auto` | only a `may be stuck` note, when there is one | `--progress` when run in the background; only its `may be stuck` lines relayed |
 
-`progress.interval_seconds` (default 180, 30 to 3600) is how often: it is the
-wait of `jobs wait <id> --since <n>` without `--timeout`, and how often a
-`review run --progress` checks its reviewers. The `next:` line of each report
-names the wait that follows.
+`progress.interval_seconds` (default 180, 30 to 3600) is how often: how often a
+`review run --progress` checks its reviewers and, by default, how long one
+`jobs wait <id> --since <n>` without `--timeout` waits. That wait is
+`progress.wait_seconds` (30 to 3600, or null): null means
+`interval_seconds` under `auto` and `true`, and 540 under `false`, where no
+report is wanted, so the orchestrator waits less often. `status` then reads
+`Progress: off, every 180s, stuck notice after 600s, wait 540s`. The `next:`
+line of each report names the wait that follows.
+
+Give the host's command a timeout above the wait: Claude Code's Bash tool
+stops a command after 120 s unless told otherwise (600 s at most), and other
+hosts have limits of their own. Where the host cannot wait that long, pass
+`--timeout` below its limit instead.
 
 `progress.quiet_notice_seconds` (default 600; `0` turns it off) adds `may be
 stuck: no new tool line for 12m03s` to a report on a run that has shown no new
 tool line for that long, as a `note:` line in `jobs wait` and as `[<reviewer>
 +mm:ss] may be stuck: ...` in a review's log. It comes again with every report
-while the run stays silent, under every value of `progress.updates`. Relay it
+while the run stays silent, under every value of `progress.updates`. A job
+that turns stuck during a `jobs wait` ends the wait early, within about 10
+seconds, so a long wait never holds the note back; one already stuck when the
+wait began does not cut it short unless it recovers and turns stuck again. Relay it
 and keep waiting: it is never a reason to cancel, since a long silent test run
 or a model thinking without tools looks the same. The deadlines still decide
 when a run is ended. What the notice can and cannot see: `references/limits.md`
 ("Not blocking in the first place").
+
+### Continuing in a new session
+
+Everything a workflow needs lives under `.ai/`, not in the conversation, so a
+new session can pick it up where the old one stopped, at a fraction of the
+context. Recommend one at each workflow boundary: after the final report, and
+when the user asks for unrelated new work in a long session. `summary` ends
+with the line to hand over:
+
+```text
+Resume:  in a new session, continue workflow 5942d94f5248: pass --workflow 5942d94f5248 to every command (or set DEV_ORCHESTRA_WORKFLOW=5942d94f5248)
+```
+
+(`resume` in `summary --json`). In the new session, pass `--workflow <id>`
+before the command on every call, or set `DEV_ORCHESTRA_WORKFLOW=<id>` in its
+environment. `workflow use` is not enough in Claude Code or Codex: their
+session id outranks the `current.json` pointer (see the order above), so a new
+session would resolve to a new workflow. On a host that exports no session id
+the pointer would do, but the flag works everywhere.
+
+Rebuild the state from the files, not from the old conversation: `status`
+(the verdict and next step), `summary`, `review show --brief` when a review is
+open, and the plan (`.ai/plan.md`).
 
 ## When something goes wrong
 
