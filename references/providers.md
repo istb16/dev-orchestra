@@ -610,11 +610,12 @@ against 1.2.16. Meant for the implementer and the review fixer.
 
 | Aspect | How |
 | --- | --- |
-| Non-interactive run | `agy --output-format stream-json [--model <id>] -p "Read the file .ai/agy-prompt-<pid>-<random>.md ..."`, `-p` last; JSON lines as the run goes, the `result` last |
+| Non-interactive run | `agy --output-format stream-json [--settings '{"agentMode":""}'] [--model <id>] -p "Read the file .ai/agy-prompt-<pid>-<random>.md ..."`, `-p` last; JSON lines as the run goes, the `result` last |
 | Model | `--model <id>`, **omitted** for the `default` family |
 | Model discovery | `agy models` (needs the network): the `id<TAB>name` lines it prints; nothing else is read |
 | `plan` / `review` | the same command: agy has no read-only mode, so these runs are **not enforced** |
 | `implement` | the same command, plus `--dangerously-skip-permissions` when `options.skip_permissions: true` comes from the global config |
+| Agent mode | Default for every run, `--settings '{"agentMode":""}'` for that run alone, from agy 1.5.7 (or when `agy --version` cannot be read): from 1.5.7 a headless run starts in Auto, where agy's own reviewer let `echo true` run without the bypass (measured on 1.5.11) |
 | Final answer | the `response` of the `result` line. No result, a status other than `SUCCESS` or an empty response fails the run (`agy: no answer: ...` warnings); the partial text of such a run goes only to `run --output`'s `.rejected` file, never into the answer. Stdout lines that are not JSON, and the result's `error`, go to stderr |
 | Usage | `usage.input_tokens`, `output_tokens` and `cache_read_tokens` of the result; `tool_uses` and `tool_uses_by_name` from the tool steps; no output chars, no cost |
 | Resume | left out: `--resume` runs fresh (below) |
@@ -711,7 +712,9 @@ If it is wanted later, agy would override `verified_resume()`,
 **Permissions on the implementer.** Without `--dangerously-skip-permissions`,
 file edits ran and shell commands were refused in headless mode, so an
 implementer on agy cannot run the tests unless the bypass is on; with it, a
-command ran. `denied_actions` in the result becomes a run warning, shown
+command ran. From agy 1.5.7 a headless run starts in Auto mode, which let a
+command run without the bypass, so each run names Default mode for itself
+(the agent-mode row above) and this still holds. `denied_actions` in the result becomes a run warning, shown
 on success too, that says how to turn it on. Denied actions alone do not fail
 the run, since an implementer may finish its task despite one; the denied
 run's empty response does. The bypass is

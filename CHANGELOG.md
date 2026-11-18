@@ -148,6 +148,16 @@ authors can find it.
   Test stage (#387). A project that wants the whole suite run in those runs
   says so in `instructions.implementer` / `instructions.review_fixer`.
 
+### Fixed
+
+- **agy runs no longer run shell commands without the bypass.** From agy
+  1.5.7 a headless run starts in Auto mode, where agy's own reviewer let a
+  command run although `options.skip_permissions` was off; on 1.5.11 the live
+  check "names a denied command" failed. Each run on agy 1.5.7 or later, or
+  whose version cannot be read, now passes `--settings '{"agentMode":""}'`,
+  Default mode for that run alone, and a command is refused again unless the
+  bypass is on.
+
 ## [1.3.2] - 2026-11-09
 
 ### Fixed
