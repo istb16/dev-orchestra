@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tu
 from . import config_trust, instructions
 from . import optimization as opt_mod
 from .config import (
+    ASK_QUESTIONS_MODES,
     WRITE_ROLES,
     LoadedConfig,
     ReviewerOrigin,
@@ -586,10 +587,10 @@ def _design_mode(now: LoadedConfig, before: LoadedConfig) -> str:
 
 
 def _questions_mode(now: LoadedConfig, before: LoadedConfig) -> str:
-    """``design.ask_questions``: ``off`` asks least, then ``auto``, then ``on``."""
+    """``design.ask_questions``: ``off`` asks least, then ``auto``, then ``on``, and ``grill`` most."""
     new = ask_questions_mode(now.design_settings().get("ask_questions"))
     old = ask_questions_mode(before.design_settings().get("ask_questions"))
-    if _DESIGN_MODES.index(new) >= _DESIGN_MODES.index(old):
+    if ASK_QUESTIONS_MODES.index(new) >= ASK_QUESTIONS_MODES.index(old):
         return ""
     return "turns it %s from %s" % (new, old)
 

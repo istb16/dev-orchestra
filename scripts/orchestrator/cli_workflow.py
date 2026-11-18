@@ -362,15 +362,30 @@ def _questions_line(info: Dict[str, Any]) -> str:
     """The `Design questions:` line of `status`; "" when the setting is off and nothing is recorded."""
     state = info["state"]
     rounds = "round %d/%s" % (info["architect_rounds"], info["max_rounds"])
+    # `grill` asks differently from `true`, so every line it reaches names it;
+    # the other modes read as they did before it existed.
+    grill = info["mode"] == "grill"
+    mode = "grill, " if grill else ""
     if state == "open":
         return (
-            "Design questions: %d open of %d (%s), %s -- ask the user; the plan run is refused until "
-            "they are answered" % (len(info["open"]), info["total"], ", ".join(info["open"]), rounds)
+            "Design questions: %s%d open of %d (%s), %s -- ask the user%s; the plan run is refused until "
+            "they are answered"
+            % (
+                mode,
+                len(info["open"]),
+                info["total"],
+                ", ".join(info["open"]),
+                rounds,
+                " one at a time, following up" if grill else "",
+            )
         )
     if state == "round-required":
-        return "Design questions: on, no architect question round recorded -- run architect --questions first"
+        return (
+            "Design questions: %s, no architect question round recorded -- run architect --questions first"
+            % info["mode"]
+        )
     if state == "answered":
-        line = "Design questions: %d answered, %s" % (info["answered"], rounds)
+        line = "Design questions: %s%d answered, %s" % (mode, info["answered"], rounds)
         return "%s -- decisions in %s" % (line, info["decisions_file"])
     if state == "none":
         return "Design questions: auto, none recorded"

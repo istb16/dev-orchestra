@@ -244,7 +244,7 @@ def _approval_mode(data: Dict[str, Any]) -> str:
 
 
 def _questions_mode(data: Dict[str, Any]) -> str:
-    """``on``, ``off`` or ``auto``; a layer with no value has the default, as for approval."""
+    """``on``, ``off``, ``auto`` or ``grill``; a layer with no value has the default, as for approval."""
     design = data.get("design")
     if isinstance(design, dict) and design.get("ask_questions") is not None:
         return config_mod.ask_questions_mode(design["ask_questions"])

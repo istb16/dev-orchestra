@@ -84,9 +84,9 @@ never a reason to cancel. A background `review run` (`on`: always background) ge
 alike. Never relay or guess what the model wrote; tool lines go as they are.
 Per `progress.updates`: `references/workflow.md` (Progress reports).
 
-**Questions.** When on, ask the user before designing (`auto`: only when it
-matters; say why). "Leave it to you" is `--delegate`; exit 6 means ask.
-Approval off: record, never wait. Steps: `references/workflow.md`.
+**Questions.** If on, ask before designing (`auto`: only when it matters;
+say why). `grill`: one by one, probe. "Up to you" is `--delegate`; exit 6:
+ask. Approval off: record, never wait. `references/workflow.md`.
 
 **Design.** The architect must not change code. Write its request from the
 template with the history it cannot fetch (`git log --oneline`, blame).

@@ -21,7 +21,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import workspace as ws
-from .config import LoadedConfig, ask_questions_mode
+from .config import ROUND_REQUIRED_MODES, LoadedConfig, ask_questions_mode, ask_questions_mode_shown
 
 #: The state key the questions are kept under, and the stage of their run-log events.
 STAGE = "design_questions"
@@ -477,7 +477,7 @@ def prompt_carries_decisions(text: str) -> bool:
 
 
 def asking(loaded: LoadedConfig) -> bool:
-    """Whether ``design.ask_questions`` is on or ``auto``: the records count only then."""
+    """Whether ``design.ask_questions`` is on, ``auto`` or ``grill``: the records count only then."""
     return ask_questions_mode(loaded.design_settings().get("ask_questions")) != "off"
 
 
@@ -502,7 +502,7 @@ def current(workspace: ws.Workspace, setting: Any, max_rounds: Any) -> Dict[str,
         state = "off"
     elif still_open:
         state = "open"
-    elif name == "on" and rounds == 0:
+    elif name in ROUND_REQUIRED_MODES and rounds == 0:
         state = "round-required"
     elif not questions and rounds == 0:
         state = "none"
@@ -531,7 +531,7 @@ def as_if_answered(info: Dict[str, Any]) -> Dict[str, Any]:
     """
     if info["state"] != "open":
         return info
-    round_required = info["mode"] == "on" and info["architect_rounds"] == 0
+    round_required = info["mode"] in ROUND_REQUIRED_MODES and info["architect_rounds"] == 0
     return dict(
         info,
         state="round-required" if round_required else "answered",
@@ -559,8 +559,8 @@ def refusal_lines(info: Dict[str, Any]) -> List[str]:
         )
     else:
         first = (
-            "refusing to run architect: design.ask_questions is true and no architect question "
-            "round is recorded."
+            "refusing to run architect: design.ask_questions is %s and no architect question "
+            "round is recorded." % ask_questions_mode_shown(info["mode"])
         )
         how = (
             "Run `run architect --questions`, record its answer with `design questions record --by "

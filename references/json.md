@@ -459,7 +459,7 @@ them under `design_questions` -- see [Design questions](workflow.md#design-quest
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `mode` | string | `off`, `auto` or `on`, from `design.ask_questions`. |
+| `mode` | string | `off`, `auto`, `on` or `grill`, from `design.ask_questions`. |
 | `state` | string | `off`, `none`, `open`, `round-required` or `answered`. |
 | `pending` | boolean | `true` only while a question is open. |
 | `questions` | list | Each question, oldest first (only the open ones with `--open`): `id`, `round`, `by` (`orchestrator` or `architect`), `topic`, `question`, `why`, `options` (`key`, `text`), `recommended` (`key`, `reason`, or `null`), `asked_at`, `answer` (`kind` -- `option`, `text` or `delegated` --, `text`, `answered_at`, or `null` while open) and `history` (earlier answers, each with `revised_at`). |
@@ -483,7 +483,7 @@ Object.
 | `review` | object | `iteration`, `max_review_iterations`, `blocking`, `wanted`, `accepted`, `refused_for_size`, `identical_rounds`, `final_fix`, `final_fix_pending`, `next_review`, `round_tests` (values as in `review status`; `round_tests` is `null` when that leaves it out). |
 | `design_review` | object | `enabled`, `mode`, `reason`, `iteration`, `max_iterations`, `blocking`, `wanted`, `accepted`, `refused_for_size`, `identical_rounds`, `final_revision`, `final_revision_pending`, `optimization` (values as in `review status --design`). |
 | `design_approval` | object | `required`, `state` (`pending`, `stale`, `approved`, `no-plan`, `not-required` or `implemented-unapproved`), `pending`, `stale_reason` (`plan-changed`, `reviewed-since`, `decisions-changed` or `null`) and the rest -- see [Approval](workflow.md#approval). |
-| `design_questions` | object | `mode`, `state` (`off`, `none`, `open`, `round-required` or `answered`), `pending`, `open`, `answered`, `total`, `architect_rounds`, `max_rounds`, `decisions_file` -- see [Design questions](workflow.md#design-questions). |
+| `design_questions` | object | `mode` (`off`, `auto`, `on` or `grill`), `state` (`off`, `none`, `open`, `round-required` or `answered`), `pending`, `open`, `answered`, `total`, `architect_rounds`, `max_rounds`, `decisions_file` -- see [Design questions](workflow.md#design-questions). |
 | `progress` | object | `updates` (`on`, `off` or `auto`), `interval_seconds`, `quiet_notice_seconds`, `wait_seconds` (the default wait of `jobs wait`, null already resolved) -- see [Progress reports](workflow.md#progress-reports). |
 | `instructions` | object | `in_force`: one entry per instruction source, `role` (a role, or `reviewers.<id>` / `design_reviewers.<id>` for a seat), `layer` (`global` or `project`; a seat's is the layer its panel came from), `kind` (`inline` or `file`), `path` (relative; `""` for `inline`), `chars`, `problem` (why a file gave nothing; `""` when read); `orchestrator`: the orchestrator's joined text, `""` when none -- see [Standing instructions](configuration.md#standing-instructions-instructions). |
 | `implementation` | object | `unit_tests` (`worktree` or `after_merge`). |
