@@ -57,8 +57,7 @@ def _int_at_least(value: Any, minimum: int) -> bool:
 
 
 _BOOL = "bool"  # true or false
-_AUTO = "auto"  # true, false or auto
-_QUESTIONS = "questions"  # true, false, auto or grill
+_BOOL_OR_WORD = "bool-or-word"  # true, false or one of the check's words
 _INT = "int"  # _int_at_least(value, minimum)
 _SECONDS = "seconds"  # _INT, then whole_seconds, else _TOO_LONG
 _GLOBS = "globs"  # a list of non-empty strings, each bad one by index
@@ -71,6 +70,7 @@ class _Check(NamedTuple):
     message: str  # what follows "<path>: "; _SECONDS's second message is _TOO_LONG
     minimum: int = 0
     null_ok: bool = True  # None, read or defaulted, passes
+    words: Tuple[str, ...] = ()  # _BOOL_OR_WORD's strings, case and surrounding spaces ignored
 
 
 class _Rule(NamedTuple):
@@ -104,13 +104,8 @@ def _check_value(check: _Check, value: Any, path: str) -> List[str]:
         ]
     if check.kind == _BOOL:
         ok = isinstance(value, bool)
-    elif check.kind == _AUTO:
-        ok = value.strip().lower() == "auto" if isinstance(value, str) else isinstance(value, bool)
-    elif check.kind == _QUESTIONS:
-        if isinstance(value, str):
-            ok = value.strip().lower() in ASK_QUESTIONS_STRINGS
-        else:
-            ok = isinstance(value, bool)
+    elif check.kind == _BOOL_OR_WORD:
+        ok = value.strip().lower() in check.words if isinstance(value, str) else isinstance(value, bool)
     elif check.kind in (_INT, _SECONDS):
         ok = _int_at_least(value, check.minimum)
     else:
@@ -123,8 +118,10 @@ def _check_value(check: _Check, value: Any, path: str) -> List[str]:
 
 
 _TRUE_OR_FALSE = _Check(_BOOL, "must be true or false, or null")
-_TRUE_FALSE_OR_AUTO = _Check(_AUTO, "must be true, false or auto, or null")
-_TRUE_FALSE_AUTO_OR_GRILL = _Check(_QUESTIONS, "must be true, false, auto or grill, or null")
+_TRUE_FALSE_OR_AUTO = _Check(_BOOL_OR_WORD, "must be true, false or auto, or null", words=("auto",))
+_TRUE_FALSE_AUTO_OR_GRILL = _Check(
+    _BOOL_OR_WORD, "must be true, false, auto or grill, or null", words=ASK_QUESTIONS_STRINGS
+)
 _NON_NEGATIVE = _Check(_INT, "must be a non-negative integer or null")
 _POSITIVE = _Check(_INT, "must be a positive integer or null", 1)
 _GLOB_LIST = _Check(_GLOBS, "must be a list of glob patterns or null (use [] for none)")

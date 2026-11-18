@@ -6,6 +6,7 @@ import argparse
 import os
 from typing import Optional
 
+from . import config as config_mod
 from . import questions as questions_mod
 from . import workspace as ws
 from .cli_common import _emit_json, _err, _in_workflow, _load_lenient, _out, _read_stdin, _workspace
@@ -119,7 +120,12 @@ def cmd_design_questions_show(args: argparse.Namespace) -> int:
         return 0
     _out(
         "Design questions: %s (design.ask_questions: %s), %d architect round(s) of %s"
-        % (info["state"], info["mode"], info["architect_rounds"], info["max_rounds"])
+        % (
+            info["state"],
+            config_mod.ask_questions_mode_shown(info["mode"]),
+            info["architect_rounds"],
+            info["max_rounds"],
+        )
     )
     if not questions:
         _out("  no open questions" if args.open else "  none recorded")

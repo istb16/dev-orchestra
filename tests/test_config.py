@@ -1180,10 +1180,11 @@ class TestValueRules(IsolatedCase):
             with self.subTest(check=check):
                 if check.kind == config_validation._BOOL:
                     self.assertTrue(check.message.startswith("must be true or false"))
-                elif check.kind == config_validation._AUTO:
-                    self.assertTrue(check.message.startswith("must be true, false or auto"))
-                elif check.kind == config_validation._QUESTIONS:
-                    self.assertTrue(check.message.startswith("must be true, false, auto or grill"))
+                elif check.kind == config_validation._BOOL_OR_WORD:
+                    # The message names every word the check accepts, after true and false.
+                    words = ("true", "false", *check.words)
+                    listed = "%s or %s" % (", ".join(words[:-1]), words[-1])
+                    self.assertTrue(check.message.startswith("must be " + listed), check.message)
                 elif check.kind == config_validation._GLOBS:
                     self.assertTrue(check.message.startswith("must be a list of glob patterns"))
                 else:

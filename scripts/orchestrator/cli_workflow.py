@@ -382,7 +382,7 @@ def _questions_line(info: Dict[str, Any]) -> str:
     if state == "round-required":
         return (
             "Design questions: %s, no architect question round recorded -- run architect --questions first"
-            % info["mode"]
+            % config_mod.ask_questions_mode_shown(info["mode"])
         )
     if state == "answered":
         line = "Design questions: %s%d answered, %s" % (mode, info["answered"], rounds)

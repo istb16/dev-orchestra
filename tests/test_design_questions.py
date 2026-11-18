@@ -825,11 +825,15 @@ class TestGrill(QuestionsCase):
         self.assertIn(self.ROUND_REQUIRED_LINE % "grill", self.status_text())
         self.assertEqual(self.questions_status()["mode"], "grill")
 
-    def test_on_texts_unchanged(self):
+    def test_true_texts_name_the_setting_as_written(self):
         self.ask("true")
-        self.assertIn(self.ROUND_REQUIRED_LINE % "on", self.status_text())
+        self.assertIn(self.ROUND_REQUIRED_LINE % "true", self.status_text())
         self.assertEqual(questions_mod.refusal_lines(self.questions_status())[0], self.REFUSAL % "true")
         self.assertIn(self.REFUSAL % "true", self.plan_run()[2])
+        out = run_cli("design", "questions", "show")[1]
+        self.assertTrue(out.startswith("Design questions: round-required (design.ask_questions: true)"), out)
+        # The JSON keeps the internal mode: it is a documented API value.
+        self.assertEqual(self.questions_status()["mode"], "on")
 
     def test_grill_follow_ups_do_not_count_toward_the_cap(self):
         self.ask("grill")

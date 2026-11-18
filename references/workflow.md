@@ -237,7 +237,10 @@ answers. Your own questions come first, from these perspectives, skipping any
 the request already answers: the intent; how success is judged; what is out of
 scope; alternatives already rejected, and why; how reversible the change is,
 and what undoing it costs; how it could fail, and who would notice; whether a
-smaller change, or no change, would be enough. For each, write one block,
+smaller change, or no change, would be enough. Ask them in order of
+importance, at most five. Once ten questions, follow-ups included, have been
+asked in the interview, ask the user whether to go on before asking more. The
+CLI counts none of this; keep to it yourself. For each, write one block,
 record it alone with `--by orchestrator`, ask it alone, and record the answer.
 Follow up when an answer is vague, contradicts an earlier one or adds a
 constraint: a new block, recorded and asked the same way, at most two per
