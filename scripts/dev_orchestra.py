@@ -18,9 +18,34 @@ if sys.version_info < (3, 11):
     )
     raise SystemExit(2)
 
+
+def _keep_bytecode():
+    """Cache the package's compiled modules even where the host turns caching off.
+
+    A host may run every command with ``PYTHONDONTWRITEBYTECODE`` set (Claude
+    Code does), and then each run compiles every module from source again:
+    about 0.3 s of a command that takes well under a second once cached. The
+    flag is there to keep ``__pycache__`` out of the directories a command is
+    run in, so the cache goes to a directory of its own instead: the one the
+    user named with ``PYTHONPYCACHEPREFIX``, or else one under the user's cache.
+    """
+    if not sys.flags.dont_write_bytecode:
+        return
+    if not sys.pycache_prefix:
+        base = (
+            os.environ.get("LOCALAPPDATA")
+            or os.environ.get("XDG_CACHE_HOME")
+            or os.path.join(os.path.expanduser("~"), ".cache")
+        )
+        sys.pycache_prefix = os.path.join(base, "dev-orchestra", "pycache")
+    sys.dont_write_bytecode = False
+
+
+_keep_bytecode()
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from orchestrator.cli import main
+# Imported last: the version check and the bytecode cache have to come first.
+from orchestrator.cli import main  # noqa: E402
 
 if __name__ == "__main__":
     raise SystemExit(main())

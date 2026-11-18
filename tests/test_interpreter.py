@@ -219,3 +219,40 @@ class TestWhatWeTellOtherPeopleToType(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheBytecodeCache(unittest.TestCase):
+    """A host that turns bytecode writing off still gets its modules cached, elsewhere."""
+
+    ENTRY = os.path.join(REPO_ROOT, "scripts", "dev_orchestra.py")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="devorchestra-pyc-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def run_entry(self, **env):
+        base = {key: value for key, value in os.environ.items() if key != "PYTHONPYCACHEPREFIX"}
+        base.update(PYTHONDONTWRITEBYTECODE="1", LOCALAPPDATA=self.tmp, XDG_CACHE_HOME=self.tmp)
+        base.update(env)
+        result = subprocess.run(
+            [sys.executable, self.ENTRY, "--version"], env=base, capture_output=True, text=True
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def compiled(self, root):
+        return [
+            name
+            for _, _, files in os.walk(root)
+            for name in files
+            if name.startswith("cli.") and name.endswith(".pyc")
+        ]
+
+    def test_the_modules_are_cached_under_the_user_cache(self):
+        self.run_entry()
+        self.assertTrue(self.compiled(os.path.join(self.tmp, "dev-orchestra", "pycache")))
+
+    def test_a_prefix_the_user_named_is_kept(self):
+        mine = os.path.join(self.tmp, "mine")
+        self.run_entry(PYTHONPYCACHEPREFIX=mine)
+        self.assertTrue(self.compiled(mine))
+        self.assertFalse(os.path.isdir(os.path.join(self.tmp, "dev-orchestra")))
