@@ -57,6 +57,13 @@ What was measured, and what this adapter rests on:
 * Without ``--dangerously-skip-permissions`` file edits ran and shell commands
   were refused in headless mode; with it, a command ran. The flag is
   ``options.skip_permissions``, taken only from the global config or --extra.
+* From agy 1.5.7 a session with no saved mode, headless ``-p`` runs included,
+  starts in Auto mode, where agy's own reviewer lets shell commands run
+  without the bypass: on 1.5.11 ``echo true`` ran with no denied action. So
+  every run names Default mode for itself alone, ``--settings
+  {"agentMode":""}`` (never saved), and a command is refused with
+  ``denied_actions`` again. A version agy reports below 1.5.7 gets no such
+  argument: it starts in Default and may not know ``--settings``.
 * A trivial prompt costs about 12k-25k input tokens.
 
 Model handling: families are names, never ids. ``default`` omits ``--model``;
@@ -130,6 +137,12 @@ CONFIG_FAMILIES = (
 #: Unsuffixed families prefer, within one version, high over no suffix over
 #: medium over low.
 _EFFORT_ORDER = {"high": 0, None: 1, "medium": 2, "low": 3}
+
+#: The first agy whose runs start in Auto mode unless told otherwise.
+AUTO_MODE_DEFAULT_FROM = (1, 5, 7)
+#: Default mode for one run, never saved: shell commands need the bypass.
+DEFAULT_MODE_SETTINGS = '{"agentMode":""}'
+_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
 #: Where the prompt goes, inside the workspace, and what ``-p`` says instead.
 #: A file is named ``agy-prompt-<pid>-<random>.md`` after the process that
@@ -341,10 +354,13 @@ class AgyProvider(Provider):
 
         No ``--mode``: plan mode was measured to write all the same, and to
         move the answer out of stdout. A read-only run gets no raw arguments
-        (the base gate accepts none) and never the permission bypass.
+        (the base gate accepts none) and never the permission bypass. Every
+        run is held to Default mode where agy would start in Auto.
         """
         options = options or {}
         command = [self.executable, "--output-format", "stream-json"]
+        if self._starts_in_auto():
+            command += ["--settings", DEFAULT_MODE_SETTINGS]
         if resolved.argument:
             command += ["--model", resolved.argument]
         if mode == MODE_IMPLEMENT:
@@ -354,6 +370,14 @@ class AgyProvider(Provider):
             command += list(extra_args)
         command += ["-p", PROMPT_FILE_INSTRUCTION % (prompt_file or PROMPT_FILE_PLACEHOLDER)]
         return command
+
+    def _starts_in_auto(self) -> bool:
+        """Whether a run would start in Auto mode: agy 1.5.7 or later, or a
+        version that cannot be read, which fails closed."""
+        match = _VERSION_RE.search(self.version()[0] or "")
+        if match is None:
+            return True
+        return tuple(int(part) for part in match.groups()) >= AUTO_MODE_DEFAULT_FROM
 
     def command_line(
         self,

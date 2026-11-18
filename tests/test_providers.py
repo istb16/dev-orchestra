@@ -2482,6 +2482,7 @@ class _AgyCase(IsolatedCase):
         self.provider = AgyProvider()
         self.provider.which = lambda: None
         setattr(self.provider, "_capture", lambda command, timeout=30: self.fail("spawned %s" % command))
+        self.provider.version = lambda: ("1.5.11", None)
         self.seen = {}
         self.addCleanup(setattr, execution, "execute", execution.execute)
 
@@ -2661,7 +2662,28 @@ class TestAgyRoleOptions(_AgyCase):
                 command = self.provider.build_command(
                     mode, self.resolved, self.project, options={"skip_permissions": True}
                 )
-                self.assertEqual(command[:-1], ["agy", "--output-format", "stream-json", "-p"])
+                self.assertEqual(
+                    command[:-1],
+                    ["agy", "--output-format", "stream-json", "--settings", '{"agentMode":""}', "-p"],
+                )
+
+    def test_every_run_is_held_to_default_mode_from_1_5_7(self):
+        """agy 1.5.7 starts headless runs in Auto, where commands ran with no bypass."""
+        for version in ("1.5.7", "1.5.11", "1.10.0", None):
+            for mode in (base.MODE_PLAN, base.MODE_REVIEW, base.MODE_IMPLEMENT):
+                with self.subTest(version=version, mode=mode):
+                    self.provider.version = lambda v=version: (v, None if v else "could not execute")
+                    command = self.provider.build_command(mode, self.resolved, self.project)
+                    at = command.index("--settings")
+                    self.assertEqual(command[at + 1], '{"agentMode":""}')
+                    self.assertLess(at, command.index("-p"))
+
+    def test_before_1_5_7_no_settings_are_passed(self):
+        for version in ("1.5.6", "1.2.13"):
+            with self.subTest(version=version):
+                self.provider.version = lambda v=version: (v, None)
+                command = self.provider.build_command(base.MODE_IMPLEMENT, self.resolved, self.project)
+                self.assertNotIn("--settings", command)
 
     def test_raw_arguments_on_a_read_only_run_are_refused(self):
         self.installed()

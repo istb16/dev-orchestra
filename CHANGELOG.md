@@ -13,6 +13,8 @@ authors can find it.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-19
+
 ### Added
 
 - **`design.ask_questions: grill`: an opt-in interview.** The orchestrator
@@ -145,6 +147,16 @@ authors can find it.
   tests the change touches rather than the whole suite, which runs once at the
   Test stage (#387). A project that wants the whole suite run in those runs
   says so in `instructions.implementer` / `instructions.review_fixer`.
+
+### Fixed
+
+- **agy runs no longer run shell commands without the bypass.** From agy
+  1.5.7 a headless run starts in Auto mode, where agy's own reviewer let a
+  command run although `options.skip_permissions` was off; on 1.5.11 the live
+  check "names a denied command" failed. Each run on agy 1.5.7 or later, or
+  whose version cannot be read, now passes `--settings '{"agentMode":""}'`,
+  Default mode for that run alone, and a command is refused again unless the
+  bypass is on.
 
 ## [1.3.2] - 2026-11-09
 
@@ -3737,7 +3749,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v1.3.2...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/istb16/dev-orchestra/compare/v1.3.2...v1.4.0
 [1.3.2]: https://github.com/istb16/dev-orchestra/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/istb16/dev-orchestra/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/istb16/dev-orchestra/compare/v1.2.1...v1.3.0

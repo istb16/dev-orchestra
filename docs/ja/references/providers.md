@@ -1,4 +1,4 @@
-<!-- translated-from: references/providers.md sha256:b6fef417b6e7b0cf88776a581697c800180ce0e55dca50950d373d133e609daf -->
+<!-- translated-from: references/providers.md sha256:6b2f0f87e19cdd37506c0157f2a7251464bac63c1fcdfbc7deb20b14ad8ad78e -->
 
 > この文書は [references/providers.md](../../../references/providers.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -309,11 +309,12 @@ Windows 上の `agy` 1.2.13 で検証済みで、`stream-json` の出力は 1.2.
 
 | 項目 | 方法 |
 | --- | --- |
-| 非対話実行 | `agy --output-format stream-json [--model <id>] -p "Read the file .ai/agy-prompt-<pid>-<random>.md ..."`。`-p` は最後。実行の進行に合わせて JSON の行を出力し、最後に `result` を出す |
+| 非対話実行 | `agy --output-format stream-json [--settings '{"agentMode":""}'] [--model <id>] -p "Read the file .ai/agy-prompt-<pid>-<random>.md ..."`。`-p` は最後。実行の進行に合わせて JSON の行を出力し、最後に `result` を出す |
 | モデル | `--model <id>`。`default` family の場合は**省略** |
 | モデルの検出 | `agy models`（ネットワークが必要）が出力する `id<TAB>name` の行。それ以外は読まない |
 | `plan` / `review` | 同じコマンド。agy には読み取り専用のモードがないので、これらの実行は**強制されない** |
 | `implement` | 同じコマンドに、global 設定の `options.skip_permissions: true` があれば `--dangerously-skip-permissions` を足したもの |
+| Agent モード | agy 1.5.7 から（または `agy --version` が読めないとき）は、すべての実行で `--settings '{"agentMode":""}'` によりその実行だけ Default にする。1.5.7 からヘッドレスの実行は Auto で始まり、agy 自身の審査で `echo true` がバイパスなしに走った（1.5.11 で実測） |
 | 最終的な回答 | `result` の行の `response`。結果がない、状態が `SUCCESS` でない、または応答が空のときは、実行は失敗になる（`agy: no answer: ...` の警告）。そうした実行の途中までのテキストは `run --output` の `.rejected` ファイルにだけ入り、回答にはならない。JSON でない stdout の行と、結果の `error` は stderr へ |
 | 使用量 | 結果の `usage.input_tokens`、`output_tokens`、`cache_read_tokens`。`tool_uses` と `tool_uses_by_name` はツールのステップから。出力の文字数と費用はない |
 | 継続 | 外している。`--resume` は新規に走る（後述） |
@@ -340,7 +341,7 @@ family は名前であって id ではありません。id は、実行を解決
 
 **継続は意図して外しています。** 継続のルールが問うのは継続したセッションが読み取り専用を保つかどうかですが、agy の plan の実行は `unenforced` なので、版で絞っても何も守れません。`--conversation <id>` は fork せずに元の会話を続けます。agy の architect は警告付きの、global 設定だけの席です。そして有効にするには、1 回 12k〜25k トークンの実機確認が 3 つ要ります。後で必要になれば、agy は `verified_resume()`、`resume_help_text()`、`resume_advertises()` をオーバーライドし、`resume_flags` を設定し、`required_resume_checks = ("reports a missing session",)` を設定することになります。
 
-**implementer のパーミッション。** `--dangerously-skip-permissions` なしでは、ヘッドレスモードでファイルの編集は走り、シェルコマンドは拒否されました。そのため、バイパスを有効にしない限り、agy の implementer はテストを実行できません。有効にするとコマンドが走りました。結果の `denied_actions` は実行の警告になり、成功時にも表示されて、有効にする方法を示します。拒否された操作があるだけでは実行は失敗になりません。implementer は拒否があってもタスクを終えられることがあるからです。拒否された実行が失敗になるのは、応答が空だからです。バイパスは **global** 設定の `options.skip_permissions: true`（既定は `false`）か、1 回の実行だけなら `--extra --dangerously-skip-permissions` です。
+**implementer のパーミッション。** `--dangerously-skip-permissions` なしでは、ヘッドレスモードでファイルの編集は走り、シェルコマンドは拒否されました。そのため、バイパスを有効にしない限り、agy の implementer はテストを実行できません。有効にするとコマンドが走りました。agy 1.5.7 からヘッドレスの実行は Auto モードで始まり、バイパスなしでもコマンドが走ったため、実行ごとにその実行だけ Default モードを指定しています（上の Agent モードの行）。これでこの動きは今も保たれます。結果の `denied_actions` は実行の警告になり、成功時にも表示されて、有効にする方法を示します。拒否された操作があるだけでは実行は失敗になりません。implementer は拒否があってもタスクを終えられることがあるからです。拒否された実行が失敗になるのは、応答が空だからです。バイパスは **global** 設定の `options.skip_permissions: true`（既定は `false`）か、1 回の実行だけなら `--extra --dangerously-skip-permissions` です。
 
 ```yaml
 implementer:
