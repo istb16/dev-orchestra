@@ -137,13 +137,32 @@ class TestDoctor(IsolatedCase):
         """The 0.24.0 removal: a file holding every default, as one from before
         0.6.0 does, has no "Pinned" section and no ``config.pinned``."""
         data = config_mod.default_config()
-        data["review"]["max_review_iterations"] = 3
+        data["review"]["code"]["max_iterations"] = 3
         config_mod.write_config_file(config_mod.global_config_path(), data)
         code, out, _ = run_cli("doctor", "--fast", "--json")
         self.assertEqual(code, 0)
         self.assertNotIn("pinned", json.loads(out)["config"])
         _, text, _ = run_cli("doctor", "--fast")
         self.assertNotIn("Pinned", text)
+
+    def test_rename_note(self):
+        """The old name of review.code.max_iterations is a note, so --strict still passes (#402)."""
+        role = {"provider": "mock", "model": {"family": "small", "version": "latest"}}
+        data = config_mod.default_config()
+        data.update(orchestrator=role, architect=role, implementer=role, review_fixer=role)
+        data["reviewers"] = [config_mod.make_reviewer("mock-general", "mock", "small")]
+        del data["review"]["code"]
+        data["review"]["max_review_iterations"] = 3
+        config_mod.write_config_file(config_mod.global_config_path(), data)
+        code, out, err = run_cli("doctor", "--fast", "--strict", "--json")
+        self.assertEqual(code, 0, out + err)
+        report = json.loads(out)
+        note = (
+            "review.max_review_iterations in the global file: renamed review.code.max_iterations; "
+            "still read -- run `config set review.code.max_iterations N` to switch"
+        )
+        self.assertIn(note, report["notes"])
+        self.assertNotIn(note, report["problems"])
 
     def test_strict_mode_exits_non_zero_on_problems(self):
         run_cli("config", "setup", "--defaults")

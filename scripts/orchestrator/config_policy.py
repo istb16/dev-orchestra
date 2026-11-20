@@ -27,6 +27,7 @@ from .config import (
     read_only_seats,
     reviewer_seats,
     role_seats,
+    with_current_names,
     workspace_dir_in,
 )
 from .providers import get_provider, unenforced_warning, warned_enforcement
@@ -653,9 +654,9 @@ _GATES = (
     _Gate("reviewers", ("reviewers",), _code_panel),
     _Gate("review.design.reviewers", ("reviewers", "review.design.reviewers"), _design_panel),
     _Gate(
-        "review.max_review_iterations",
-        ("review.max_review_iterations",),
-        _lower(lambda loaded: loaded.review_settings().get("max_review_iterations")),
+        "review.code.max_iterations",
+        ("review.code.max_iterations",),
+        _lower(lambda loaded: loaded.code_review_settings().get("max_iterations")),
     ),
     _Gate("review.re_review_severities", ("review.re_review_severities",), _re_review),
     _Gate("review.exclude", ("review.exclude",), _withheld),
@@ -720,7 +721,9 @@ def project_loosening_notices(loaded: LoadedConfig) -> List[str]:
 
 def _gate_notices(loaded: LoadedConfig) -> List[str]:
     """``project_loosening_notices`` for the review and approval gates."""
-    project = loaded.project_layer
+    # Under the current names, so a gate lists only those and a file that
+    # still writes an old one (config_keys.RENAMED_KEYS) is caught as well.
+    project = with_current_names(loaded.project_layer)
     written = {key for gate in _GATES for key in gate.written if get_path(project, key) is not None}
     if not written:
         return []

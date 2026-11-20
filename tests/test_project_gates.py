@@ -364,8 +364,8 @@ class TestLoosened(_Case):
                 "drops codex-general, claude-security, claude-test from the code review panel",
             ),
             (
-                "review:\n  max_review_iterations: 0\n",
-                "review.max_review_iterations",
+                "review:\n  code:\n    max_iterations: 0\n",
+                "review.code.max_iterations",
                 "lowers it to 0 from 2",
             ),
             (
@@ -408,8 +408,31 @@ class TestLoosened(_Case):
     def test_the_baseline_is_the_global_file(self):
         self.write_global("review:\n  max_review_iterations: 4\n  exclude: []\n")
         self.write_project("review:\n  max_review_iterations: 3\n  exclude: []\n")
-        self.assert_notice("review.max_review_iterations", "lowers it to 3 from 4")
+        self.assert_notice("review.code.max_iterations", "lowers it to 3 from 4")
         self.assertEqual(len(self.notices()), 1)
+
+    def test_old_name_loosening_caught(self):
+        self.write_global("review:\n  code:\n    max_iterations: 2\n")
+        self.write_project("review:\n  max_review_iterations: 1\n")
+        self.assert_notice("review.code.max_iterations", "lowers it to 1 from 2")
+
+    def test_mixed_names_compare(self):
+        self.write_global("review:\n  max_review_iterations: 3\n")
+        self.write_project("review:\n  code:\n    max_iterations: 2\n")
+        self.assert_notice("review.code.max_iterations", "lowers it to 2 from 3")
+        self.write_global("review:\n  code:\n    max_iterations: 1\n")
+        self.write_project("review:\n  max_review_iterations: 2\n")
+        self.assertEqual(self.notices(), [])
+
+    def test_the_new_name_wins_over_a_looser_old_name(self):
+        """With both names set, only the new one counts: an old 0 beside 3 loosens nothing."""
+        self.write_project("review:\n  max_review_iterations: 0\n  code:\n    max_iterations: 3\n")
+        self.assertEqual(self.notices(), [])
+
+    def test_a_null_new_name_hides_the_old_name(self):
+        """A null new name is the default, so the old 0 beside it loosens nothing."""
+        self.write_project("review:\n  max_review_iterations: 0\n  code:\n    max_iterations: null\n")
+        self.assertEqual(self.notices(), [])
 
     def test_a_global_skip_off_turned_on_by_the_project(self):
         self.write_global("optimization:\n  skip_unneeded_roles: false\n")
@@ -519,7 +542,7 @@ class TestLoosened(_Case):
     def test_review_run_warns(self):
         self.write_project("review:\n  max_review_iterations: 0\n  re_review_severities: [critical]\n")
         _, _, err = run_cli("review", "run")
-        self.assertIn("warning: review.max_review_iterations: the project config", err)
+        self.assertIn("warning: review.code.max_iterations: the project config", err)
         self.assertIn("warning: review.re_review_severities: the project config", err)
 
 
@@ -562,11 +585,11 @@ class TestOnTheMock(_Case):
         self.assertTrue(
             lines[0].startswith("warning: design.require_approval: false is set in the project config"), err
         )
-        self.assertTrue(lines[1].startswith("warning: review.max_review_iterations: the project config"), err)
+        self.assertTrue(lines[1].startswith("warning: review.code.max_iterations: the project config"), err)
         # The loosened value applies: a budget of 0 rounds refuses the first.
         self.assertEqual(code, 3, err)
         self.assertIn("refusing to run review round 1", err)
-        self.assertGreater(err.index("refusing to run"), err.index("warning: review.max_review_iterations"))
+        self.assertGreater(err.index("refusing to run"), err.index("warning: review.code.max_iterations"))
         # The ignored one does not: plan approval stays required.
         self.assertEqual(self.loaded().design_settings()["require_approval"], "auto")
 

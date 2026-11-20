@@ -398,7 +398,7 @@ class TestCodeRoundPinning(_Pinning, MeasuringCase):
         self.assertEqual(
             err.splitlines()[-2:],
             [
-                "refusing to run review round 2: the budget is 1 rounds (review.max_review_iterations).",
+                "refusing to run review round 2: the budget is 1 rounds (review.code.max_iterations).",
                 "The round that reached the limit still gets its fix and re-test; only the re-review is "
                 "refused. Report what is still open, or pass --force to override.",
             ],
@@ -816,11 +816,11 @@ class TestCodeRoundPinning(_Pinning, MeasuringCase):
 # --------------------------------------------------------------------------- status
 
 
-def status_head(budget_key):
+def status_head(*budget_keys):
     """The keys every ``review status --json`` payload starts with."""
     return [
         "iteration",
-        budget_key,
+        *budget_keys,
         "blocking",
         "blocking_count",
         "wanted",
@@ -835,7 +835,7 @@ def status_head(budget_key):
 
 
 CODE_STATUS = [
-    *status_head("max_review_iterations"),
+    *status_head("max_iterations", "max_review_iterations"),
     "final_fix",
     "final_fix_pending",
     "whole_change_recheck",
@@ -887,7 +887,7 @@ class TestStatusPinning(IsolatedCase):
         block = {"shared": True, "adopted": [], "adopted_chars": 0, "reason": "not frozen"}
         self.report({"iteration": 1, "counts": {}, "surrounding": block})
         self.report({"iteration": 1, "counts": {}, "surrounding": block}, design=True)
-        self.assertEqual(list(self.payload()), [*CODE_STATUS[:12], "surrounding", *CODE_STATUS[12:]])
+        self.assertEqual(list(self.payload()), [*CODE_STATUS[:13], "surrounding", *CODE_STATUS[13:]])
         design = [*DESIGN_STATUS[:12], "surrounding", *DESIGN_STATUS[12:]]
         self.assertEqual(list(self.payload("--design")), design)
         self.assertEqual(self.payload()["surrounding"], block)

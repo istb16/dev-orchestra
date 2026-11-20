@@ -708,9 +708,9 @@ def cmd_review_run(args: argparse.Namespace) -> int:
         return refusal
     lineage = _lineage(args, workspace)
     iteration = _iteration(args, workspace, lineage)
-    max_iterations = loaded.max_review_iterations()
+    max_iterations = loaded.code_max_iterations()
     meta = workspace.read_snapshot_meta()
-    # One round past review.max_review_iterations, only on the whole-change
+    # One round past review.code.max_iterations, only on the whole-change
     # snapshot review.whole_change_recheck asked for.
     spare = code_round_cap(loaded, meta) > max_iterations
     refusal = _refuse_if_rounds_spent(_CODE, iteration, max_iterations, args.force, spare)

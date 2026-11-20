@@ -29,7 +29,7 @@ from .config_common import (
     progress_seconds,
     whole_seconds,
 )
-from .config_keys import get_path
+from .config_keys import RENAMED_KEYS, get_path, renamed_in, set_path
 from .config_paths import user_providers_hint
 from .config_reviewers import CODE_PANEL, DESIGN_PANEL, PanelKeys, ReviewerOrigin
 from .config_seats import merge_tier
@@ -126,13 +126,13 @@ _NON_NEGATIVE = _Check(_INT, "must be a non-negative integer or null")
 _POSITIVE = _Check(_INT, "must be a positive integer or null", 1)
 _GLOB_LIST = _Check(_GLOBS, "must be a list of glob patterns or null (use [] for none)")
 
-_REVIEW_RULES = (
+_REVIEW_RULES = (_Rule("review.parallel", _TRUE_OR_FALSE),)
+_REVIEW_CODE_RULES = (
     _Rule(
-        "review.max_review_iterations",
+        "review.code.max_iterations",
         _Check(_INT, "must be a non-negative integer", 0, null_ok=False),
         default=2,
     ),
-    _Rule("review.parallel", _TRUE_OR_FALSE),
 )
 _REVIEW_LIMIT_RULES = (
     _Rule(
@@ -184,6 +184,7 @@ _IMPLEMENTATION_RULES = (_Rule("implementation.hub_paths", _GLOB_LIST),)
 #: Every table above, for the tests that hold each row to its key and default.
 _RULE_TABLES = (
     _REVIEW_RULES,
+    _REVIEW_CODE_RULES,
     _REVIEW_LIMIT_RULES,
     _REVIEW_DESIGN_RULES,
     _REVIEW_CONTEXT_RULES,
@@ -287,6 +288,9 @@ def _key_schema() -> Dict[str, Any]:
     schema.update({"preset": None, "reviewers": [reviewer], "reviewers_extra": [reviewer], "budgets": _FREE})
     schema["run"]["timeout_seconds"] = _FREE
     schema["review"]["design"].update({"reviewers": [reviewer], "reviewers_extra": [reviewer]})
+    # Old names are still read, so not unknown; rename_notes reports them.
+    for old, _new in RENAMED_KEYS:
+        set_path(schema, old, None)
     schema["instructions"] = dict.fromkeys(INSTRUCTION_ROLES)
     return schema
 
@@ -328,6 +332,28 @@ def unknown_key_warnings(global_layer: Dict[str, Any], project_layer: Dict[str, 
             hint = " (did you mean %s?)" % close if close else ""
             warnings.append("%s in the %s file: unknown key, ignored%s" % (key, name, hint))
     return warnings
+
+
+def rename_notes(global_layer: Dict[str, Any], project_layer: Dict[str, Any]) -> List[str]:
+    """One line for each old key name a file still uses, naming the file.
+
+    Reported, never refused, as ``unknown_key_warnings``: the old name is
+    still read unless the same file sets the new one.
+    """
+    notes: List[str] = []
+    for name, layer in (("global", global_layer), ("project", project_layer)):
+        for old, new, both_set in renamed_in(layer):
+            if both_set:
+                notes.append(
+                    "%s in the %s file: renamed %s; ignored -- %s is set in the same file"
+                    % (old, name, new, new)
+                )
+            else:
+                notes.append(
+                    "%s in the %s file: renamed %s; still read -- run `config set %s N` to switch"
+                    % (old, name, new, new)
+                )
+    return notes
 
 
 def _validate_version_and_preset(
@@ -490,7 +516,10 @@ def _validate_run(run: Any) -> List[str]:
 def _validate_review(review: Any) -> List[str]:
     if not isinstance(review, dict):
         return ["review: must be a mapping"]
-    problems = _check(review, _REVIEW_RULES)
+    # The code review's budget first, where it was before it moved to review.code.
+    code = review.get("code")
+    problems = _validate_review_code(code) if code is not None else []
+    problems.extend(_check(review, _REVIEW_RULES))
     problems.extend(_validate_severities(review.get("re_review_severities")))
     problems.extend(_check(review, _REVIEW_LIMIT_RULES))
     design = review.get("design")
@@ -521,6 +550,12 @@ def _validate_severities(severities: Any) -> List[str]:
         for index, name in enumerate(severities)
         if not isinstance(name, str) or name.strip().lower() not in SEVERITIES
     ]
+
+
+def _validate_review_code(code: Any) -> List[str]:
+    if not isinstance(code, dict):
+        return ["review.code: must be a mapping"]
+    return _check(code, _REVIEW_CODE_RULES)
 
 
 def _validate_review_design(design: Any) -> List[str]:

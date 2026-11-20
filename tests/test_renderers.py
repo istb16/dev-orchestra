@@ -993,6 +993,7 @@ class TestStatusRounds(IsolatedCase):
             payload["review"],
             {
                 "iteration": 1,
+                "max_iterations": 5,
                 "max_review_iterations": 5,
                 "blocking": ["F1", "F2"],
                 "wanted": ["F1", "F2"],

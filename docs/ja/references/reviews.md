@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:0e9a801e90d92028ebf970ab3ee78e74bc31e233ad2435dd520dad397643d8b0 -->
+<!-- translated-from: references/reviews.md sha256:c9189b29b8927f55f0e39fe95f31ce3095bb6e2fbfe1067584e88d40c64fb47f -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -1208,7 +1208,7 @@ dev-orchestra review status --json
 インクリメントを忘れることで予算を回避することはできません。
 
 `re_review_recommended` は、`review.re_review_severities`（デフォルトは critical +
-high）の未解決の指摘が残っており、**かつ** `iteration < max_review_iterations`
+high）の未解決の指摘が残っており、**かつ** `iteration < review.code.max_iterations`
 （デフォルトは 2）のときに true になります。rejected と duplicate の指摘が妨げに
 なることはありません。
 
@@ -1322,28 +1322,28 @@ base は絞り込みと同じくコミットで比べます。`--base main` の�
 `done` と進み、`done` で `status` は `review finished with nothing above Low (...); its
 accepted findings were fixed and re-tested, not re-reviewed -- report` として止まります。
 受け入れた指摘が無ければ `final_fix` は `null` のままです。終わったレビューは予算を
-使い切ったレビューではないので、ラウンド `max_review_iterations` でも
+使い切ったレビューではないので、ラウンド `review.code.max_iterations` でも
 `iteration_budget_exhausted` は false のままです。
 
 **予備のラウンドが 1 つあります。** きれいに終わった修正だけのラウンドの後の変更全体の
-ラウンドは、その修正だけのラウンドが `max_review_iterations` の許す最後のラウンド
+ラウンドは、その修正だけのラウンドが `review.code.max_iterations` の許す最後のラウンド
 だったときでも実行されます。`review run` は `recheck: true` のスナップショットに限り
-ラウンド `max_review_iterations + 1` を受け付け、それ以外では受け付けません。これが
+ラウンド `review.code.max_iterations + 1` を受け付け、それ以外では受け付けません。これが
 上限なので、ループは必ず終わります。それを超えると、拒否のメッセージは両方を挙げ
-（`the budget is 2 rounds (review.max_review_iterations) and one spare whole-change
+（`the budget is 2 rounds (review.code.max_iterations) and one spare whole-change
 round`）、`status` はその理由で予備のラウンドも数えます（`3/3 rounds`）。これは
 報告するラウンドのレポートから読み、その後に取り直したスナップショットからは読みません。Low より上のものが残ったまま予算を使い切った
-とき -- ラウンド `max_review_iterations` でも、予備のラウンドでも -- 最後のラウンドには
+とき -- ラウンド `review.code.max_iterations` でも、予備のラウンドでも -- 最後のラウンドには
 オプションが off のときと同じく最後の修正と再テスト（`final_fix`）が行われ、再レビューは
 しません。デフォルトの予算 2 では、変更全体 → 修正 → 変更全体 と進んだレビューの最後の
 ラウンドが Low より上のものを見つけると、そこで終わります。もっとループさせたいときは
-`max_review_iterations` を上げてください。
+`review.code.max_iterations` を上げてください。
 
 diff がインラインに収まらなかった変更全体のラウンド（`coverage.round: partial`）も、
 きれいに戻ってくればレビューを終えます。[coverage](#coverage) の助言はそのラウンドにも
 当てはまります。
 
-オプションが off のときの規則は上のとおりです。`max_review_iterations` の範囲で
+オプションが off のときの規則は上のとおりです。`review.code.max_iterations` の範囲で
 critical と high（または `re_review_severities`）を見るもので、`review status` の
 テキスト出力も変わりません。
 

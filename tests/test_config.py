@@ -323,7 +323,7 @@ class TestLayering(IsolatedCase):
                         {"review": {"max_review_iterations": 5}, "version": 1},
                     )
                     loaded = config_mod.load(self.project)
-                    self.assertEqual(loaded.review_settings()["max_review_iterations"], 5)
+                    self.assertEqual(loaded.code_max_iterations(), 5)
                 finally:
                     os.remove(path)
 
@@ -627,13 +627,13 @@ class TestValidation(IsolatedCase):
         for data in ({"review": {"design": {"enabled": True}}}, {}):
             with self.subTest(data=data):
                 loaded = config_mod.LoadedConfig(data, None, None, True)
-                self.assertEqual(loaded.max_review_iterations(), 2)
+                self.assertEqual(loaded.code_max_iterations(), 2)
                 self.assertEqual(loaded.design_max_iterations(), 2)
 
     def test_the_iteration_limits_of_a_file_naming_only_design_enabled(self):
         self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  design:\n    enabled: true\n")
         loaded = config_mod.load(self.project)
-        self.assertEqual(loaded.max_review_iterations(), 2)
+        self.assertEqual(loaded.code_max_iterations(), 2)
         self.assertEqual(loaded.design_max_iterations(), 2)
 
     def test_review_parallel_must_be_a_boolean(self):
@@ -764,6 +764,177 @@ class TestWholeChangeRecheckValidated(IsolatedCase):
         self.assertIs(broken.whole_change_recheck(), True)
 
 
+class TestCodeMaxIterationsRename(IsolatedCase):
+    """``review.max_review_iterations`` is still read, as ``review.code.max_iterations`` (#402)."""
+
+    OLD = "review.max_review_iterations"
+    NEW = "review.code.max_iterations"
+
+    def setUp(self):
+        super().setUp()
+        self.fake_clis()
+
+    def write_global(self, text):
+        path = config_mod.global_config_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("version: 1\n" + text)
+
+    def write_project(self, text):
+        self.write(".dev-orchestra.yaml", "version: 1\n" + text)
+
+    def load(self):
+        return config_mod.load(self.project, validate_result=False)
+
+    def test_old_name_read(self):
+        for write in (self.write_global, self.write_project):
+            with self.subTest(file=write.__name__):
+                write("review:\n  max_review_iterations: 5\n")
+                loaded = self.load()
+                self.assertEqual(loaded.code_max_iterations(), 5)
+                self.assertNotIn("max_review_iterations", loaded.data["review"])
+
+    def test_old_name_zero_still_disables_re_review(self):
+        self.write_project("review:\n  max_review_iterations: 0\n")
+        self.assertEqual(self.load().code_max_iterations(), 0)
+
+    def test_new_name_wins(self):
+        self.write_global("review:\n  max_review_iterations: 5\n  code:\n    max_iterations: 3\n")
+        loaded = self.load()
+        self.assertEqual(loaded.code_max_iterations(), 3)
+        self.assertEqual(
+            config_mod.rename_notes(loaded.global_layer, loaded.project_layer),
+            [
+                "%s in the global file: renamed %s; ignored -- %s is set in the same file"
+                % (self.OLD, self.NEW, self.NEW)
+            ],
+        )
+
+    def test_old_name_alone_is_a_note(self):
+        self.write_project("review:\n  max_review_iterations: 4\n")
+        loaded = self.load()
+        self.assertEqual(
+            config_mod.rename_notes(loaded.global_layer, loaded.project_layer),
+            [
+                "%s in the project file: renamed %s; still read -- run `config set %s N` to switch"
+                % (self.OLD, self.NEW, self.NEW)
+            ],
+        )
+
+    def test_code_block_keeps_defaults(self):
+        self.write_project("review:\n  code:\n    max_iterations: 3\n")
+        loaded = self.load()
+        self.assertEqual(loaded.code_review_settings(), {"max_iterations": 3})
+        self.assertEqual(loaded.code_max_iterations(), 3)
+        defaults = config_mod.default_config()["review"]
+        review = loaded.review_settings()
+        for key in ("parallel", "timeout_seconds", "context", "whole_change_recheck"):
+            self.assertEqual(review[key], defaults[key], key)
+
+    def test_cross_layer_mix(self):
+        for global_text, project_text in (
+            ("review:\n  max_review_iterations: 3\n", "review:\n  code:\n    max_iterations: 1\n"),
+            ("review:\n  code:\n    max_iterations: 3\n", "review:\n  max_review_iterations: 1\n"),
+        ):
+            with self.subTest(global_text=global_text):
+                self.write_global(global_text)
+                self.write_project(project_text)
+                self.assertEqual(self.load().code_max_iterations(), 1)
+
+    def test_validation_names_new_key(self):
+        self.write_project("review:\n  max_review_iterations: -1\n")
+        problems = config_mod.validate_loaded(self.load())
+        self.assertEqual(problems, ["%s: must be a non-negative integer" % self.NEW])
+
+    def test_invalid_ignored_old_name_is_not_a_problem(self):
+        """The new name wins, so an invalid old value beside it is only the "ignored" note."""
+        for old in ("-1", '"abc"'):
+            with self.subTest(old=old):
+                self.write_project(
+                    "review:\n  max_review_iterations: %s\n  code:\n    max_iterations: 3\n" % old
+                )
+                loaded = self.load()
+                self.assertEqual(config_mod.validate_loaded(loaded), [])
+                self.assertEqual(loaded.code_max_iterations(), 3)
+                notes = config_mod.rename_notes(loaded.global_layer, loaded.project_layer)
+                self.assertEqual(len(notes), 1)
+                self.assertIn("ignored", notes[0])
+
+    def test_invalid_new_name_beside_a_valid_old_one_is_refused(self):
+        for new in ("-1", '"abc"'):
+            with self.subTest(new=new):
+                self.write_project(
+                    "review:\n  max_review_iterations: 3\n  code:\n    max_iterations: %s\n" % new
+                )
+                problems = config_mod.validate_loaded(self.load())
+                self.assertEqual(problems, ["%s: must be a non-negative integer" % self.NEW])
+
+    def test_explicit_null_new_name_wins_over_old(self):
+        """A null new name is still the new name set: the old value is not copied in."""
+        layer = {"review": {"max_review_iterations": 0, "code": {"max_iterations": None}}}
+        self.assertEqual(config_mod.with_current_names(layer), {"review": {"code": {"max_iterations": None}}})
+        self.assertEqual(config_mod.renamed_in(layer), [(self.OLD, self.NEW, True)])
+        self.write_project("review:\n  max_review_iterations: 0\n  code:\n    max_iterations: null\n")
+        self.assertEqual(
+            self.load().code_max_iterations(), config_mod.default_config()["review"]["code"]["max_iterations"]
+        )
+
+    def test_drop_old_names(self):
+        for written, layer, expected in (
+            (
+                self.NEW,
+                {"review": {"max_review_iterations": 2, "code": {"max_iterations": 3}}},
+                {"review": {"code": {"max_iterations": 3}}},
+            ),
+            (
+                "review.code",
+                {"review": {"max_review_iterations": 2, "code": {"max_iterations": 3}}},
+                {"review": {"code": {"max_iterations": 3}}},
+            ),
+            (
+                "review.code",
+                {"review": {"max_review_iterations": 2, "code": {}}},
+                {"review": {"max_review_iterations": 2, "code": {}}},
+            ),
+            (
+                "review.parallel",
+                {"review": {"max_review_iterations": 2, "parallel": True}},
+                {"review": {"max_review_iterations": 2, "parallel": True}},
+            ),
+            (
+                "review.cod",
+                {"review": {"max_review_iterations": 2, "code": {"max_iterations": 3}}},
+                {"review": {"max_review_iterations": 2, "code": {"max_iterations": 3}}},
+            ),
+        ):
+            with self.subTest(written=written, layer=layer):
+                config_mod.drop_old_names(layer, written)
+                self.assertEqual(layer, expected)
+
+    def test_unknown_keys_silent(self):
+        layer = {"version": 1, "review": {"max_review_iterations": 3, "code": {"max_iterations": 2}}}
+        self.assertEqual(config_mod.unknown_keys(layer), [])
+
+    def test_null_code_block_reads_the_old_name(self):
+        self.write_project("review:\n  code: null\n  max_review_iterations: 4\n")
+        loaded = self.load()
+        self.assertEqual(loaded.code_max_iterations(), 4)
+        self.assertEqual(config_mod.validate_loaded(loaded), [])
+
+    def test_code_that_is_not_a_mapping_is_refused(self):
+        self.write_project("review:\n  code: 3\n  max_review_iterations: 4\n")
+        loaded = self.load()
+        self.assertEqual(config_mod.validate_loaded(loaded), ["review.code: must be a mapping"])
+        self.assertEqual(config_mod.rename_notes(loaded.global_layer, loaded.project_layer), [])
+
+    def test_with_current_names_leaves_its_argument(self):
+        layer = {"review": {"max_review_iterations": 3}}
+        self.assertEqual(config_mod.with_current_names(layer), {"review": {"code": {"max_iterations": 3}}})
+        self.assertEqual(layer, {"review": {"max_review_iterations": 3}})
+        self.assertEqual(config_mod.current_name(self.OLD), self.NEW)
+        self.assertEqual(config_mod.current_name("review.parallel"), "review.parallel")
+
+
 class TestProjectGateTurnOff(IsolatedCase):
     """A project file turning ``review.whole_change_recheck`` off loosens review."""
 
@@ -870,7 +1041,7 @@ class TestValidateOrder(IsolatedCase):
         data = config_mod.default_config()
         data["reviewers"] = []
         data["review"] = {
-            "max_review_iterations": -1,
+            "code": {"max_iterations": -1},
             "timeout_seconds": 0,
             "idle_timeout_seconds": 0,
             "incremental_rounds": "yes",
@@ -902,7 +1073,7 @@ class TestValidateOrder(IsolatedCase):
         self.assertEqual(
             config_mod.validate(data),
             [
-                "review.max_review_iterations: must be a non-negative integer",
+                "review.code.max_iterations: must be a non-negative integer",
                 "review.timeout_seconds: must be a positive integer",
                 "review.idle_timeout_seconds: must be a positive integer or null",
                 "review.incremental_rounds: must be true or false, or null",
@@ -991,7 +1162,8 @@ class TestValidateOrder(IsolatedCase):
     def test_the_lowest_accepted_values_pass(self):
         data = config_mod.default_config()
         review = data["review"]
-        review.update(max_review_iterations=0, timeout_seconds=1, idle_timeout_seconds=1, max_findings=0)
+        review.update(timeout_seconds=1, idle_timeout_seconds=1, max_findings=0)
+        review["code"]["max_iterations"] = 0
         review["design"]["max_iterations"] = 0
         review["context"].update(max_chars=1, inline_chars=1, surrounding_chars=1)
         data["design"]["resume"] = {"max_age_seconds": 0, "max_context_tokens": 1}
@@ -1017,15 +1189,16 @@ class TestValidateOrder(IsolatedCase):
 
     def test_null_is_refused_where_only_a_missing_key_defaults(self):
         data = config_mod.default_config()
-        data["review"].update(max_review_iterations=None, timeout_seconds=None)
+        data["review"]["code"]["max_iterations"] = None
+        data["review"]["timeout_seconds"] = None
         self.assertEqual(
             config_mod.validate(data),
             [
-                "review.max_review_iterations: must be a non-negative integer",
+                "review.code.max_iterations: must be a non-negative integer",
                 "review.timeout_seconds: must be a positive integer",
             ],
         )
-        del data["review"]["max_review_iterations"]
+        del data["review"]["code"]["max_iterations"]
         del data["review"]["timeout_seconds"]
         self.assertEqual(config_mod.validate(data), [])
 
@@ -1049,7 +1222,7 @@ class TestValidateOrder(IsolatedCase):
     def test_every_integer_field_refuses_a_bool_and_a_float(self):
         fields = [
             ("run.timeout_seconds.implementer", "must be a positive integer"),
-            ("review.max_review_iterations", "must be a non-negative integer"),
+            ("review.code.max_iterations", "must be a non-negative integer"),
             ("review.timeout_seconds", "must be a positive integer"),
             ("review.idle_timeout_seconds", "must be a positive integer or null"),
             ("review.max_findings", "must be a non-negative integer or null (0 = no cap)"),
@@ -1200,7 +1373,7 @@ class TestValueRules(IsolatedCase):
 
     def test_null_is_refused_where_the_check_says_so(self):
         for path, message in (
-            ("review.max_review_iterations", "must be a non-negative integer"),
+            ("review.code.max_iterations", "must be a non-negative integer"),
             ("review.timeout_seconds", "must be a positive integer"),
             ("run.timeout_seconds.implementer", "must be a positive integer"),
         ):

@@ -352,8 +352,10 @@ def cmd_config_reset(args: argparse.Namespace) -> int:
 
 
 def cmd_config_set(args: argparse.Namespace) -> int:
-    role_key = args.path.split(".")[0].split("[")[0]
-    value = _set_value(args)
+    # An old key name is written under its new one.
+    dotted = config_mod.current_name(args.path)
+    role_key = dotted.split(".")[0].split("[")[0]
+    value = _set_value(args, dotted)
     if role_key == "preset":
         # Only the global file can name one, so that is where it goes unless a
         # scope says otherwise -- and a project scope is refused, not written.
@@ -361,7 +363,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
             _err("preset: only the global file can name a preset for now (use --scope global)")
             return 2
         scope = "global"
-    elif args.scope is None and policy_mod.global_only_write(args.path, value):
+    elif args.scope is None and policy_mod.global_only_write(dotted, value):
         # Likewise: only the global file can make it, so that is where it goes.
         scope = "global"
     else:
@@ -369,15 +371,15 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     path, layer = read_layer(scope, args.cwd)
     before = _load_lenient(args.cwd) if role_key in config_mod.KNOWN_ROLES else None
     language_before = (
-        claude_hooks.configured_layers(args.cwd) if args.path in ("language", "language.reply") else None
+        claude_hooks.configured_layers(args.cwd) if dotted in ("language", "language.reply") else None
     )
     # A panel path is checked as the panel it leaves, before anything is written.
-    design_path = args.path.startswith(config_mod.DESIGN_PANEL.reviewers)
+    design_path = dotted.startswith(config_mod.DESIGN_PANEL.reviewers)
     panel_path = role_key in ("reviewers", "reviewers_extra") or design_path
     panel_before = copy.deepcopy(layer) if panel_path else None
     frozen = left_out = None
-    if "[" in args.path:
-        list_path = args.path.split("[", 1)[0]
+    if "[" in dotted:
+        list_path = dotted.split("[", 1)[0]
         base = fitted_base(scope, layer)
         if list_path == "reviewers":
             frozen, left_out = seed_panel(scope, layer, base, path, args.cwd)
@@ -386,12 +388,12 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     if scope == "project":
         # From the arguments alone, before anything is written: the same
         # refusal a run of that seat would meet.
-        refusal = _project_seat_write_refusal(args.path, value, layer, path)
-        refusal = refusal or policy_mod.global_only_write(args.path, value, os.path.basename(path))
+        refusal = _project_seat_write_refusal(dotted, value, layer, path)
+        refusal = refusal or policy_mod.global_only_write(dotted, value, os.path.basename(path))
         if refusal:
             _err(refusal)
             return 2
-    renamed = re.fullmatch(r"reviewers_extra\[(\d+)\]\.id", args.path)
+    renamed = re.fullmatch(r"reviewers_extra\[(\d+)\]\.id", dotted)
     if renamed:
         # As `reviewer set --id` refuses it: the extra would run under another name.
         preview, fit, _preset, _source = compose_preview(scope, layer)
@@ -401,7 +403,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
             _err("reviewer id %r already exists" % (value,))
             return 2
     try:
-        config_mod.set_path(layer, args.path, value)
+        config_mod.set_path(layer, dotted, value)
     except config_mod.ConfigError as exc:
         _err(str(exc))
         if left_out:
@@ -412,15 +414,16 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         # arrives as a bare IndexError and `main` catches only the config
         # errors. This is the one entry point that takes an index at all, so it
         # is the one that owes the user a message instead of a traceback.
-        _err("%s: index out of range" % args.path)
+        _err("%s: index out of range" % dotted)
         if left_out:
             _err(left_out)
         return 2
+    config_mod.drop_old_names(layer, dotted)
     if panel_before is not None:
         if _report_panel_problems(scope, panel_before, layer):
             return 2
     config_mod.write_config_file(path, layer, scope)
-    _out("%s = %r  (%s: %s)" % (args.path, value, scope, config_paths.shown_location(path)))
+    _out("%s = %r  (%s: %s)" % (dotted, value, scope, config_paths.shown_location(path)))
     if frozen:
         _out(frozen)
     reloaded = _load_lenient(args.cwd)
@@ -434,24 +437,24 @@ def cmd_config_set(args: argparse.Namespace) -> int:
         _err("warning: %s" % warning)
     for key, close in config_mod.unknown_keys(layer):
         # Only the key just written: the file's other ones are `config validate`'s to list.
-        if key == args.path or args.path.startswith(key + ".") or key.startswith(args.path + "."):
+        if key == dotted or dotted.startswith(key + ".") or key.startswith(dotted + "."):
             hint = " (did you mean %s?)" % close if close else ""
             _err("warning: %s is not a key dev-orchestra reads; it was saved but is ignored%s" % (key, hint))
     _warn_unenforced(reloaded)
-    _warn_unresolvable(effective, args.path.split(".")[0])
+    _warn_unresolvable(effective, dotted.split(".")[0])
     if language_before is not None:
         _sync_hooks(args, scope, language_before)
     return 0
 
 
-def _set_value(args: argparse.Namespace) -> Any:
-    """The value ``config set`` writes."""
-    if args.raw or (args.path == "language.reply" and args.value.strip().lower() == "no"):
+def _set_value(args: argparse.Namespace, dotted: str) -> Any:
+    """The value ``config set`` writes at ``dotted``, the key's current name."""
+    if args.raw or (dotted == "language.reply" and args.value.strip().lower() == "no"):
         # `no`, Norwegian, stays a string: YAML would read it as false. The
         # other words YAML reads as booleans (`off`, `yes`, `on`, ...) name no
         # language, so they are coerced and `validate` says so.
         return args.value.strip() if not args.raw else args.value
-    return config_mod.coerce_scalar(args.value, args.path)
+    return config_mod.coerce_scalar(args.value, dotted)
 
 
 def _refusal_warnings(loaded: config_mod.LoadedConfig) -> List[str]:
@@ -554,6 +557,7 @@ def cmd_config_validate(args: argparse.Namespace) -> int:
     origins = loaded.design_reviewer_origins
     warnings += policy_mod.read_only_enforcement_warnings(loaded.data, refused, origins)
     warnings += config_mod.unknown_key_warnings(loaded.global_layer, loaded.project_layer)
+    warnings += config_mod.rename_notes(loaded.global_layer, loaded.project_layer)
     warnings += policy_mod.project_loosening_notices(loaded)
     if args.json:
         _emit_json({"valid": not problems, "problems": problems, "warnings": warnings})

@@ -57,12 +57,17 @@ from .config_common import (  # noqa: F401 - re-exported
     workspace_dir_of,
 )
 from .config_keys import (  # noqa: F401 - re-exported
+    RENAMED_KEYS,
     coerce_scalar,
+    current_name,
+    drop_old_names,
     get_parts,
     get_path,
     pop_path,
+    renamed_in,
     set_path,
     split_path,
+    with_current_names,
 )
 from .config_paths import (  # noqa: F401 - re-exported
     APP_DIR_NAME,
@@ -99,7 +104,12 @@ from .config_seats import (  # noqa: F401 - re-exported
     role_seats,
     same_run,
 )
-from .config_validation import unknown_key_warnings, unknown_keys, validate  # noqa: F401 - re-exported
+from .config_validation import (  # noqa: F401 - re-exported
+    rename_notes,
+    unknown_key_warnings,
+    unknown_keys,
+    validate,
+)
 from .review_common import SEVERITIES
 
 if TYPE_CHECKING:
@@ -646,9 +656,17 @@ class LoadedConfig:
             settings.update(configured)
         return settings
 
-    def max_review_iterations(self) -> int:
-        """``review.max_review_iterations``: how many code review rounds the budget allows."""
-        return int(self.review_settings()["max_review_iterations"])
+    def code_review_settings(self) -> Dict[str, Any]:
+        """The ``review.code`` block, with anything absent filled in, as ``design_review_settings``."""
+        settings = default_config()["review"]["code"]
+        configured = (self.data.get("review") or {}).get("code")
+        if isinstance(configured, dict):
+            settings.update(configured)
+        return settings
+
+    def code_max_iterations(self) -> int:
+        """``review.code.max_iterations``: how many code review rounds the budget allows."""
+        return int(self.code_review_settings()["max_iterations"])
 
     def design_max_iterations(self) -> int:
         """``review.design.max_iterations``: how many design review rounds the budget allows."""
@@ -918,6 +936,12 @@ def compose(
     # lazy: presets; see the note at the top of this module
     from . import presets
 
+    # Every effective configuration is built here, so a renamed key is read
+    # under its new name from this point on (config_keys.RENAMED_KEYS).
+    global_layer = with_current_names(global_layer)
+    project_layer = with_current_names(project_layer)
+    if around is not None:
+        around = with_current_names(around)
     named = global_layer.get("preset")
     if named is None:
         name: Optional[str] = presets.DEFAULT
@@ -1018,7 +1042,9 @@ def compose_loaded(
         preset=preset,
         preset_source=source,
         preset_notes=fit.notes,
-        files_data=deep_merge(deep_merge(default_config(), global_layer), project_layer),
+        files_data=deep_merge(
+            deep_merge(default_config(), with_current_names(global_layer)), with_current_names(project_layer)
+        ),
         reviewer_origins=fit.origins,
         design_reviewer_origins=fit.design_origins,
         installed=installed,

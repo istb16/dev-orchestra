@@ -416,7 +416,7 @@ def recheck_next(
     if not review_mod.same_base(workspace.root, meta, base):
         return False
     iteration = int(data.get("iteration", 0) or 0)
-    return code_loop_decision(loaded, meta, data, iteration, loaded.max_review_iterations()).recheck_next
+    return code_loop_decision(loaded, meta, data, iteration, loaded.code_max_iterations()).recheck_next
 
 
 def code_round_cap(loaded: config_mod.LoadedConfig, meta: Any) -> int:
@@ -427,7 +427,7 @@ def code_round_cap(loaded: config_mod.LoadedConfig, meta: Any) -> int:
     retaking a snapshot does not change the cap of a round already reviewed.
     """
     return review_loop.round_cap(
-        loaded.whole_change_recheck(), meta if isinstance(meta, dict) else {}, loaded.max_review_iterations()
+        loaded.whole_change_recheck(), meta if isinstance(meta, dict) else {}, loaded.code_max_iterations()
     )
 
 

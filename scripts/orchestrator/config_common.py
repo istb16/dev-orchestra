@@ -370,7 +370,10 @@ def default_config() -> Dict[str, Any]:
         # not what a preset chooses.
         "run": {"timeout_seconds": dict(RUN_TIMEOUT_DEFAULTS)},
         "review": {
-            "max_review_iterations": 2,
+            # How many code review rounds the budget allows. A file may still
+            # name it review.max_review_iterations, its old name
+            # (config_keys.RENAMED_KEYS).
+            "code": {"max_iterations": 2},
             "parallel": True,
             "re_review_severities": ["critical", "high"],
             # Reviewers only: `review run` and `run <reviewer-id>`.
