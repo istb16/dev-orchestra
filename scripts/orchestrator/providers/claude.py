@@ -723,7 +723,11 @@ class ClaudeProvider(Provider):
         aliases = _parse_model_aliases(text)
         if not aliases:
             return list(self.fallback_models)
-        return [ModelCandidate(alias, alias, alias, "cli-help") for alias in aliases]
+        candidates = [ModelCandidate(alias, alias, alias, "cli-help") for alias in aliases]
+        # The CLI accepts `haiku` but its help does not list it.
+        if "haiku" not in aliases:
+            candidates.extend(c for c in self.fallback_models if c.family == "haiku")
+        return candidates
 
     def resolve_latest(self, family: str) -> ResolvedModel:
         if not family or family in ("default", "recommended", "auto"):

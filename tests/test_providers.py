@@ -476,6 +476,26 @@ class TestClaudeAdapter(IsolatedCase):
     def test_aliases_come_from_the_installed_cli_help(self):
         self.assertEqual(_parse_model_aliases(CLAUDE_HELP), ["fable", "opus", "sonnet"])
 
+    def test_haiku_is_offered_when_the_help_does_not_list_it(self):
+        candidates = self.provider.list_models()
+        self.assertEqual([c.family for c in candidates], ["fable", "opus", "sonnet", "haiku"])
+        self.assertEqual(candidates[-1].source, "builtin-fallback")
+        resolved = self.provider.resolve_model({"family": "haiku", "version": "latest"})
+        self.assertEqual(resolved.argument, "haiku")
+
+    def test_haiku_listed_by_the_help_is_offered_once(self):
+        listed = CLAUDE_HELP.replace("'fable', 'opus', or", "'fable', 'haiku', 'opus', or")
+        self.assertNotEqual(listed, CLAUDE_HELP)
+        setattr(self.provider, "_capture", lambda command, timeout=30: _FakeCompleted(listed))
+        candidates = self.provider.list_models()
+        self.assertEqual([c.family for c in candidates], ["fable", "haiku", "opus", "sonnet"])
+        self.assertTrue(all(c.source == "cli-help" for c in candidates))
+
+    def test_no_haiku_is_added_without_a_fallback_for_it(self):
+        others = tuple(c for c in ClaudeProvider.fallback_models if c.family != "haiku")
+        setattr(self.provider, "fallback_models", others)
+        self.assertEqual([c.family for c in self.provider.list_models()], ["fable", "opus", "sonnet"])
+
     def test_latest_policy_passes_the_alias_through(self):
         resolved = self.provider.resolve_model({"family": "opus", "version": "latest"})
         self.assertEqual(resolved.argument, "opus")

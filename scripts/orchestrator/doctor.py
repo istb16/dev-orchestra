@@ -45,6 +45,9 @@ ROLE_LABELS = (
     ("review_fixer", "Review fixer"),
 )
 
+#: The optional risk judge role, listed after the others when a file sets it.
+RISK_JUDGE_LABEL = (config_mod.RISK_JUDGE_ROLE, "Risk judge")
+
 #: The live check, next to this package: the same file from a plugin install.
 SMOKE_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "smoke_live.py")
 
@@ -367,6 +370,17 @@ def _roles_report(
                     _ignored_options(tier_label, tier_options, report["problems"])
                 if not seat.same_provider:
                     _enforcement_report(tier_label, seat.spec, report, None, seat.label in refused)
+    # The risk judge, only when a file sets its block: it is optional, and
+    # read-only like the seats above.
+    judge = loaded.risk_judge_spec()
+    if judge is not None:
+        key, label = RISK_JUDGE_LABEL
+        entry = _describe_role(
+            label, judge, detections, report["problems"], adapter_errors, load_errors, read_only=True
+        )
+        entry["mode"] = loaded.risk_judge_mode()
+        report["roles"][key] = entry
+        _enforcement_report(label, judge, report, entry, key in refused)
 
 
 def _reviewers_report(
@@ -1036,10 +1050,14 @@ def _config_lines(config_info: Dict[str, Any], language: Optional[Dict[str, Any]
 def _roles_lines(report: Dict[str, Any]) -> List[str]:
     """Each role, its options, and the reviewer panel."""
     lines = ["Roles"]
-    for key, _label in ROLE_LABELS:
+    shown = ROLE_LABELS
+    if RISK_JUDGE_LABEL[0] in report["roles"]:
+        shown = (*ROLE_LABELS, RISK_JUDGE_LABEL)
+    for key, _label in shown:
         entry = report["roles"].get(key, {})
-        lines.append("  %-13s %s" % (entry.get("label", key) + ":", _role_line(entry)))
-    for key, _label in ROLE_LABELS:
+        mode = " (mode: %s)" % entry["mode"] if "mode" in entry else ""
+        lines.append("  %-13s %s%s" % (entry.get("label", key) + ":", _role_line(entry), mode))
+    for key, _label in shown:
         entry = report["roles"].get(key, {})
         if entry.get("options"):
             lines.append("      %s options: %s" % (key, entry["options"]))

@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import unittest
-from typing import Any, ClassVar, Dict
+from typing import Any, ClassVar, Dict, List, Tuple
+from unittest import mock
 
 from helpers import IsolatedCase, has_git, read_file, run_cli, spend_the_runtime_budget
 
+from orchestrator import review as review_mod
 from orchestrator import round_progress
 from orchestrator import workspace as ws
+from orchestrator.providers.base import RunResult
+from orchestrator.providers.mock import MockProvider
 
 FINDING = """## Finding
 - Severity: high
@@ -1062,6 +1067,350 @@ class TestTheScorecardThroughTheCli(IsolatedCase):
         self.assertIn("biased", out)
         self.assertIn("either way", out)
         self.assertNotIn("understates", out)
+
+
+def judge_answer(needed: bool, risk: str) -> str:
+    """The judge's JSON answer, every specialist kind ``needed`` and the change ``risk``."""
+    kinds = ("security", "performance", "test", "architecture", "database", "frontend", "backend")
+    return json.dumps({"risk": risk, "specialists": dict.fromkeys(kinds, needed), "reason": "canned"})
+
+
+@unittest.skipUnless(has_git(), "git is required")
+class TestRiskJudgeRound(IsolatedCase):
+    """``optimization.risk_judge: record`` on a code round: recorded beside it, never acted on (#403)."""
+
+    def setUp(self):
+        super().setUp()
+        self.init_git_repo()
+        self.write("app.py", "def add(a, b):\n    return a + b\n")
+        self.commit_all("init")
+        self.write("app.py", "def add(a, b):\n    return a - b\n")
+
+        mock_dir = os.path.join(self.tmp, "mock")
+        os.makedirs(mock_dir)
+        with open(os.path.join(mock_dir, "review.txt"), "w", encoding="utf-8") as handle:
+            handle.write(FINDING)
+        os.environ["DEV_ORCHESTRA_MOCK_DIR"] = mock_dir
+
+        run_cli("config", "setup", "--defaults")
+        run_cli("reviewer", "remove", "claude-general")
+        run_cli("reviewer", "remove", "codex-general")
+        run_cli("reviewer", "remove", "claude-security")
+        run_cli("reviewer", "remove", "claude-test")
+        run_cli("reviewer", "add", "--provider", "mock", "--id", "m1", "--role", "general")
+        run_cli("reviewer", "add", "--provider", "mock", "--id", "m2", "--role", "security")
+        run_cli("config", "set", "optimization.level", "quality")
+        run_cli("config", "set", "risk_judge.provider", "mock")
+        run_cli("config", "set", "risk_judge.model.family", "mock-small")
+        run_cli("config", "set", "risk_judge.model.version", "latest")
+
+    def judged_by(self, answer: str) -> Any:
+        """The judge's provider answering ``answer``; the panel's mock is untouched."""
+        provider = MockProvider()
+        original = provider.run
+
+        def run(*args: Any, **kwargs: Any) -> Any:
+            result = original(*args, **kwargs)
+            if result.ok:
+                result.stdout = answer
+            return result
+
+        mock.patch.object(provider, "run", side_effect=run).start()
+        self.addCleanup(mock.patch.stopall)
+        return mock.patch("orchestrator.risk_judge.get_provider", return_value=provider)
+
+    def round_in(self, workflow: str, *flags: str) -> Tuple[int, Dict[str, Any], str]:
+        """``(exit code, --json payload, stderr)`` of one code round in ``workflow``."""
+        run_cli("--workflow", workflow, "review", "snapshot")
+        code, out, err = run_cli("--workflow", workflow, "review", "run", "--json", *flags)
+        return code, json.loads(out), err
+
+    def events(self, workflow: str, stage: str) -> List[Dict[str, Any]]:
+        state = self.cli_workspace(workflow).read_state()
+        return [event for event in state.get("events") or [] if event.get("stage") == stage]
+
+    @staticmethod
+    def what_the_round_decided(code: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "exit": code,
+            "optimization": payload["optimization"],
+            "ran": sorted(
+                (str(entry.get("id")), entry.get("status"), entry.get("model_slot"))
+                for entry in payload["reviewers"]
+            ),
+            "findings": payload.get("findings"),
+        }
+
+    def test_round_identical_with_judge_on_and_off(self):
+        cases = (("rules", None), ("high", judge_answer(True, "high")), ("low", judge_answer(False, "low")))
+        decided = {}
+        for name, answer in cases:
+            run_cli("config", "set", "optimization.risk_judge", "rules" if answer is None else "record")
+            rounds = []
+            # Each round in a workflow of its own: each is a first round, so
+            # the --high-risk one is judged too, not skipped as already judged.
+            for flags in ((), ("--high-risk",)):
+                workflow = "%s%s" % (name, "-declared" if flags else "")
+                if answer is None:
+                    code, payload, err = self.round_in(workflow, *flags)
+                else:
+                    with self.judged_by(answer):
+                        code, payload, err = self.round_in(workflow, *flags)
+                judge_notes = [line for line in err.splitlines() if line.startswith("note: risk judge")]
+                self.assertEqual(len(judge_notes), 0 if answer is None else 1, err)
+                self.assertEqual("risk_judge" in payload, answer is not None)
+                if answer is not None:
+                    self.assertTrue(judge_notes[0].startswith("note: risk judge (recorded"), err)
+                    record = payload["risk_judge"]
+                    self.assertEqual(record["status"], "ok")
+                    self.assertEqual(record["high_risk"]["declared"], bool(flags))
+                rounds.append(self.what_the_round_decided(code, payload))
+                review_events = self.events(workflow, "review")
+                self.assertEqual(len(review_events), 1)
+                self.assertEqual("risk_judge" in review_events[0], answer is not None)
+                self.assertEqual(len(self.events(workflow, "risk_judge")), 0 if answer is None else 1)
+            decided[name] = rounds
+        self.assertEqual(decided["high"], decided["rules"])
+        self.assertEqual(decided["low"], decided["rules"])
+
+    def judge_runs(self, result: Any) -> Any:
+        """The judge's provider returning ``result`` without running anything."""
+        provider = MockProvider()
+        mock.patch.object(provider, "run", return_value=result).start()
+        self.addCleanup(mock.patch.stopall)
+        return mock.patch("orchestrator.risk_judge.get_provider", return_value=provider)
+
+    def test_a_judge_that_fails_leaves_the_round_unchanged(self):
+        """Timed out, unparsed or out of budget: one note, and the round decides as under ``rules``."""
+        run_cli("config", "set", "optimization.risk_judge", "rules")
+        code, payload, _ = self.round_in("rules")
+        expected = self.what_the_round_decided(code, payload)
+        run_cli("config", "set", "optimization.risk_judge", "record")
+        timed_out = RunResult(False, 124, "", "", ["mock"], 5.0, timed_out=True)
+        cases = (
+            ("timed_out", lambda: self.judge_runs(timed_out), "timed out"),
+            ("unparsed", lambda: self.judged_by("Looks fine to me."), "unparsed"),
+            ("budget_spent", lambda: self.judged_by(judge_answer(True, "high")), "budget spent"),
+        )
+        for status, judge, said in cases:
+            with self.subTest(status=status):
+                if status == "budget_spent":
+                    run_cli("config", "set", "budgets.risk_judge", "0")
+                with judge():
+                    code, payload, err = self.round_in(status)
+                self.assertEqual(self.what_the_round_decided(code, payload), expected)
+                self.assertEqual(payload["risk_judge"]["status"], status)
+                judge_notes = [line for line in err.splitlines() if line.startswith("note: risk judge")]
+                self.assertEqual(
+                    judge_notes, [line for line in err.splitlines() if "risk judge %s:" % said in line], err
+                )
+                self.assertEqual(len(judge_notes), 1, err)
+                self.assertTrue(judge_notes[0].endswith("; the round is unchanged"), err)
+                self.assertEqual(self.events(status, "review")[-1]["risk_judge"]["status"], status)
+
+    def test_a_refusal_is_the_same_with_the_judge_on(self):
+        """A refused round is not judged, and refused the same way."""
+        run_cli("config", "set", "review.code.max_iterations", "1")
+        found = {}
+        for name, mode in (("off", "rules"), ("on", "record")):
+            run_cli("config", "set", "optimization.risk_judge", mode)
+            self.write("app.py", "def add(a, b):\n    return a - b\n")
+            with self.judged_by(judge_answer(True, "high")):
+                self.assertEqual(self.round_in(name)[0], 0)
+                # A changed tree, so the next snapshot is round 2, past the budget.
+                self.write("app.py", "def add(a, b):\n    return a * b\n")
+                run_cli("--workflow", name, "review", "snapshot")
+                code, _, err = run_cli("--workflow", name, "review", "run")
+            refusal = [line for line in err.splitlines() if "refus" in line]
+            review_events = [
+                (event.get("status"), event.get("iteration"), event.get("refused_by"))
+                for event in self.events(name, "review")
+            ]
+            found[name] = (code, refusal, review_events)
+        self.assertEqual(found["on"], found["off"])
+        self.assertEqual(found["on"][0], 3)
+        self.assertIn("refusing to run review round 2", "\n".join(found["on"][1]))
+        # Only the first round was judged; the refused one was not.
+        self.assertEqual(len(self.events("on", "risk_judge")), 1)
+
+    def test_judge_record_in_event_consolidated_and_json(self):
+        run_cli("config", "set", "optimization.risk_judge", "record")
+        with self.judged_by(judge_answer(True, "high")):
+            code, payload, err = self.round_in("test")
+        self.assertEqual(code, 0)
+        record = payload["risk_judge"]
+        self.assertEqual((record["mode"], record["status"], record["risk"]), ("record", "ok", "high"))
+        self.assertEqual(record["high_risk"]["judge"], True)
+        kinds = json.loads(judge_answer(True, "low"))["specialists"]
+        self.assertEqual(sorted(record["kinds"]), sorted(kinds))
+        self.assertTrue(all(block["judge"] is True for block in record["kinds"].values()))
+        self.assertEqual(record["kinds"]["security"]["seats"], ["m2"])
+        self.assertIn("note: risk judge (recorded, not acted on): risk high", err)
+
+        workspace = self.cli_workspace()
+        self.assertEqual(self.events("test", "review")[-1]["risk_judge"], record)
+        self.assertEqual(ws.read_json(workspace.consolidated_json_path)["risk_judge"], record)
+        archived = ws.list_files(workspace.rounds_dir, ".json")
+        self.assertEqual(len(archived), 1)
+        self.assertEqual(ws.read_json(archived[0])["risk_judge"], record)
+
+        # Rebuilt from the last report: carried over for the same round.
+        self.assertEqual(run_cli("review", "consolidate")[0], 0)
+        self.assertEqual(ws.read_json(workspace.consolidated_json_path)["risk_judge"], record)
+
+    def test_a_rerun_of_a_judged_round_keeps_its_record(self):
+        """The repeat is skipped, and the report keeps the round's verdict."""
+        run_cli("config", "set", "optimization.risk_judge", "record")
+        with self.judged_by(judge_answer(False, "low")):
+            _, first, _ = self.round_in("test")
+            code, out, err = run_cli("review", "run", "--json", "--only", "m2")
+        self.assertEqual(code, 0)
+        again = json.loads(out)["risk_judge"]
+        self.assertEqual(again["status"], "skipped")
+        self.assertIn("already judged", again["skip_reason"])
+        self.assertIn("note: risk judge skipped", err)
+        self.assertEqual(self.events("test", "review")[-1]["risk_judge"], again)
+        live = ws.read_json(self.cli_workspace().consolidated_json_path)
+        self.assertEqual(live["risk_judge"], first["risk_judge"])
+        self.assertEqual(len(self.events("test", "risk_judge")), 1)
+
+    def test_a_new_round_does_not_carry_the_last_record(self):
+        run_cli("config", "set", "optimization.risk_judge", "record")
+        with self.judged_by(judge_answer(True, "high")):
+            self.round_in("test")
+        run_cli("config", "set", "optimization.risk_judge", "rules")
+        code, payload, _ = self.round_in("test")
+        self.assertEqual(code, 0)
+        self.assertNotIn("risk_judge", payload)
+        self.assertNotIn("risk_judge", ws.read_json(self.cli_workspace().consolidated_json_path))
+        self.assertNotIn("risk_judge", self.events("test", "review")[-1])
+
+    @staticmethod
+    def judge_notes(err: str) -> List[str]:
+        return [line for line in err.splitlines() if line.startswith("note: risk judge")]
+
+    def test_a_failed_panel_prints_the_note_once_and_its_rerun_is_judged(self):
+        """The record of a round whose panel failed was saved nowhere, so the re-run judges it."""
+        run_cli("config", "set", "optimization.risk_judge", "record")
+        with self.judged_by(judge_answer(True, "high")):
+            run_cli("review", "snapshot")
+            failure = review_mod.ReviewError("the panel fell over")
+            with mock.patch.object(review_mod, "run_reviews", side_effect=failure):
+                code, _, err = run_cli("review", "run")
+            self.assertEqual(code, 2)
+            self.assertIn("the panel fell over", err)
+            notes = self.judge_notes(err)
+            self.assertEqual(len(notes), 1, err)
+            self.assertTrue(notes[0].startswith("note: risk judge (recorded, not acted on): risk high"))
+            self.assertEqual(len(self.events("test", "risk_judge")), 1)
+            self.assertNotIn("risk_judge", self.events("test", "review")[-1])
+            code, out, err = run_cli("review", "run", "--json")
+        self.assertEqual(code, 0)
+        record = json.loads(out)["risk_judge"]
+        self.assertEqual((record["status"], record["risk"]), ("ok", "high"))
+        self.assertEqual(len(self.judge_notes(err)), 1, err)
+        self.assertEqual(len(self.events("test", "risk_judge")), 2)
+        self.assertEqual(self.events("test", "review")[-1]["risk_judge"], record)
+        self.assertEqual(ws.read_json(self.cli_workspace().consolidated_json_path)["risk_judge"], record)
+
+    def test_ctrl_c_during_the_panel_does_not_wait_for_the_judge(self):
+        """Interrupted, the round stops now: the judge's run is left behind, not joined."""
+        run_cli("config", "set", "optimization.risk_judge", "record")
+        started, release = threading.Event(), threading.Event()
+        finished: List[bool] = []
+        provider = MockProvider()
+        original = provider.run
+
+        def slow_judge(*args: Any, **kwargs: Any) -> Any:
+            started.set()
+            release.wait(10)
+            finished.append(True)
+            return original(*args, **kwargs)
+
+        def interrupted(*args: Any, **kwargs: Any) -> Any:
+            started.wait(10)
+            raise KeyboardInterrupt
+
+        mock.patch.object(provider, "run", side_effect=slow_judge).start()
+        self.addCleanup(mock.patch.stopall)
+        run_cli("review", "snapshot")
+        with mock.patch("orchestrator.risk_judge.get_provider", return_value=provider):
+            with mock.patch.object(review_mod, "run_reviews", side_effect=interrupted):
+                code, _, err = run_cli("review", "run")
+            self.assertEqual(code, 130, err)
+            # Returned while the judge was still running.
+            self.assertEqual(finished, [])
+            release.set()
+            for thread in threading.enumerate():
+                if thread.name == "risk-judge":
+                    thread.join(10)
+
+    def test_a_fix_only_round_records_its_skip(self):
+        run_cli("config", "set", "optimization.risk_judge", "record")
+        with self.judged_by(judge_answer(True, "high")):
+            self.assertEqual(self.round_in("test")[0], 0)
+            for finding in json.loads(run_cli("review", "show", "--json")[1])["findings"]:
+                run_cli("review", "triage", finding["id"], "--status", "accepted")
+            self.write("app.py", "def add(a, b):\n    return a + b  # fixed\n")
+            meta = json.loads(run_cli("review", "snapshot", "--json")[1])
+            self.assertTrue(meta["incremental_from"])
+            code, out, err = run_cli("review", "run", "--json")
+        self.assertEqual(code, 0)
+        record = json.loads(out)["risk_judge"]
+        self.assertEqual((record["status"], record["skip_reason"]), ("skipped", "fix-only round"))
+        self.assertIsNone(record["risk"])
+        self.assertEqual(self.judge_notes(err), ["note: risk judge skipped: fix-only round"])
+        self.assertEqual(self.events("test", "review")[-1]["risk_judge"], record)
+        self.assertEqual(ws.read_json(self.cli_workspace().consolidated_json_path)["risk_judge"], record)
+        # Only the first round ran the judge.
+        self.assertEqual(len(self.events("test", "risk_judge")), 1)
+
+    def test_optimization_report_has_the_section_once_a_round_is_recorded(self):
+        _, out, _ = run_cli("optimization", "report", "--json")
+        self.assertNotIn("risk_judge", json.loads(out))
+        self.assertNotIn("Risk judge", run_cli("optimization", "report")[1])
+        run_cli("config", "set", "optimization.risk_judge", "record")
+        with self.judged_by(judge_answer(True, "high")):
+            self.assertEqual(self.round_in("test")[0], 0)
+        code, out, _ = run_cli("optimization", "report", "--json")
+        self.assertEqual(code, 0)
+        summary = json.loads(out)["risk_judge"]
+        self.assertEqual(summary["rounds"], 1)
+        self.assertEqual(summary["statuses"], {"ok": 1})
+        self.assertEqual(summary["risk"], {"high": 1})
+        _, text, _ = run_cli("optimization", "report")
+        self.assertIn("Risk judge (recorded, not acted on), code review rounds: 1", text)
+
+    def test_doctor_lists_the_risk_judge_with_its_mode(self):
+        _, out, _ = run_cli("doctor", "--fast")
+        self.assertIn("Risk judge:", out)
+        self.assertIn("(mode: rules)", out)
+        run_cli("config", "set", "optimization.risk_judge", "record")
+        _, out, _ = run_cli("doctor", "--fast")
+        line = [row for row in out.splitlines() if row.strip().startswith("Risk judge:")]
+        self.assertEqual(len(line), 1, out)
+        self.assertTrue(line[0].endswith("(mode: record)"), line[0])
+        self.assertIn("mock", line[0])
+        payload = json.loads(run_cli("doctor", "--fast", "--json")[1])
+        self.assertEqual(payload["roles"]["risk_judge"]["mode"], "record")
+        self.assertEqual(payload["roles"]["risk_judge"]["label"], "Risk judge")
+
+    def test_judge_usage_charged(self):
+        run_cli("config", "set", "optimization.risk_judge", "record")
+        with self.judged_by(judge_answer(True, "medium")):
+            self.assertEqual(self.round_in("test")[0], 0)
+        state = self.cli_workspace().read_state()
+        self.assertIn("risk_judge", state["ledger"]["tokens"]["by_stage"])
+        judged = self.events("test", "risk_judge")
+        self.assertEqual(len(judged), 1)
+        self.assertEqual(judged[0]["status"], "ok")
+        review = self.events("test", "review")[-1]
+        # ``suspended_seconds`` is left out of an entry when nothing slept.
+        durations = sum(r["duration_seconds"] - r.get("suspended_seconds", 0.0) for r in review["reviewers"])
+        # The panel is charged for the panel alone; the judge has its own entry.
+        self.assertAlmostEqual(review["charged_seconds"], durations, places=1)
+        total = review["charged_seconds"] + judged[0]["charged_seconds"]
+        self.assertAlmostEqual(state["ledger"]["runtime_seconds"], total, places=1)
 
 
 if __name__ == "__main__":

@@ -2076,7 +2076,7 @@ class TestRunTimeout(IsolatedCase):
                 self.assertEqual(self.problems({"timeout_seconds": {"architect": value}}), [message])
         unknown = (
             "run.timeout_seconds.reviewer: unknown role "
-            "(known: orchestrator, architect, implementer, review_fixer)"
+            "(known: orchestrator, architect, implementer, review_fixer, risk_judge)"
         )
         self.assertEqual(self.problems({"timeout_seconds": {"reviewer": 900}}), [unknown])
         self.assertEqual(self.problems(3), ["run: must be a mapping"])
@@ -2124,6 +2124,139 @@ class TestRunTimeout(IsolatedCase):
             ),
             [],
         )
+
+
+class TestRiskJudgeConfig(IsolatedCase):
+    """``optimization.risk_judge`` and the top-level ``risk_judge`` role (#403)."""
+
+    ROLE: ClassVar[Dict[str, Any]] = {"provider": "claude", "model": {"family": "haiku", "version": "latest"}}
+
+    def problems(self, mode=None, role=None):
+        data = config_mod.default_config()
+        data["optimization"]["risk_judge"] = mode
+        if role is not None:
+            data["risk_judge"] = role
+        return config_mod.validate(data)
+
+    def test_defaults_add_no_role_and_read_rules(self):
+        data = config_mod.default_config()
+        self.assertEqual(data["optimization"]["risk_judge"], "rules")
+        self.assertNotIn("risk_judge", data)
+        self.assertNotIn("risk_judge", config_mod.KNOWN_ROLES)
+        loaded = config_mod.load(self.project)
+        self.assertEqual(loaded.risk_judge_mode(), "rules")
+        self.assertIsNone(loaded.risk_judge_spec())
+        self.assertEqual(config_mod.run_timeout(loaded, "risk_judge"), (180, "default"))
+
+    def test_risk_judge_mode_values(self):
+        for mode in ("rules", None):
+            with self.subTest(mode=mode):
+                self.assertEqual(self.problems(mode), [])
+        self.assertEqual(self.problems("record", self.ROLE), [])
+        for mode in ("ai-escalate", "ai"):
+            with self.subTest(mode=mode):
+                self.assertEqual(
+                    self.problems(mode, self.ROLE),
+                    [
+                        "optimization.risk_judge: %s is not available yet (stage 1 accepts rules, record)"
+                        % mode
+                    ],
+                )
+        [line] = self.problems(False)
+        self.assertIn("write `rules`", line)
+        [line] = self.problems("Record", self.ROLE)
+        self.assertIn("must be one of rules, record, or null", line)
+        self.assertNotIn("write `rules`", line)
+
+    def test_an_unquoted_off_is_refused_with_the_hint(self):
+        self.write(".dev-orchestra.yaml", "version: 1\noptimization:\n  risk_judge: off\n")
+        loaded = config_mod.load(self.project, validate_result=False)
+        self.assertEqual(loaded.risk_judge_mode(), "rules")
+        problems = config_mod.validate_loaded(loaded)
+        self.assertTrue(any("write `rules`" in p for p in problems), problems)
+
+    def test_record_without_role_is_a_problem(self):
+        self.assertEqual(
+            self.problems("record"),
+            [
+                "optimization.risk_judge: record needs a risk_judge role "
+                "(set risk_judge.provider and risk_judge.model)"
+            ],
+        )
+
+    def test_the_role_is_checked_as_a_role(self):
+        self.assertEqual(self.problems("rules", self.ROLE), [])
+        problems = self.problems("record", {"model": self.ROLE["model"]})
+        self.assertIn("risk_judge: provider is required", problems)
+        self.assertEqual(
+            self.problems("record", "claude"), ["risk_judge: must be a mapping with provider and model"]
+        )
+        tiered = dict(self.ROLE, model_tiers={"light": {"model": {"family": "sonnet", "version": "latest"}}})
+        self.assertEqual(
+            self.problems("record", tiered),
+            ["risk_judge.model_tiers: not supported; the judge runs one model"],
+        )
+
+    def test_the_role_and_its_timeout_are_known_keys(self):
+        layer = {
+            "risk_judge": dict(self.ROLE, options={"effort": "low"}),
+            "run": {"timeout_seconds": {"risk_judge": 60}},
+            "optimization": {"risk_judge": "record"},
+            "budgets": {"risk_judge": 2},
+        }
+        self.assertEqual(config_validation.unknown_keys(layer), [])
+
+    def test_mode_and_spec_read_from_the_files(self):
+        self.write(
+            ".dev-orchestra.yaml",
+            "version: 1\noptimization:\n  risk_judge: record\n"
+            "risk_judge:\n  provider: claude\n  model:\n    family: haiku\n    version: latest\n"
+            "run:\n  timeout_seconds:\n    risk_judge: 90\n",
+        )
+        loaded = config_mod.load(self.project)
+        self.assertEqual(loaded.risk_judge_mode(), "record")
+        self.assertEqual((loaded.risk_judge_spec() or {}).get("provider"), "claude")
+        self.assertEqual(config_mod.run_timeout(loaded, "risk_judge"), (90, "project"))
+
+    def test_run_timeout_accepts_risk_judge(self):
+        data = config_mod.default_config()
+        data["run"]["timeout_seconds"]["risk_judge"] = 60
+        self.assertEqual(config_mod.validate(data), [])
+        data["run"]["timeout_seconds"]["risk_judge"] = 0
+        self.assertEqual(
+            config_mod.validate(data), ["run.timeout_seconds.risk_judge: must be a positive integer"]
+        )
+
+    def test_risk_judge_role_is_a_read_only_seat(self):
+        self.write(
+            ".dev-orchestra.yaml",
+            "version: 1\nrisk_judge:\n  provider: claude\n  model:\n    family: haiku\n    version: latest\n"
+            '  options:\n    args: ["--add-dir", "x"]\n',
+        )
+        loaded = config_mod.load(self.project)
+        labels = [seat.label for seat in config_mod.read_only_seats(loaded.data)]
+        self.assertIn("risk_judge", labels)
+        self.assertEqual(list(policy_mod.project_raw_arg_refusals(loaded)), ["risk_judge"])
+
+    def test_a_provider_only_the_judge_uses_is_referenced(self):
+        data = {"risk_judge": {"provider": "judge-cli", "model": {"family": "small"}}}
+        self.assertEqual(config_mod.referenced_providers(data), ["judge-cli"])
+
+    def test_role_blocks_are_the_run_roles_then_the_judge(self):
+        self.assertEqual(config_mod.ROLE_BLOCKS, (*config_mod.KNOWN_ROLES, "risk_judge"))
+        self.assertEqual(sorted(config_mod.ROLE_TIMEOUT_DEFAULTS), sorted(config_mod.ROLE_BLOCKS))
+        # The default configuration's deadlines stay the run roles' alone.
+        self.assertNotIn("risk_judge", config_mod.default_config()["run"]["timeout_seconds"])
+
+    def test_ledger_budget_is_shown_only_once_used(self):
+        from orchestrator import ledger as ledger_mod
+
+        self.assertEqual(ledger_mod.DEFAULT_BUDGETS["risk_judge"], 4)
+        self.assertIn("risk_judge", ledger_mod.BUDGETED_STAGES)
+        book = ledger_mod.Ledger(self.cli_workspace(), dict(ledger_mod.DEFAULT_BUDGETS))
+        self.assertNotIn("risk_judge", book.summary()["budgets"])
+        book.consume("risk_judge")
+        self.assertEqual(book.summary()["budgets"]["risk_judge"], {"used": 1, "limit": 4, "remaining": 3})
 
 
 class TestPruneLayer(IsolatedCase):

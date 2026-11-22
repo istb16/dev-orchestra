@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import threading
 from typing import (
     Any,
+    Callable,
     Dict,
     List,
     NamedTuple,
@@ -19,7 +21,7 @@ from typing import (
 from . import config as config_mod
 from . import config_policy as policy_mod
 from . import context as context_mod
-from . import instructions, review_tests
+from . import instructions, review_tests, risk_judge
 from . import ledger as ledger_mod
 from . import optimization as opt_mod
 from . import review as review_mod
@@ -740,40 +742,95 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     refusal = _refuse_if_runtime_spent(book, "review", args.force)
     if refusal is not None:
         return refusal
+    # After every refusal, so a refused round is never judged; beside the
+    # panel, so it adds no wall clock. Nothing it returns reaches the round.
+    judged = _start_judge(loaded, workspace, book, meta, plan, configured)
     ctx = _RoundContext(args, loaded, settings, workspace, book, _CODE, iteration)
-    panel = _run_panel(
-        ctx,
-        reviewers,
-        max_findings=plan.max_findings,
-        over_budget=size.over_budget,
-        budget_chars=size.budget_chars,
-        inline_chars=size.inline_chars,
-        extra_context=args.context or "",
-        surrounding=size.adoption,
-        # Once per round: every seat is handed the same premises.
-        decisions=render_code_decisions(workspace, lineage, meta),
-    )
+    try:
+        panel = _run_panel(
+            ctx,
+            reviewers,
+            max_findings=plan.max_findings,
+            over_budget=size.over_budget,
+            budget_chars=size.budget_chars,
+            inline_chars=size.inline_chars,
+            extra_context=args.context or "",
+            surrounding=size.adoption,
+            # Once per round: every seat is handed the same premises.
+            decisions=render_code_decisions(workspace, lineage, meta),
+        )
+    except Exception:
+        # Joined when the panel fails, so the judge's run is not cut off with
+        # its ledger entry open. Not on Ctrl-C: that stops the command now,
+        # and the daemon thread is left behind rather than waited on.
+        judged()
+        raise
+    judge = judged()
     if isinstance(panel, int):
+        _judge_lines(judge)
         return panel
     runs = panel.runs
     context_on = size.adoption.mode != "none"
+    record = judge.to_dict() if judge is not None else None
 
     data, detail, measurement, stale = _consolidate_code_round(
-        ctx, panel, meta, plan, size, excluded, configured, override, lineage, switched
+        ctx, panel, meta, plan, size, excluded, configured, override, lineage, switched, record
     )
     run_dicts = detail["reviewers"]
     _end_round(ctx, panel.token, detail, runs)
     _round_notes(ctx, detail["identical_rounds"], stale, size.rerun)
     _cap_notes(runs, plan.max_findings)
+    _judge_lines(judge)
 
     return _print_round(
         ctx,
         runs,
         run_dicts,
         data,
-        _code_payload_extra(plan, size.adoption, context_on, measurement),
+        _code_payload_extra(plan, size.adoption, context_on, measurement, record),
         _surrounding_run_lines(size.adoption, override, context_on),
     )
+
+
+def _start_judge(
+    loaded: config_mod.LoadedConfig,
+    workspace: ws.Workspace,
+    book: ledger_mod.Ledger,
+    meta: Dict[str, Any],
+    plan: opt_mod.Plan,
+    configured: List[Dict[str, Any]],
+) -> Callable[[], Optional[risk_judge.Record]]:
+    """Start the risk judge in a thread under ``optimization.risk_judge: record``.
+
+    Returns the call that joins it and gives its record. Under ``rules`` no
+    thread is started and the call gives None, so the round is what it was.
+    """
+    if loaded.risk_judge_mode() != "record":
+        return lambda: None
+    found: List[risk_judge.Record] = []
+
+    def judge() -> None:
+        record = risk_judge.run_judge(loaded, workspace, book, meta, plan, configured)
+        if record is not None:
+            found.append(record)
+
+    thread = threading.Thread(target=judge, name="risk-judge", daemon=True)
+    thread.start()
+
+    def joined() -> Optional[risk_judge.Record]:
+        thread.join()
+        return found[0] if found else None
+
+    return joined
+
+
+def _judge_lines(judge: Optional[risk_judge.Record]) -> None:
+    """The judge's ``warning:`` lines, then its one ``note:``; nothing under ``rules``."""
+    if judge is None:
+        return
+    for warning in judge.warnings:
+        _err("warning: %s: %s" % (config_mod.RISK_JUDGE_ROLE, warning))
+    _err(judge.note)
 
 
 def _warn_and_limit(
@@ -803,6 +860,7 @@ def _consolidate_code_round(
     override: Optional[str],
     lineage: str,
     switched: Sequence[str] = (),
+    judge: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any], Optional[Dict[str, Any]], List[str]]:
     """Account, consolidate and save a code round that ran.
 
@@ -810,11 +868,19 @@ def _consolidate_code_round(
     the round's event detail, its measurement block (None without
     ``--surrounding``), and the reviewers whose reports were stale.
     ``switched`` holds the ids that ran on their ``high_risk_model``.
+    ``judge`` is the risk judge's record, None under ``rules``.
     """
     workspace = ctx.workspace
     adoption, rerun = size.adoption, size.rerun
     context_on = adoption.mode != "none"
     run_dicts = _account_runs(ctx, panel, switched)
+
+    def amend(built: Dict[str, Any]) -> None:
+        _record_triage_at_build(built, override, rerun)
+        # A repeat of a judged round keeps the record carried over from it.
+        if judge is not None and not (judge.get("status") == "skipped" and "risk_judge" in built):
+            built["risk_judge"] = judge
+
     # Passed whether or not anyone returned: nothing is approved over a code
     # round, so the id only has to name the round this report was built for.
     data, stale = _consolidate_round(
@@ -825,10 +891,12 @@ def _consolidate_code_round(
         ctx.iteration,
         lineage,
         completed_round=meta.get("round_id"),
-        amend=lambda built: _record_triage_at_build(built, override, rerun),
+        amend=amend,
         blocking=ctx.loaded.blocking_severities(),
     )
     detail = _round_detail(ctx, meta, data, run_dicts, plan.to_dict(), rerun)
+    if judge is not None:
+        detail["risk_judge"] = judge
     measurement = None
     if override:
         measurement = _measurement_block(
@@ -867,6 +935,7 @@ def _code_payload_extra(
     adoption: context_mod.Adoption,
     context_on: bool,
     measurement: Optional[Dict[str, Any]],
+    judge: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """The code round's keys beside the common ones in its printed payload."""
     payload_extra: Dict[str, Any] = {"optimization": plan.to_dict()}
@@ -874,6 +943,8 @@ def _code_payload_extra(
         payload_extra["surrounding"] = adoption.record()
     if measurement is not None:
         payload_extra["measurement"] = measurement
+    if judge is not None:
+        payload_extra["risk_judge"] = judge
     return payload_extra
 
 

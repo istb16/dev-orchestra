@@ -11,6 +11,7 @@
 - [Design review](#design-review)
 - [When a review does not run, or runs smaller](#when-a-review-does-not-run-or-runs-smaller)
   - [Roles a round does not need](#roles-a-round-does-not-need)
+  - [A second opinion on risk](#a-second-opinion-on-risk)
 - [Roles](#roles)
 - [Output schema](#output-schema)
   - [Output limits](#output-limits)
@@ -681,6 +682,108 @@ the first time at all, by the same rules on the plan. The default `standard`
 panel's `claude-test` is the seat affected; a `quality` preset user's
 `architecture` and `test` seats are too. A security seat sits out only once
 you set `relevance: security` on it, and then by its path patterns alone.
+
+### A second opinion on risk
+
+Everything above decides from path names and seat conditions. With
+`optimization.risk_judge: record` and a `risk_judge` role (see
+`references/configuration.md`, "A second opinion on risk"), a code round also
+asks a cheap model for its own reading of the diff, and records it beside what
+the rules decide. It is recorded, never acted on: the round's panel, level,
+findings cap, model slots, refusals and exit code are the same whatever it
+answers, and whether it ran at all. Under `rules`, the default, it does not
+run and no output changes.
+
+**When it runs.** At most once per code round (`round_id`), in a thread beside
+the panel, after the test gate, the size refusal and the runtime refusal: a
+refused round is not judged and gets no record. A fix-only re-review round (a
+snapshot with `incremental_from` that is not the whole-change recheck) and a
+re-run of a round already judged are recorded as `skipped`, with
+`skip_reason`; the re-run keeps the record of the run that judged it. A round
+counts as judged once its event holds a record the judge ran for: one whose
+panel failed saved none, so its re-run is judged again and spends another
+attempt. Design rounds are never judged.
+
+**What it is asked.** The judge reads the change blind: it is told neither the
+pattern hits nor which seats the panel has, so its answer cannot anchor on the
+configuration. Its prompt carries the diff fenced as data, not instructions,
+cut at a file boundary to 40,000 characters or less; a table lists every file
+with its size and lines added and deleted, and marks those left out. It gets
+one neutral line on each of the seven specialist kinds -- `security`,
+`performance`, `test`, `architecture`, `database`, `frontend`, `backend` --
+and is asked about all seven whether or not the panel has a seat of each, so
+records compare across projects. It answers with one JSON object:
+
+```
+{"risk":"low|medium|high","specialists":{"security":true,"performance":false,"test":true,"architecture":false,"database":false,"frontend":false,"backend":false},"reason":"one sentence"}
+```
+
+The last top-level JSON object in the answer is read, so prose or a code
+fence around it does no harm. An answer without one, without `risk` or
+without a boolean for every kind is `unparsed`; extra keys are ignored, and `reason` is kept redacted, on one line, at most
+200 characters. The round prints one line for it after the panel:
+
+```
+note: risk judge (recorded, not acted on): risk medium; specialists: security, test
+note: risk judge timed out: ...; the round is unchanged
+```
+
+A judge on a provider that cannot be held to reading runs as `run` would
+run it -- from the global config, warned; from the project file, refused --
+and the round prints `warning: risk_judge: read-only is NOT enforced by ...`
+before that line.
+
+**The record.** Under `record` the round's event, `consolidated.json` (kept
+across `review consolidate` of the same round), `rounds/*.json` and
+`review run --json` carry a `risk_judge` block:
+
+| Field | Meaning |
+| --- | --- |
+| `mode` | `record` |
+| `status` | `ok`; `skipped` (with `skip_reason`); `failed`, `timed_out`, `stalled`; `unparsed`; `budget_spent` (`budgets.risk_judge` or the runtime budget spent); `refused` (a project file's `options.args`, or read-only enforcement the provider cannot give); `unconfigured` (no `risk_judge` role) |
+| `risk`, `reason` | The judge's answer; null and empty unless `ok` |
+| `provider`, `model`, `usage`, `duration` | The run, as for a reviewer; its tokens are also in `tokens.by_stage.risk_judge` |
+| `diff` | `sent_chars`, `total_chars`, `cut`, `files`, `files_omitted` |
+| `warnings` | What the read-only check and the provider warned of on the run; absent when nothing did |
+| `attempted` | `true` when a run was started and its attempt spent; absent otherwise. A `failed` record without it failed before any run, and leaves the round to be judged again |
+| `high_risk` | `judge` (`risk: high`), `rules` (a high-risk pattern hit), `declared` (`--high-risk`, compared with neither), `agrees` |
+| `kinds.<kind>` | For each of the seven kinds: `judge`, `rules`, `basis`, `rule` and `reason` where a relevance rule decided, `seats` (the ids of the panel's seats of the kind) and `agrees` |
+
+`agrees` is null wherever either side has no answer -- the judge did not
+answer, or no rule decides the kind -- so a kind nothing decides is never
+counted as agreement or disagreement.
+
+**What the rules side is.** For each kind, `rules` is the rule's answer on the
+change itself, not whether a seat ran: a carried finding, `--only`,
+`--high-risk` and the guard that keeps one seat in the round do not change it.
+The first case that applies sets `basis`:
+
+| `basis` | When | `rules` |
+| --- | --- | --- |
+| `paths` | The panel has a `when: paths` seat of the kind | Whether any such seat's patterns match the change |
+| `high-risk` | A `when: high-risk` seat of the kind | Whether the round has a high-risk pattern hit |
+| `relevance` | An always-on seat of the kind whose relevance names a rule (`rule` says which, so a backend seat with `relevance: architecture` gives `rule: architecture`); otherwise, for `security`, `test` and `architecture`, the built-in rule of that name, whether or not the panel has such a seat or it opted in | The rule's answer; null when `optimization.skip_unneeded_roles` is false or the evidence is in doubt (the snapshot lists no reviewed file), with `reason` saying which |
+| `always` | An always-on seat of the kind with no rule | null: no rule decides it, the seat just runs |
+| `none` | No seat of the kind, and no built-in rule | null |
+
+So `security` is always compared with the bare `security` rule
+(`optimization.security_paths` and the high-risk patterns), even when the
+panel's security seat runs every round regardless; `seats` and `basis` say
+what the panel does.
+
+**In the report.** `optimization report` adds a `Risk judge` section once some
+round has a record, counting each round once: the records' statuses, the
+judge's risk levels, a high-risk row and one row per kind. A row counts the
+rounds the judge answered (`ok`) as `both`, `rules only`, `judge only` and
+`neither`; a kind's row adds `no rule` for the rounds where `rules` was null,
+split by `basis`. Then the judge's runs, billed tokens and seconds, and per
+workflow the rounds judged, the high-risk rounds by each side, and the
+accepted critical and high findings, counted in the round that first reported
+them, and how many of them fell in the rules' and in the judge's high-risk
+rounds. `--json` has it under `risk_judge` (`rounds`, `statuses`, `risk`,
+`high_risk`, `kinds.<kind>` with `both`, `rules_only`, `judge_only`,
+`neither`, `no_rule` and `no_rule_by_basis`, `usage`, `workflows`). Under
+`rules` the section is absent.
 
 ## Roles
 

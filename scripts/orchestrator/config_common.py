@@ -64,6 +64,54 @@ RUN_TIMEOUT_DEFAULTS = {
     "review_fixer": 1800,
 }
 
+#: The risk judge's role block: top-level, outside ``KNOWN_ROLES``, so it is
+#: never required and stays out of presets, the wizard and ``run``.
+RISK_JUDGE_ROLE = "risk_judge"
+
+#: The values ``optimization.risk_judge`` accepts in stage 1: ``rules``
+#: decides from the path patterns alone, ``record`` also runs the judge and
+#: records its verdict beside theirs without acting on it.
+RISK_JUDGE_MODES = ("rules", "record")
+
+#: Values a later stage will accept, refused for now as not available yet.
+RISK_JUDGE_LATER = ("ai-escalate", "ai")
+
+#: The statuses of a risk judge record the judge ran for: its attempt was
+#: spent and its answer, or how it failed, is the round's. ``failed`` counts
+#: only with ``attempted`` (``risk_judge_ran``).
+RISK_JUDGE_RAN = ("ok", "failed", "timed_out", "stalled", "unparsed")
+
+
+def risk_judge_ran(record: Dict[str, Any]) -> bool:
+    """Whether the judge ran for this saved risk judge record.
+
+    ``failed`` is also what an error before any run gives, so it counts only
+    with ``attempted``; a record saved before that marker existed never has
+    it. The judge and ``optimization report`` both decide by this which of a
+    round's records is its own.
+    """
+    status = record.get("status")
+    if status == "failed":
+        return record.get("attempted") is True
+    return status in RISK_JUDGE_RAN
+
+
+#: The total deadline of one risk judge run, in seconds, unless
+#: ``run.timeout_seconds.risk_judge`` says otherwise.
+RISK_JUDGE_TIMEOUT = 180
+
+#: Every top-level role block that names a provider: the run roles, then the
+#: risk judge. What reads role blocks reads them through this, so the judge
+#: is never left out of one by hand.
+ROLE_BLOCKS = (*KNOWN_ROLES, RISK_JUDGE_ROLE)
+
+#: The ``ROLE_BLOCKS`` whose runs are read-only: the judge is one.
+READ_ONLY_BLOCKS = tuple(role for role in ROLE_BLOCKS if role not in WRITE_ROLES)
+
+#: The default ``run.timeout_seconds`` of each of ``ROLE_BLOCKS``. Apart from
+#: ``RUN_TIMEOUT_DEFAULTS``, which is what the default configuration writes.
+ROLE_TIMEOUT_DEFAULTS = {**RUN_TIMEOUT_DEFAULTS, RISK_JUDGE_ROLE: RISK_JUDGE_TIMEOUT}
+
 #: The no-output deadline of a ``run`` that may change files, unless
 #: ``review.idle_timeout_seconds`` is larger. Such a run runs the tests or a
 #: build, which can be silent for longer than a reviewer ever is; with no
@@ -80,6 +128,11 @@ BUILTIN_ROLES = (
     "frontend",
     "backend",
 )
+
+#: The specialist reviewer kinds: every built-in role but ``general``. The
+#: risk judge is asked about each, and ``optimization report`` reads its
+#: records by the same list.
+SPECIALIST_KINDS = tuple(role for role in BUILTIN_ROLES if role != "general")
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
@@ -508,6 +561,10 @@ def default_config() -> Dict[str, Any]:
             "extra_security_paths": [],
             "architecture_paths": list(opt_mod.DEFAULT_ARCHITECTURE_PATHS),
             "extra_architecture_paths": [],
+            # `record` also asks the risk_judge role for its own verdict on
+            # each round's diff and records it beside the patterns' verdict.
+            # It never changes the round; `rules` does not run it.
+            "risk_judge": "rules",
         },
         "budgets": {
             "architect": 3,

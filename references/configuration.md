@@ -16,6 +16,7 @@
 - [Standing instructions (`instructions`)](#standing-instructions-instructions)
 - [Work units: tests and ignored files](#work-units-tests-and-ignored-files)
 - [Optimization level](#optimization-level)
+  - [A second opinion on risk (`optimization.risk_judge`)](#a-second-opinion-on-risk-optimizationrisk_judge)
   - [Reviewers that run only on high-risk changes](#reviewers-that-run-only-on-high-risk-changes)
 - [Model tiers](#model-tiers)
 - [Model families and version policy](#model-families-and-version-policy)
@@ -630,6 +631,7 @@ optimization:
   skip_unneeded_roles: true           # a test/architecture seat sits out a round with nothing for it
   auto_tier: true                     # run picks a role's light tier itself when no --tier is given
   narrow_re_reviews: true             # a fix-only re-review round runs only the seats with open findings
+  risk_judge: rules                   # record: also ask the risk_judge role, record its answer, act on none of it
 
 design:
   require_approval: auto              # implementer waits for the user's yes (true, false or auto)
@@ -684,7 +686,7 @@ implementation:
 | `review.code.max_iterations` | int ≥ 0 | Code review rounds (default 2). Rounds per review, not per project: the count restarts on a new branch, a new `--base`, or `budget reset`. `0` disables re-review entirely. The old name `review.max_review_iterations` is still read from either file, unless the same file sets the new one (even to `null`); `doctor` and `config validate` note it, and `config set` of either name writes the new one and drops the old one from that file. |
 | `review.parallel` | bool | `false` runs reviewers one at a time (easier to debug). |
 | `review.re_review_severities` | list | Severities that count as blocking: a non-empty list drawn from `critical`, `high`, `medium` and `low`, in any case (default `[critical, high]`). A single name not in a list, an unknown name and `[]` are refused; a command that reads the file without validating it blocks on the default instead. |
-| `run.timeout_seconds.<role>` | int, 1 to 1,000,000,000 | The total deadline of one `run` of `orchestrator`, `architect`, `implementer` or `review_fixer` (default 3600 for the implementer, 1800 for the others). `--timeout` overrides it for one run. Any other key is refused. Not part of a role's block, so setting it never takes the role out of the preset's fit, and `config setup --preset` keeps it. A run killed at it says so, naming the key. |
+| `run.timeout_seconds.<role>` | int, 1 to 1,000,000,000 | The total deadline of one `run` of `orchestrator`, `architect`, `implementer` or `review_fixer` (default 3600 for the implementer, 1800 for the others), and of one risk judge run, `risk_judge` (default 180). `--timeout` overrides it for one run. Any other key is refused. Not part of a role's block, so setting it never takes the role out of the preset's fit, and `config setup --preset` keeps it. A run killed at it says so, naming the key. |
 | `review.timeout_seconds` | int, 1 to 1,000,000,000 | The total deadline of each reviewer: of a `review run` round's reviewers and of `run <reviewer-id>` (default 1800). It no longer bounds `run` of a role; that is `run.timeout_seconds.<role>`. A timeout is reported, not raised. |
 | `review.idle_timeout_seconds` | int, 1 to 1,000,000,000 \| null | No output for this long, and the run is treated as wedged (default 300; streaming providers only). Shared by reviewers and every `run` that cannot change files: silence does not grow with the task. A run that may change files (implementer, review fixer, `--mode implement`) gets 1200s instead, or this value if larger, since the tests or a build it runs can be silent for longer, while no deadline at all would leave a wedged run going until its total deadline. A role can set or override it with `options.idle_timeout`. |
 | `review.exclude` | list | Glob patterns whose diff body is withheld from reviewers. Replaces the default list wholesale; `[]` reviews everything. |
@@ -711,6 +713,8 @@ implementation:
 | `optimization.skip_unneeded_roles` | bool | `true` (default): a `test` or `architecture` seat that always runs sits out a round with nothing for it, in code review and design review and at every level, `quality` included -- and so does a `security` seat that opts in with `relevance: security`; one that does not always runs. `false` runs every such seat every round, as before. See `references/reviews.md` ("Roles a round does not need"). |
 | `optimization.auto_tier` | bool | `true` (default): `run implementer` and `run review_fixer` without `--tier` choose the role's `light` tier for small, low-risk work and the role's own model otherwise, and say why on a `note:` line. Only a role with a `light` tier is affected. `false` runs the role's own model unless `--tier` names a tier, as before; `run --no-auto-tier` does the same for one run. See [Model tiers](#model-tiers) and `references/workflow.md`. |
 | `optimization.narrow_re_reviews` | bool | `true` (default): a fix-only re-review round (a snapshot with `incremental_from`) runs the seats the role relevance rules would not judge (the `general` seats, `relevance: always`, a security seat that has not opted in) plus the always-on seats that reported an accepted finding still open, and an opted-in security seat when the fix touches `optimization.security_paths`; the others sit it out. A high-risk hit, `--high-risk` or `--only` keeps the usual panel, and with `optimization.skip_unneeded_roles: false` no seat sits it out. `false` runs the usual panel on every round, as before. See `references/reviews.md` ("Roles a round does not need"). |
+| `optimization.risk_judge` | `rules` \| `record` \| null | `rules` (default; `null` too): risk and the specialist seats are decided by the path patterns and the seats' conditions alone, as before. `record` also asks the `risk_judge` role once per code review round for its own verdict on the diff -- a risk level, and whether each specialist kind is needed -- and records it beside what the rules decide; it never changes the round. `record` needs a `risk_judge` role. `ai-escalate` and `ai` are refused as not available yet, and an unquoted `off` (read as `false`) is refused with a hint to write `rules`; a command that reads the file without validating it reads any such value as `rules`. See [A second opinion on risk](#a-second-opinion-on-risk-optimizationrisk_judge). |
+| `risk_judge` | mapping \| null | The risk judge's role block, top-level like `architect`: `provider`, `model` and `options`, checked as a role's are, read-only like a reviewer's, and with no `model_tiers` (the judge runs one model). Optional: no preset, `config setup` or the wizard writes it, and `run` does not take it. `doctor` lists it as *Risk judge* with its mode when a file sets it, and `config show` as *Risk judge* with its deadline, beside a `risk judge: <mode>  (optimization.risk_judge)` line that is also shown under `record` with no block. |
 | `optimization.security_paths` | list | What the `security` rule looks for, for a seat with `relevance: security`, beside the high-risk patterns: request handling and input, file, URL, client, query and database access, execution and deserialisation, configuration and dependency manifests, plus every default high-risk pattern. Replaces the default list wholesale; `[]` leaves only the high-risk patterns (`doctor` reports that). |
 | `optimization.extra_security_paths` | list | Globs added to `security_paths` (default `[]`). |
 | `optimization.architecture_paths` | list | What the `architecture` rule looks for: contracts and schemas, module surface, configuration and record formats, the CLI, the build. Replaces the default list wholesale; `[]` leaves only the size and directory tests (`doctor` reports that). |
@@ -731,6 +735,7 @@ implementation:
 | `reviewers[].instructions` | string \| `{file: <path>}` \| null | A seat's own standing text, after the role-wide `reviewers` (or `design_reviewers`) text. Also on `reviewers_extra` and design panel seats. |
 | `budgets.implementer` | int | Implementer attempts (default 5). A plain `run implementer` spends one per run. The work units of one plan spend one between them, a **pass**: the first unit run on a plan hash spends it, the others join it free, and only a rerun of a unit in the same pass spends another. A new plan hash (under `design.require_approval`, a new approval) or `budget reset` begins a new pass. `budgets.total_delegated_runs` and `budgets.max_runtime_seconds` still count every run; with this budget spent, a unit not yet run in the open pass still runs. |
 | `budgets.architect` | int | Architect attempts (default 3). `run architect --unit` is charged by the same pass rule, keyed on the last approved plan's hash (none before the first approval): the per-unit designs of one round take one attempt, and a redesign after an approval is a new pass. |
+| `budgets.risk_judge` | int | Risk judge attempts (default 4). Each run spends one, and counts toward `budgets.total_delegated_runs` and `budgets.max_runtime_seconds` like any run; spent, the round records `budget_spent` and runs as it would have. The budget summary lists it only once the judge has run. |
 | `<role>.options` | mapping | Provider-specific knobs; see below. |
 | `<role>.model_tiers` | mapping | Named alternatives for this role's model; see below. Optional. |
 
@@ -1087,6 +1092,55 @@ optimization:
   low_risk_max_files: 3
   low_risk_max_lines: 80
 ```
+
+### A second opinion on risk (`optimization.risk_judge`)
+
+The patterns judge a change by its path names. `optimization.risk_judge:
+record` asks a cheap model what it makes of the diff itself, and records the
+answer beside the patterns' so `optimization report` can show where the two
+agree. It is stage 1 of a measurement: **nothing the judge says changes the
+round** -- not the level, the panel, the findings cap, the model slots, a
+refusal or the exit code -- and whether it ran does not either. The default,
+`rules`, does not run it, and every output stays as it was.
+
+The judge is a role of its own, top-level, with no default. Set it first --
+`record` without it is refused -- on the cheapest model, Haiku:
+
+```bash
+dev-orchestra config set risk_judge.provider claude
+dev-orchestra config set risk_judge.model.family haiku
+dev-orchestra config set risk_judge.model.version latest
+dev-orchestra config set optimization.risk_judge record
+```
+
+```yaml
+optimization:
+  risk_judge: record
+risk_judge:
+  provider: claude
+  model:
+    family: haiku
+    version: latest
+run:
+  timeout_seconds:
+    risk_judge: 180                   # the default
+budgets:
+  risk_judge: 4                       # the default
+```
+
+It runs read-only, as a reviewer does, and the same rules apply to it: a
+project file's `options.args` refuses its runs, and so does a provider that
+cannot run it read-only. It runs at most once per code review round, beside
+the panel, and only once the round is past every refusal; a design round and
+a fix-only re-review round are never judged. Each run spends one of
+`budgets.risk_judge` (default 4), is deadlined by
+`run.timeout_seconds.risk_judge` (default 180) and
+`review.idle_timeout_seconds`, and is counted in the run's tokens and runtime
+as the stage `risk_judge`. Whatever goes wrong -- no role, a missing CLI, a
+timeout, a spent budget, an answer it cannot read -- is a status in the record
+and one `note:` line, never a failed round. What it is asked, what is
+recorded and how the report reads it: `references/reviews.md` ("A second
+opinion on risk").
 
 ### Reviewers that run only on high-risk changes
 

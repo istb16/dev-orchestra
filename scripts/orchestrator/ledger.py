@@ -50,7 +50,12 @@ _FREE_PIECES: Dict[str, int] = {"architect": MAX_PARALLEL_UNITS}
 #: ``review.code.max_iterations`` instead, since it already counts rounds.
 #: ``architect_questions`` is ``run architect --questions``: the same seat, kept
 #: on a budget of its own so asking cannot spend the attempts the plan needs.
-BUDGETED_STAGES = ("architect", "architect_questions", "implementer", "review_fixer", "test")
+#: ``risk_judge`` is the judge ``optimization.risk_judge: record`` runs.
+BUDGETED_STAGES = ("architect", "architect_questions", "implementer", "review_fixer", "test", "risk_judge")
+
+#: Budgeted stages ``summary`` lists only once they have run, so a workflow
+#: that never runs them reports its budgets as it did before they existed.
+_SHOWN_ONCE_USED = ("risk_judge",)
 
 DEFAULT_BUDGETS: Dict[str, Any] = {
     "architect": 3,
@@ -58,6 +63,7 @@ DEFAULT_BUDGETS: Dict[str, Any] = {
     "implementer": 5,
     "review_fixer": 4,
     "test": 8,
+    "risk_judge": 4,
     # Backstops for delegating loops nobody anticipated: only runs that go
     # through ``consume()`` count against the first, every run that reaches
     # ``end()`` with a measurement against the second. A cycle that delegates
@@ -751,6 +757,8 @@ class Ledger:
         budgets = {}
         for stage in BUDGETED_STAGES:
             limit = self.settings.get(stage)
+            if stage in _SHOWN_ONCE_USED and not attempts.get(stage):
+                continue
             if isinstance(limit, int):
                 budgets[stage] = {
                     "used": int(attempts.get(stage, 0)),

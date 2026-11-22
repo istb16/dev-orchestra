@@ -15,6 +15,9 @@ ROLE_TITLES = (
     ("review_fixer", "Review Fixer"),
 )
 
+#: The risk judge's block and title, listed only when a file sets the block.
+RISK_JUDGE_TITLE = (config_mod.RISK_JUDGE_ROLE, "Risk judge")
+
 
 #: How a listing says where the design panel's base comes from, by
 #: ``LoadedConfig.design_panel_source``.
@@ -97,6 +100,11 @@ def render_summary(
             entry = cast(Dict[str, Any], tiers)[name]
             described = describe_spec(merged(spec, entry)) if isinstance(entry, dict) else "(invalid)"
             lines.append("      --tier %-10s %s" % (name, described))
+    # The risk judge, only when a file sets its block, as `doctor` lists it.
+    judge = data.get(config_mod.RISK_JUDGE_ROLE)
+    if isinstance(judge, dict):
+        lines.append("  %s" % RISK_JUDGE_TITLE[1])
+        lines.append("    %s" % describe_spec(judge))
     lines.append("  Reviews")
     lines.extend(_panel_lines(data.get("reviewers"), origins))
     # Shown rather than asked: the wizard settles who does which job, and this
@@ -109,6 +117,10 @@ def render_summary(
         "    skip unneeded roles: %s  (optimization.skip_unneeded_roles)"
         % ("on" if _skip_unneeded_roles(data) else "off")
     )
+    # Under ``rules`` with no judge block, nothing about the judge is shown.
+    judge_mode = config_mod.LoadedConfig(data, None, None, False).risk_judge_mode()
+    if judge_mode != "rules" or isinstance(judge, dict):
+        lines.append("    risk judge: %s  (optimization.risk_judge)" % judge_mode)
     lines.append("    plan approval: %s  (design.require_approval)" % _approval_mode(data))
     lines.append("    design questions: %s  (design.ask_questions)" % _questions_mode(data))
     # The design panel, under its own heading: which seats a design round
@@ -171,7 +183,10 @@ def _deadline_lines(data: Dict[str, Any], loaded: Optional[config_mod.LoadedConf
     """
     known = loaded if loaded is not None else config_mod.LoadedConfig(data, None, None, False)
     lines = ["  Deadlines"]
-    for key, title in ROLE_TITLES:
+    titles = list(ROLE_TITLES)
+    if isinstance(data.get(config_mod.RISK_JUDGE_ROLE), dict):
+        titles.append(RISK_JUDGE_TITLE)
+    for key, title in titles:
         deadline = config_mod.run_timeout(known, key)
         source = " (%s)" % deadline.source if loaded is not None else ""
         lines.append("    %s: %ds%s  (run.timeout_seconds.%s)" % (title, deadline.seconds, source, key))

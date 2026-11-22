@@ -4194,6 +4194,7 @@ DECISION_NAMES = {
     "_test_needed",
     "_architecture_needed",
     "_rule_answer",
+    "rule_answer",
     "relevance_records",
     "_reporters",
     "re_review_records",
@@ -4275,6 +4276,18 @@ REPORT_NAMES = {
     "_bump",
     "_relevance_counts",
     "_relevance_saving",
+    # Risk judge agreement.
+    "JUDGED_KINDS",
+    "_SERIOUS",
+    "_AGREEMENT",
+    "_agreement_group",
+    "_add_agreement",
+    "_judge_record",
+    "_judge_records",
+    "_record_rank",
+    "_round_high_risk",
+    "_judge_workflow",
+    "risk_judge_summary",
     # Model tiers.
     "OWN_MODEL",
     "tier_choices",
@@ -4342,7 +4355,7 @@ class TestTheSplit(unittest.TestCase):
     must never need either of the others, nor the design half the report."""
 
     def test_the_split_partitions_the_old_module(self):
-        self.assertEqual((len(DECISION_NAMES), len(REPORT_NAMES), len(DESIGN_NAMES)), (89, 66, 4))
+        self.assertEqual((len(DECISION_NAMES), len(REPORT_NAMES), len(DESIGN_NAMES)), (90, 77, 4))
         self.assertEqual(_top_level_names(opt), DECISION_NAMES)
         self.assertEqual(_top_level_names(opt_report), REPORT_NAMES)
         self.assertEqual(_top_level_names(opt_design), DESIGN_NAMES)

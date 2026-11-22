@@ -42,14 +42,11 @@ from .providers import (
     MODE_REVIEW,
     MODES,
     READ_ONLY_MODES,
-    REFUSED_ENFORCEMENT,
     SESSION_ID_RE,
-    WARNED_ENFORCEMENT,
     ModelResolutionError,
     Provider,
     get_provider,
     redact,
-    unenforced_warning,
 )
 from .summary import describe_spec
 
@@ -629,14 +626,23 @@ def _preflight_refusals(
         if from_project:
             return ["refused -- %s" % from_project]
     if seat.mode in READ_ONLY_MODES:
-        # Raw arguments, and a seat on a provider that cannot be held to
-        # reading, that came with the project file.
-        from_project = policy_mod.project_raw_arg_refusals(loaded).get(seat.label)
-        if from_project:
-            return ["refused -- %s" % from_project]
-        problems = provider.read_only_arg_problems(seat.mode, args.extra or [], seat.spec.get("options"))
-        return ["%s: refused -- %s" % (seat.role, problem) for problem in problems]
+        return _refusal_lines(
+            seat,
+            policy_mod.read_only_arg_refusals(
+                loaded, seat.label, provider, seat.mode, args.extra or [], seat.spec.get("options")
+            ),
+        )
     return []
+
+
+def _refusal_lines(seat: _Seat, refusals: List[policy_mod.Refusal]) -> List[str]:
+    """``run``'s stderr lines of the gate's refusals: the role before a reason of its own provider."""
+    return [
+        "refused -- %s" % refusal.reason
+        if refusal.from_project
+        else "%s: refused -- %s" % (seat.role, refusal.reason)
+        for refusal in refusals
+    ]
 
 
 def _print_command(
@@ -682,19 +688,11 @@ def _enforcement_refusal(
     Returns ``(refusal lines, warning)``: the lines when the seat is refused,
     otherwise the warning to print once, if any.
     """
-    # Only for a CLI that is there: a missing one is reported by the run as
-    # missing (127), not as one whose enforcement could not be read.
-    if seat.mode in READ_ONLY_MODES and provider.detect().installed:
-        enforcement = provider.read_only_enforcement()
-        if enforcement.get("status") in REFUSED_ENFORCEMENT:
-            return ["%s: refused -- %s" % (seat.role, enforcement.get("detail"))], ""
-        if enforcement.get("status") in WARNED_ENFORCEMENT:
-            # The live report, for an adapter whose report is not static and
-            # so was not asked above: a project file does not choose it either.
-            from_project = policy_mod.project_provider_refusals(loaded).get(seat.label)
-            if from_project:
-                return ["refused -- %s" % from_project], ""
-            return [], unenforced_warning(seat.provider_name, enforcement)
+    if seat.mode in READ_ONLY_MODES:
+        refusals, warning = policy_mod.read_only_enforcement_gate(
+            loaded, seat.label, provider, seat.provider_name
+        )
+        return _refusal_lines(seat, refusals), warning
     return [], ""
 
 

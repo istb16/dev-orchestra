@@ -433,6 +433,14 @@ class TestProjectScopeWrites(_GateCase):
         self.assertIn("taken only from the global config", err)
         self.assertFalse(os.path.exists(self.project_file()))
 
+    def test_config_set_refuses_agy_on_the_risk_judge(self):
+        """The judge is a read-only seat too: refused when written, not only at run time."""
+        code, _, err = run_cli("config", "set", "--scope", "project", "risk_judge.provider", "agy")
+        self.assertEqual(code, 2)
+        self.assertIn("risk_judge: provider agy", err)
+        self.assertIn("taken only from the global config", err)
+        self.assertFalse(os.path.exists(self.project_file()))
+
     def test_config_set_refuses_agy_on_a_tier(self):
         code, _, err = run_cli(
             "config", "set", "--scope", "project", "orchestrator.model_tiers.light.provider", "agy"

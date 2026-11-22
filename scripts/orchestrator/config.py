@@ -30,7 +30,14 @@ from .config_common import (  # noqa: F401 - re-exported
     PROGRESS_INTERVAL_MAX,
     PROGRESS_INTERVAL_MIN,
     PROMPTED_ROLES,
+    READ_ONLY_BLOCKS,
     READ_ONLY_ROLES,
+    RISK_JUDGE_LATER,
+    RISK_JUDGE_MODES,
+    RISK_JUDGE_ROLE,
+    RISK_JUDGE_TIMEOUT,
+    ROLE_BLOCKS,
+    ROLE_TIMEOUT_DEFAULTS,
     ROUND_REQUIRED_MODES,
     RUN_TIMEOUT_DEFAULTS,
     STALE_NOTICE_MAX_DAYS,
@@ -720,6 +727,22 @@ class LoadedConfig:
         settings.update(self.data.get("optimization") or {})
         return settings
 
+    def risk_judge_mode(self) -> str:
+        """``optimization.risk_judge``: ``rules`` or ``record``.
+
+        Null, and anything ``validate`` would refuse, reads as ``rules``:
+        commands load unvalidated, and a value nobody can use must not start a
+        run of the judge.
+        """
+        optimization = self.data.get("optimization")
+        value = optimization.get("risk_judge") if isinstance(optimization, dict) else None
+        return value if value in RISK_JUDGE_MODES else "rules"
+
+    def risk_judge_spec(self) -> Optional[Dict[str, Any]]:
+        """The top-level ``risk_judge`` role block, or None when none is configured."""
+        spec = self.data.get(RISK_JUDGE_ROLE)
+        return spec if isinstance(spec, dict) else None
+
     def workspace_dir(self, root: Optional[str] = None) -> str:
         """The workspace container in ``root``, by default the commands' own (``root``)."""
         root = self.root if root is None else root
@@ -788,9 +811,10 @@ def run_timeout(loaded: LoadedConfig, role: str) -> RunTimeout:
 
     A value ``validate`` would refuse reads as the default: ``config show``
     loads unvalidated, and must not report a deadline no run would get. A
-    null in a file merges to the default, and reads as one.
+    null in a file merges to the default, and reads as one. ``role`` is any
+    of ``ROLE_BLOCKS``, ``risk_judge`` included.
     """
-    return _timeout_at(loaded, ["run", "timeout_seconds", role], RUN_TIMEOUT_DEFAULTS[role])
+    return _timeout_at(loaded, ["run", "timeout_seconds", role], ROLE_TIMEOUT_DEFAULTS[role])
 
 
 def review_timeout(loaded: LoadedConfig) -> RunTimeout:
@@ -843,9 +867,9 @@ def _timeout_at(loaded: LoadedConfig, key: List[str], fallback: int) -> RunTimeo
 
 
 def referenced_providers(data: Dict[str, Any]) -> List[str]:
-    """Every provider name a configuration refers to: roles, tiers and both reviewer panels."""
+    """Every provider name a configuration refers to: roles, risk judge, tiers and both reviewer panels."""
     names = set()
-    specs: List[Any] = [data.get(role) for role in KNOWN_ROLES]
+    specs: List[Any] = [data.get(role) for role in ROLE_BLOCKS]
     for spec in list(specs):
         tiers = spec.get("model_tiers") if isinstance(spec, dict) else None
         if isinstance(tiers, dict):

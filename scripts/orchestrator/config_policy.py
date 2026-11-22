@@ -30,7 +30,13 @@ from .config import (
     with_current_names,
     workspace_dir_in,
 )
-from .providers import get_provider, unenforced_warning, warned_enforcement
+from .providers import (
+    REFUSED_ENFORCEMENT,
+    WARNED_ENFORCEMENT,
+    get_provider,
+    unenforced_warning,
+    warned_enforcement,
+)
 from .workspace import is_int
 
 # --------------------------------------------------------------------------- read-only raw arguments
@@ -249,6 +255,84 @@ def project_raw_arg_refusals(loaded: LoadedConfig) -> Dict[str, str]:
 def reviewer_raw_arg_refusals(loaded: LoadedConfig, panel: str = "code") -> Dict[str, str]:
     """The same refusals, by reviewer id, for the review path of ``panel``."""
     return _panel_view(loaded, panel, _all_refused(loaded))
+
+
+class Refusal(NamedTuple):
+    """Why one read-only run is refused: the bare reason, and whether the project file decided it.
+
+    The caller words the line: ``run`` names the role before a reason of
+    its own provider, and none before one taken from the project file.
+    """
+
+    reason: str
+    from_project: bool
+
+
+def read_only_arg_refusals(
+    loaded: LoadedConfig,
+    label: str,
+    provider: Any,
+    mode: str,
+    extra: Sequence[str],
+    options: Any,
+) -> List[Refusal]:
+    """Why one read-only run is refused its arguments; none when they pass.
+
+    The first check that refuses decides: raw arguments, or a seat on a
+    provider that cannot be held to reading, that came with the project file
+    (by ``label``); then the arguments the provider refuses for ``mode``.
+    Asks no CLI, so it can run before ``--print-command``.
+    """
+    from_project = project_raw_arg_refusals(loaded).get(label)
+    if from_project:
+        return [Refusal(from_project, True)]
+    problems = provider.read_only_arg_problems(mode, list(extra), options)
+    return [Refusal(problem, False) for problem in problems]
+
+
+def read_only_enforcement_gate(
+    loaded: LoadedConfig, label: str, provider: Any, provider_name: str
+) -> Tuple[List[Refusal], str]:
+    """``(refusals, warning)``: the provider's read-only enforcement, judged before anything is spent.
+
+    The refusals when the run is refused, otherwise the warning to give once,
+    if any. Only for a CLI that is there: a missing one is reported by the
+    run as missing (127), not as one whose enforcement could not be read.
+    """
+    if not provider.detect().installed:
+        return [], ""
+    enforcement = provider.read_only_enforcement()
+    if enforcement.get("status") in REFUSED_ENFORCEMENT:
+        return [Refusal(str(enforcement.get("detail")), False)], ""
+    if enforcement.get("status") in WARNED_ENFORCEMENT:
+        # The live report, for an adapter whose report is not static and so
+        # was not asked by ``project_raw_arg_refusals``: a project file does
+        # not choose it either.
+        from_project = project_provider_refusals(loaded).get(label)
+        if from_project:
+            return [Refusal(from_project, True)], ""
+        return [], unenforced_warning(provider_name, enforcement)
+    return [], ""
+
+
+def read_only_gate(
+    loaded: LoadedConfig,
+    label: str,
+    provider: Any,
+    provider_name: str,
+    mode: str,
+    extra: Sequence[str] = (),
+    options: Any = None,
+) -> Tuple[List[Refusal], str]:
+    """``(refusals, warning)`` of one read-only run: its arguments, then its enforcement.
+
+    What ``run`` checks of a read-only role, in one call, for a caller that
+    has nothing to do between the two (``--print-command`` has).
+    """
+    refused = read_only_arg_refusals(loaded, label, provider, mode, extra, options)
+    if refused:
+        return refused, ""
+    return read_only_enforcement_gate(loaded, label, provider, provider_name)
 
 
 def read_only_enforcement_warnings(

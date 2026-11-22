@@ -6,6 +6,7 @@ what refused rounds saved, ``reviewer_scorecard`` scores each reviewer by what
 it was paid and how its findings were triaged, and ``architect_revisions``
 prices the plan revisions an architect made, completed and failed alike.
 ``tier_choices`` counts the model tiers the implementer and review fixer ran on.
+``risk_judge_summary`` sets the risk judge's recorded answers beside the rules'.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
 from . import tier_record
+from .config_common import SPECIALIST_KINDS, risk_judge_ran
 from .optimization import HIGH_RISK_SLOT, REFUSED, USUAL_SLOT, WHEN_RE_REVIEW, WHEN_RELEVANCE
 from .review_consolidation import round_key
 from .workspace import is_int
@@ -690,6 +692,194 @@ def tier_choices(per_workflow_events: Sequence[Sequence[Dict[str, Any]]]) -> Dic
     return stages
 
 
+#: The reviewer kinds a risk judge record answers for, in the order they print.
+#: The list the judge is asked by, from the role vocabulary rather than from
+#: ``risk_judge``, which runs the judge: this module reads records and decides nothing.
+JUDGED_KINDS = SPECIALIST_KINDS
+
+#: The severities the per-workflow figures count, when accepted.
+_SERIOUS = ("critical", "high")
+
+_AGREEMENT = ("both", "rules_only", "judge_only", "neither")
+
+
+def _agreement_group() -> Dict[str, Any]:
+    group: Dict[str, Any] = dict.fromkeys(_AGREEMENT, 0)
+    return group
+
+
+def _add_agreement(group: Dict[str, Any], judge: bool, rules: bool) -> None:
+    if judge and rules:
+        group["both"] += 1
+    elif rules:
+        group["rules_only"] += 1
+    elif judge:
+        group["judge_only"] += 1
+    else:
+        group["neither"] += 1
+
+
+def _judge_record(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    record = event.get("risk_judge")
+    return record if isinstance(record, dict) else None
+
+
+def _judge_records(events: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One record per ``round_id``, in the order the rounds ran.
+
+    A re-run of a judged round records ``skipped`` beside the record of the run
+    that judged it, and a round the judge did not run for (``budget_spent``,
+    ``refused``, ...) is judged on its re-run. So the round's record is its
+    first one the judge ran for (``risk_judge_ran``, as the judge decides),
+    else its first one that is not ``skipped``, else its first one. An event
+    with no ``round_id`` is a round of its own.
+    """
+    chosen: Dict[Any, Dict[str, Any]] = {}
+    for position, event in enumerate(events):
+        record = _judge_record(event)
+        if record is None:
+            continue
+        key: Any = str(event.get("round_id") or "") or ("position", position)
+        held = chosen.get(key)
+        if held is None or _record_rank(record) > _record_rank(held):
+            chosen[key] = record
+    return list(chosen.values())
+
+
+def _record_rank(record: Dict[str, Any]) -> int:
+    """2 for a record the judge ran for, 1 for another one not ``skipped``, 0 for ``skipped``."""
+    if risk_judge_ran(record):
+        return 2
+    return 0 if record.get("status") == "skipped" else 1
+
+
+def _round_high_risk(events: Sequence[Dict[str, Any]]) -> Optional[Tuple[bool, bool]]:
+    """``(rules, judge)`` high-risk of a round the judge answered for; None when it did not."""
+    for record in _judge_records(events):
+        if record.get("status") != "ok":
+            continue
+        high = record.get("high_risk") or {}
+        return bool(high.get("rules")), bool(high.get("judge"))
+    return None
+
+
+def _judge_workflow(item: Dict[str, Any], records: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """One workflow's high-risk rounds and accepted critical/high findings, rules beside judge.
+
+    A finding is counted in the round that first reported it, and only when
+    the judge answered for that round: elsewhere there is no judge answer to
+    set it beside. Its triage is the last explicit one over the workflow.
+    """
+    events = [event for event in item.get("events") or [] if isinstance(event, dict)]
+    rounds = [entry for entry in item.get("rounds") or [] if isinstance(entry, dict)]
+    read = [group for group in _match_rounds(events, rounds) if group["round"] is not None]
+    read.sort(key=lambda group: group["order"])
+    answered = [record for record in records if record.get("status") == "ok"]
+    entry: Dict[str, Any] = {
+        "workflow": str(item.get("workflow") or ""),
+        "rounds_judged": len(answered),
+        "rules_high_risk_rounds": sum(
+            1 for record in answered if (record.get("high_risk") or {}).get("rules")
+        ),
+        "judge_high_risk_rounds": sum(
+            1 for record in answered if (record.get("high_risk") or {}).get("judge")
+        ),
+        "accepted_critical_high": 0,
+        "on_rules_high_risk": 0,
+        "on_judge_high_risk": 0,
+    }
+    high_risk = [_round_high_risk(group["events"]) for group in read]
+    for finding in _unique_findings(read):
+        if finding.get("triage") != "accepted" or finding.get("severity") not in _SERIOUS:
+            continue
+        flags = high_risk[finding["first"]]
+        if flags is None:
+            continue
+        entry["accepted_critical_high"] += 1
+        entry["on_rules_high_risk"] += int(flags[0])
+        entry["on_judge_high_risk"] += int(flags[1])
+    return entry
+
+
+def risk_judge_summary(inputs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Where the risk judge and the rules agreed, over every code round it recorded.
+
+    ``inputs`` is what ``reviewer_scorecard`` takes; only the code entries are
+    read. Each round counts once, by ``round_id`` -- see ``_judge_records``.
+
+    * ``rounds`` and ``statuses``: every record, whatever became of the run;
+    * ``high_risk`` and ``kinds``: only the rounds the judge answered for
+      (``ok``). Each kind's ``both``, ``rules_only``, ``judge_only`` and
+      ``neither`` count the rounds the rules decided; ``no_rule`` counts the
+      ones they did not (``rules: null``), split by ``basis`` in
+      ``no_rule_by_basis``. ``high_risk`` adds ``declared``;
+    * ``risk``: the judge's answers;
+    * ``usage``: the judge's runs, billed tokens and seconds;
+    * ``workflows``: per workflow with a record, see ``_judge_workflow``.
+    """
+    kinds: Dict[str, Dict[str, Any]] = {}
+    for kind in JUDGED_KINDS:
+        kinds[kind] = _agreement_group()
+        kinds[kind].update(no_rule=0, no_rule_by_basis={})
+    high_risk = _agreement_group()
+    high_risk["declared"] = 0
+    statuses: Dict[str, int] = {}
+    risk: Dict[str, int] = {}
+    usage = {"runs": 0, "measured_runs": 0, "billed_tokens": 0, "seconds": 0.0}
+    workflows: List[Dict[str, Any]] = []
+    total = 0
+    for item in inputs:
+        if item.get("stage", "code") != "code":
+            continue
+        events = [event for event in item.get("events") or [] if isinstance(event, dict)]
+        records = _judge_records(events)
+        if not records:
+            continue
+        total += len(records)
+        workflows.append(_judge_workflow(item, records))
+        for record in records:
+            status = str(record.get("status") or "?")
+            _bump(statuses, status)
+            # A run that raised has neither, but its attempt was spent.
+            if (
+                record.get("attempted") is True
+                or record.get("duration") is not None
+                or record.get("usage") is not None
+            ):
+                usage["runs"] += 1
+                usage["seconds"] += float(record.get("duration") or 0.0)
+            spent = record.get("usage")
+            if isinstance(spent, dict):
+                usage["measured_runs"] += int(bool(spent.get("measured")))
+                usage["billed_tokens"] += _int(spent.get("billed_tokens"))
+            if status != "ok":
+                continue
+            _bump(risk, str(record.get("risk") or "?"))
+            high = record.get("high_risk") or {}
+            _add_agreement(high_risk, bool(high.get("judge")), bool(high.get("rules")))
+            high_risk["declared"] += int(bool(high.get("declared")))
+            for kind in JUDGED_KINDS:
+                block = (record.get("kinds") or {}).get(kind) or {}
+                if block.get("judge") is None:
+                    continue
+                group = kinds[kind]
+                if block.get("rules") is None:
+                    group["no_rule"] += 1
+                    _bump(group["no_rule_by_basis"], str(block.get("basis") or "none"))
+                    continue
+                _add_agreement(group, bool(block["judge"]), bool(block["rules"]))
+    usage["seconds"] = round(usage["seconds"], 2)
+    return {
+        "rounds": total,
+        "statuses": statuses,
+        "risk": risk,
+        "high_risk": high_risk,
+        "kinds": kinds,
+        "usage": usage,
+        "workflows": workflows,
+    }
+
+
 #: Below this many decided findings no rate is printed, and below this many
 #: accepted ones no per-accepted figure. Under ten, one finding moves a rate by
 #: ten points or more, and that is noise, not a measurement. The counts are
@@ -885,7 +1075,9 @@ def _unique_findings(groups: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     renumbered every round.
 
     Each reporter's model slot is the one its run had in the first round that
-    named it, and ``usual`` when that round has no run of it.
+    named it, and ``usual`` when that round has no run of it. ``first`` is the
+    position in ``groups`` of the round that first reported the finding, and
+    ``severity`` the last one a round gave it.
     """
     unique: Dict[str, Dict[str, Any]] = {}
     for position, group in enumerate(groups):
@@ -895,7 +1087,10 @@ def _unique_findings(groups: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
         by_id = {str(finding.get("id") or ""): finding for finding in findings}
         for finding in findings:
             key = str(finding.get("key") or "") or "%d:%s" % (position, finding.get("id"))
-            record = unique.setdefault(key, {"reported_by": [], "slots": {}, "triage": None, "paired": False})
+            record = unique.setdefault(
+                key, {"reported_by": [], "slots": {}, "triage": None, "paired": False, "first": position}
+            )
+            record["severity"] = finding.get("severity")
             ours = [str(name) for name in finding.get("reported_by") or []]
             for name in ours:
                 if name not in record["reported_by"]:
