@@ -350,15 +350,15 @@ class TestTriageAndRevision(DesignReviewCase):
         self.assertEqual(status["blocking"], ["F1"])
 
     def test_status_names_the_budget_it_reports(self):
-        """Two budgets, two settings, two key names: a payload that called the
-        design budget `max_review_iterations` could not be told from the other
-        review's."""
+        """Both payloads name the budget `max_iterations`, as both settings are
+        now named; only the code review's keeps `max_review_iterations` too,
+        the key it always had (#402)."""
         design = json.loads(run_cli("review", "status", "--design", "--json")[1])
         self.assertEqual(design["max_iterations"], 2)
         self.assertNotIn("max_review_iterations", design)
         code = json.loads(run_cli("review", "status", "--json")[1])
         self.assertEqual(code["max_review_iterations"], 2)
-        self.assertNotIn("max_iterations", code)
+        self.assertEqual(code["max_iterations"], 2)
 
     def test_status_stops_recommending_once_the_budget_is_spent(self):
         run_cli("config", "set", "review.design.max_iterations", "1")

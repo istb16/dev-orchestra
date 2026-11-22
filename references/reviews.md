@@ -1199,7 +1199,7 @@ be defeated by forgetting to increment a counter.
 
 `re_review_recommended` is true when unresolved findings at
 `review.re_review_severities` (default critical + high) remain **and**
-`iteration < max_review_iterations` (default 2). Rejected and duplicate findings
+`iteration < review.code.max_iterations` (default 2). Rejected and duplicate findings
 never block.
 
 A re-review round is: `review snapshot` (the code changed, so the snapshot must
@@ -1317,20 +1317,20 @@ and re-test are tracked as the spent budget's are: `final_fix` goes `pending`
 nothing above Low (...); its accepted findings were fixed and re-tested, not
 re-reviewed -- report`. With none accepted, `final_fix` stays `null`. A
 finished review is not an exhausted one: `iteration_budget_exhausted` stays
-false even at round `max_review_iterations`.
+false even at round `review.code.max_iterations`.
 
 **One spare round.** The whole-change round after a clean fix-only round runs
-even when the fix-only round was the last one `max_review_iterations` allows:
-`review run` accepts round `max_review_iterations + 1` on a snapshot with
+even when the fix-only round was the last one `review.code.max_iterations` allows:
+`review run` accepts round `review.code.max_iterations + 1` on a snapshot with
 `recheck: true`, and on no other. That is the hard cap, so the loop always
 ends; past it the refusal names both, `the budget is 2 rounds
-(review.max_review_iterations) and one spare whole-change round`, and `status`
+(review.code.max_iterations) and one spare whole-change round`, and `status`
 counts the spare round in its reason (`3/3 rounds`), reading it from the
 report of the round it describes, not from a snapshot retaken since. When the budget runs out with something above Low still open -- at
-round `max_review_iterations`, or in the spare round -- the last round gets
+round `review.code.max_iterations`, or in the spare round -- the last round gets
 the final fix and re-test (`final_fix`) and no re-review, as with the option
 off. With the default budget of 2, a whole → fix → whole review whose last
-round finds something above Low ends there; raise `max_review_iterations` for
+round finds something above Low ends there; raise `review.code.max_iterations` for
 more loops.
 
 A whole-change round whose diff did not fit inline (`coverage.round:
@@ -1338,7 +1338,7 @@ partial`) still finishes the review when it comes back clean; the
 [coverage](#coverage) advice still applies to it.
 
 With the option off, the rule is the one above: critical and high (or
-`re_review_severities`) within `max_review_iterations`, and the text output of
+`re_review_severities`) within `review.code.max_iterations`, and the text output of
 `review status` is unchanged.
 
 **Every round's report is kept.** `consolidated.json` is the current round, and

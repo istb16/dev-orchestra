@@ -428,7 +428,7 @@ class TestReviewPipeline(IsolatedCase):
         code, _, err = run_cli("review", "run", "--iteration", "4")
         self.assertEqual(code, 3)
         self.assertIn(
-            "the budget is 2 rounds (review.max_review_iterations) "
+            "the budget is 2 rounds (review.code.max_iterations) "
             "and one spare whole-change round (review.whole_change_recheck)",
             err,
         )
@@ -450,7 +450,7 @@ class TestReviewPipeline(IsolatedCase):
         code, _, err = run_cli("review", "run")
         self.assertEqual(code, 3)
         self.assertIn(
-            "refusing to run review round 3: the budget is 2 rounds (review.max_review_iterations).", err
+            "refusing to run review round 3: the budget is 2 rounds (review.code.max_iterations).", err
         )
 
     def test_full_gets_no_spare_round(self):

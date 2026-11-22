@@ -1,4 +1,4 @@
-<!-- translated-from: references/limits.md sha256:2114673f5979d9341dbf0103874003459746f2cf2a7c86c17b47ea3d09fc348d -->
+<!-- translated-from: references/limits.md sha256:ab413e5a2a789c9132e3a374e451ddeecd2b5460a687f8a436868cf5a03f6bb6 -->
 
 > この文書は [references/limits.md](../../../references/limits.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -187,7 +187,7 @@ dev-orchestra status          # in another terminal, or after a crash
 
 | 制限 | 設定 | 強制するもの |
 | --- | --- | --- |
-| レビューラウンド数 | `review.max_review_iterations` (2)。`review.whole_change_recheck` が取ったスナップショット（`recheck: true`）ではもう 1 つ | `review run` |
+| レビューラウンド数 | `review.code.max_iterations` (2。以前の名前 `review.max_review_iterations` も読まれます)。`review.whole_change_recheck` が取ったスナップショット（`recheck: true`）ではもう 1 つ | `review run` |
 | 設計レビューラウンド数 | `review.design.max_iterations` (2) | `review run --design` |
 | 変更サイズ | `review.context.max_chars` (400,000 chars) | `review run`、`review run --design` |
 | ステージごとの試行回数 | `budgets.architect` (3)、`.architect_questions` (3)、`.implementer` (5)、`.review_fixer` (4)、`.test` (8) | `run <role>`（`architect_questions` は `run architect --questions`）、`budget consume <stage>` |
@@ -210,8 +210,8 @@ dev-orchestra status          # in another terminal, or after a crash
 予備のレビューラウンドとは、修正だけのラウンドで Low より上のものが無かったときに
 `review.whole_change_recheck` が求める変更全体のラウンドのうち、その修正だけのラウンドが
 すでに予算の許す最後のラウンドだったものです。`review run` は `recheck: true` と記録された
-スナップショットに限りこれを受け付けるので、`max_review_iterations + 1` が上限で、ループは
-必ず終わります。設定が off なら上限は `max_review_iterations` です。
+スナップショットに限りこれを受け付けるので、`review.code.max_iterations + 1` が上限で、ループは
+必ず終わります。設定が off なら上限は `review.code.max_iterations` です。
 `references/reviews.md`（「変更全体で締めくくる」）を参照。
 
 最後の 2 つは、委譲を行うサイクルのための安全網です。試行を消費するすべての

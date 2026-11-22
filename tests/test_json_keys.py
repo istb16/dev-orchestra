@@ -176,6 +176,7 @@ KEYS: Dict[str, Tuple[List[str], List[str]]] = {
             "final_fix_pending",
             "iteration",
             "iteration_budget_exhausted",
+            "max_iterations",
             "max_review_iterations",
             "next_review",
             "over_budget",

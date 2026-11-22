@@ -66,7 +66,10 @@ def cmd_review_status(args: argparse.Namespace) -> int:
 class _StatusBudget(NamedTuple):
     """The round budget ``review status`` reports, and the final pass it allows."""
 
-    key: str
+    #: The old key the payload also carries the budget under, beside
+    #: ``max_iterations``: ``max_review_iterations`` for the code review, so a
+    #: consumer that reads that still finds it; none for the design review.
+    legacy_key: Optional[str]
     max_iterations: int
     final: Dict[str, Any]
     repeats: int
@@ -89,11 +92,10 @@ def _status_budget(
     accepted: bool,
 ) -> _StatusBudget:
     """The budget of the review ``--design`` picks, and where its final pass stands."""
-    # Each budget is reported under the name of the setting it came from, so a
-    # consumer holding both payloads can tell which one it was handed. The code
-    # review's key is what it always was; only --design carries the other name.
+    # Both payloads carry the budget as `max_iterations`, the name of both
+    # settings now. The code review's also keeps `max_review_iterations`, the
+    # key it always had, with the same value, for consumers that read that.
     if args.design:
-        budget_key = "max_iterations"
         max_iterations = loaded.design_max_iterations()
         final = design_final_pass_from(
             base,
@@ -108,7 +110,7 @@ def _status_budget(
             wrote_plan=_wrote_plan(base),
         )
         return _StatusBudget(
-            key=budget_key,
+            legacy_key=None,
             max_iterations=max_iterations,
             final=final,
             repeats=book.repeats("design_review"),
@@ -120,7 +122,7 @@ def _status_budget(
                 finish=False,
             ),
         )
-    max_iterations = loaded.max_review_iterations()
+    max_iterations = loaded.code_max_iterations()
     loop = code_loop_decision(loaded, meta, data, iteration, max_iterations)
     final = code_final_pass_from(
         events,
@@ -131,7 +133,7 @@ def _status_budget(
         finish=loop.finish,
     )
     return _StatusBudget(
-        key="max_review_iterations",
+        legacy_key="max_review_iterations",
         max_iterations=max_iterations,
         final=final,
         repeats=book.repeats("review"),
@@ -175,29 +177,32 @@ def _status_payload(
     """``review status --json``'s payload, and the design decision a ``--design`` one names."""
     max_iterations, final, loop = budget.max_iterations, budget.final, budget.loop
     counts = data.get("counts", {})
-    payload: Dict[str, Any] = {
-        "iteration": iteration,
-        budget.key: max_iterations,
-        "blocking": [f["id"] for f in blocking],
-        "blocking_count": len(blocking),
-        # What keeps the loop open, and what the two keys below are about:
-        # `blocking` until review.whole_change_recheck widens it to Medium.
-        "wanted": [f["id"] for f in loop.wanted],
-        "accepted_count": len(review_mod.accepted_findings(data)),
-        "re_review_recommended": loop.recommended,
-        "iteration_budget_exhausted": loop.exhausted,
-        "coverage": coverage,
-        # Counted over the snapshot the `coverage` beside it describes, because
-        # this is the number printed in the same breath as that value. The
-        # table-wide column is still in `counts`, under its own name.
-        "reviewers_partial": review_mod.snapshot_reviewers(counts, "partial"),
-        # A round that only ran because a human forced it past
-        # review.context.max_chars. False for every round that was not, and
-        # for every report written before the limit existed -- which is the
-        # true answer for all of them: none of them was forced past it.
-        "over_budget": bool((data.get("snapshot") or {}).get("over_budget")),
-        "counts": counts,
-    }
+    payload: Dict[str, Any] = {"iteration": iteration, "max_iterations": max_iterations}
+    if budget.legacy_key is not None:
+        payload[budget.legacy_key] = max_iterations
+    payload.update(
+        {
+            "blocking": [f["id"] for f in blocking],
+            "blocking_count": len(blocking),
+            # What keeps the loop open, and what the two keys below are about:
+            # `blocking` until review.whole_change_recheck widens it to Medium.
+            "wanted": [f["id"] for f in loop.wanted],
+            "accepted_count": len(review_mod.accepted_findings(data)),
+            "re_review_recommended": loop.recommended,
+            "iteration_budget_exhausted": loop.exhausted,
+            "coverage": coverage,
+            # Counted over the snapshot the `coverage` beside it describes, because
+            # this is the number printed in the same breath as that value. The
+            # table-wide column is still in `counts`, under its own name.
+            "reviewers_partial": review_mod.snapshot_reviewers(counts, "partial"),
+            # A round that only ran because a human forced it past
+            # review.context.max_chars. False for every round that was not, and
+            # for every report written before the limit existed -- which is the
+            # true answer for all of them: none of them was forced past it.
+            "over_budget": bool((data.get("snapshot") or {}).get("over_budget")),
+            "counts": counts,
+        }
+    )
     # Only when the report recorded one, as `consolidated.md` does.
     surrounding = data.get("surrounding")
     if isinstance(surrounding, dict):

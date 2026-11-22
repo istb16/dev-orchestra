@@ -13,6 +13,23 @@ authors can find it.
 
 ## [Unreleased]
 
+### Changed
+
+- **`review.max_review_iterations` is now `review.code.max_iterations`**, to
+  match `review.design.max_iterations` (#402). The old name is still read
+  from the global and the project file, as the new one, unless the same file
+  sets the new one too; `doctor` notes it and `config validate` warns about it,
+  and neither fails on it. `config set review.max_review_iterations N` writes
+  `review.code.max_iterations`, and a `config set` of the new name drops the
+  old one from that file; nothing else rewrites a file. Validation messages,
+  the project-file loosening notice and the `review run` refusal name the new
+  key. `review status --json` (without `--design`) and the `review` object of
+  `status --json` gain `max_iterations`, and keep `max_review_iterations` with
+  the same value. The effective configuration `config show` prints, and the
+  `config` of `config show --json`, now hold `review.code.max_iterations` in
+  place of `review.max_review_iterations`; `--scope` views still show each
+  file as written.
+
 ## [1.4.0] - 2026-11-19
 
 ### Added

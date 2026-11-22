@@ -84,8 +84,122 @@ class TestConfigCommands(IsolatedCase):
 
     def test_set_coerces_numbers(self):
         run_cli("config", "setup", "--defaults")
-        run_cli("config", "set", "review.max_review_iterations", "3")
-        self.assertEqual(config_mod.load(self.project).review_settings()["max_review_iterations"], 3)
+        run_cli("config", "set", "review.code.max_iterations", "3")
+        self.assertEqual(config_mod.load(self.project).code_max_iterations(), 3)
+
+    def _scope_file(self, scope):
+        if scope == "global":
+            return config_mod.global_config_path()
+        return os.path.join(self.project, ".dev-orchestra.yaml")
+
+    def test_set_old_name_writes_new(self):
+        for scope in ("global", "project"):
+            with self.subTest(scope=scope):
+                target = self._scope_file(scope)
+                if os.path.exists(target):
+                    os.remove(target)
+                code, out, err = run_cli(
+                    "config", "set", "--scope", scope, "review.max_review_iterations", "3"
+                )
+                self.assertEqual(code, 0, err)
+                self.assertIn("review.code.max_iterations = 3", out)
+                stored = config_mod.read_config_file(target)
+                self.assertEqual(stored["review"], {"code": {"max_iterations": 3}})
+
+    def test_set_old_name_over_old_name_moves_it(self):
+        """A file that already holds the old name keeps only the new one."""
+        for scope in ("global", "project"):
+            with self.subTest(scope=scope):
+                target = self._scope_file(scope)
+                config_mod.write_config_file(
+                    target, {"version": 1, "review": {"max_review_iterations": 2, "parallel": False}}, scope
+                )
+                code, _, err = run_cli("config", "set", "--scope", scope, "review.max_review_iterations", "5")
+                self.assertEqual(code, 0, err)
+                self.assertNotIn("ignored", err)
+                stored = config_mod.read_config_file(target)
+                self.assertEqual(stored["review"], {"parallel": False, "code": {"max_iterations": 5}})
+                self.assertEqual(config_mod.load(self.project).code_max_iterations(), 5)
+                os.remove(target)
+
+    def test_set_new_name_removes_old(self):
+        for scope in ("global", "project"):
+            with self.subTest(scope=scope):
+                target = self._scope_file(scope)
+                config_mod.write_config_file(
+                    target, {"version": 1, "review": {"max_review_iterations": 2, "parallel": False}}, scope
+                )
+                code, _, err = run_cli("config", "set", "--scope", scope, "review.code.max_iterations", "4")
+                self.assertEqual(code, 0, err)
+                stored = config_mod.read_config_file(target)
+                self.assertEqual(stored["review"], {"parallel": False, "code": {"max_iterations": 4}})
+                self.assertEqual(config_mod.load(self.project).code_max_iterations(), 4)
+                os.remove(target)
+
+    def test_set_new_name_null_removes_old(self):
+        """A null new name wins as it does on load: the old value goes and the default applies."""
+        default = config_mod.load(self.project).code_max_iterations()
+        for scope in ("global", "project"):
+            with self.subTest(scope=scope):
+                target = self._scope_file(scope)
+                config_mod.write_config_file(
+                    target, {"version": 1, "review": {"max_review_iterations": 5, "parallel": False}}, scope
+                )
+                code, _, err = run_cli(
+                    "config", "set", "--scope", scope, "review.code.max_iterations", "null"
+                )
+                self.assertEqual(code, 0, err)
+                stored = config_mod.read_config_file(target)
+                self.assertNotIn("max_review_iterations", stored["review"])
+                self.assertIsNone(stored["review"]["code"]["max_iterations"])
+                self.assertEqual(config_mod.load(self.project).code_max_iterations(), default)
+                self.assertNotEqual(default, 5)
+                os.remove(target)
+
+    def test_set_parent_of_new_name_removes_old(self):
+        target = config_mod.global_config_path()
+        config_mod.write_config_file(target, {"version": 1, "review": {"max_review_iterations": 2}}, "global")
+        code, _, err = run_cli("config", "set", "--scope", "global", "review.code", "max_iterations: 4\n")
+        self.assertEqual(code, 0, err)
+        stored = config_mod.read_config_file(target)
+        self.assertEqual(stored["review"], {"code": {"max_iterations": 4}})
+
+    def test_set_parent_without_new_name_keeps_old(self):
+        """A write that does not set the new name leaves the old one, still read as it."""
+        target = config_mod.global_config_path()
+        config_mod.write_config_file(target, {"version": 1, "review": {"max_review_iterations": 4}}, "global")
+        code, _, err = run_cli("config", "set", "--scope", "global", "review.code", "{}")
+        self.assertEqual(code, 0, err)
+        stored = config_mod.read_config_file(target)
+        self.assertEqual(stored["review"]["max_review_iterations"], 4)
+        self.assertEqual(config_mod.load(self.project).code_max_iterations(), 4)
+
+    def test_validate_warns_about_an_old_name(self):
+        self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  max_review_iterations: 3\n")
+        code, out, err = run_cli("config", "validate", "--json")
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertIs(payload["valid"], True)
+        self.assertEqual(payload["problems"], [])
+        self.assertTrue(any("review.max_review_iterations" in w for w in payload["warnings"]), payload)
+        self.assertFalse(any("review.max_review_iterations" in p for p in payload["problems"]))
+        code, out, err = run_cli("config", "validate")
+        self.assertEqual(code, 0, err)
+        self.assertIn("review.max_review_iterations", out + err)
+
+    def test_show_uses_the_new_name_and_scope_shows_the_file(self):
+        self.write(".dev-orchestra.yaml", "version: 1\nreview:\n  max_review_iterations: 3\n")
+        code, out, err = run_cli("config", "show", "--json")
+        self.assertEqual(code, 0, err)
+        review = json.loads(out)["config"]["review"]
+        self.assertEqual(review["code"]["max_iterations"], 3)
+        self.assertNotIn("max_review_iterations", review)
+        code, out, err = run_cli("config", "show", "--scope", "project")
+        self.assertEqual(code, 0, err)
+        self.assertIn("max_review_iterations", out)
+        code, out, err = run_cli("config", "show", "--scope", "project", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertIn("max_review_iterations", out)
 
     def test_set_turns_the_design_review_on(self):
         run_cli("config", "setup", "--defaults")

@@ -1,4 +1,4 @@
-<!-- translated-from: references/workflow.md sha256:e08912294632f30efbedbe711d0e45fc4613d437373264c7f50ba96a25b9321b -->
+<!-- translated-from: references/workflow.md sha256:dce45c0f5b9e62418da51e8c73120848cab71b2d7e754bf42de9cd37c9ecf7bf -->
 
 > この文書は [references/workflow.md](../../../references/workflow.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -1088,6 +1088,7 @@ dev-orchestra review status
 ```json
 {
   "iteration": 1,
+  "max_iterations": 2,
   "max_review_iterations": 2,
   "blocking": ["F1"],
   "wanted": ["F1"],
@@ -1124,7 +1125,7 @@ dev-orchestra review status
 すべてループを続けさせます（`wanted`。`blocking` に無い Medium が入ることがあります）。
 Low より上のものを見つけなかった修正だけのラウンドは終わりではありません。受け入れた
 Low を修正して再テストし、ただの `review snapshot` を取ると変更全体を自分で取るので、
-それをレビューします。そのラウンドは `max_review_iterations` を 1 つ超えてもよく
+それをレビューします。そのラウンドは `review.code.max_iterations` を 1 つ超えてもよく
 （予備のラウンド）、予算 2 でのラウンド 3 はそこでは想定どおりです。Low より上のものを
 見つけなかった変更全体のラウンドは、受け入れた Low を修正して再テストすればレビューの
 終わりです（`final_fix` は `pending` → `retest` → `done` と進み、そこで `status` は

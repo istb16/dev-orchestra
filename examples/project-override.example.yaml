@@ -38,7 +38,8 @@ reviewers:
 
 review:
   # Migrations are expensive to get wrong: allow one extra fix/re-review round.
-  max_review_iterations: 3
+  code:
+    max_iterations: 3
 
 # The rspec suite uses one test database, so units running side by side would
 # trip over each other: each unit skips the tests, which run once after every

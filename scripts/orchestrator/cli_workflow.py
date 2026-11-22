@@ -535,7 +535,7 @@ def _status_payload(
     severities = loaded.blocking_severities()
     blocking = review_mod.unresolved_blocking(review_data, severities)
     iteration = int(review_data.get("iteration", 0) or 0)
-    max_iterations = loaded.max_review_iterations()
+    max_iterations = loaded.code_max_iterations()
     summary = book.summary()
     progress = loaded.progress_settings()
 
@@ -641,8 +641,9 @@ def _status_payload(
         "in_flight": summary["in_flight"],
         "review": {
             "iteration": review_round.iteration,
-            # The setting, as `review status` reports it; the reason above
-            # names the spare round too.
+            # The setting, as `review status` reports it, under both of its
+            # keys there; the reason above names the spare round too.
+            "max_iterations": max_iterations,
             "max_review_iterations": max_iterations,
             # At review.re_review_severities, as `review status` reports it.
             "blocking": [f["id"] for f in blocking],
@@ -843,7 +844,7 @@ def _status_lines(status: _Status, plan_relative: str, warning: List[str]) -> Li
     lines.append("")
     line = "Review: round %d/%d, %d accepted, %d blocking" % (
         review["iteration"],
-        review["max_review_iterations"],
+        review["max_iterations"],
         review["accepted"],
         len(review["blocking"]),
     )

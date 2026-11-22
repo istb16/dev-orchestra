@@ -1125,6 +1125,7 @@ dev-orchestra review status
 ```json
 {
   "iteration": 1,
+  "max_iterations": 2,
   "max_review_iterations": 2,
   "blocking": ["F1"],
   "wanted": ["F1"],
@@ -1162,7 +1163,7 @@ Low keeps the loop open (`wanted`, which can list a Medium that `blocking`
 does not). A fix-only round that finds nothing above Low is not the end: fix
 and re-test its accepted Lows, then take a plain `review snapshot`, which
 takes the whole change by itself, and review that. That round may be one past
-`max_review_iterations` -- the one spare round -- so a round 3 with a budget
+`review.code.max_iterations` -- the one spare round -- so a round 3 with a budget
 of 2 is expected there. A whole-change round that finds nothing above Low
 finishes the review once its accepted Lows are fixed and re-tested
 (`final_fix` goes `pending` → `retest` → `done`, and `status` then says

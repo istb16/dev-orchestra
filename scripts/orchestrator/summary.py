@@ -100,7 +100,7 @@ def render_summary(
     lines.append("  Reviews")
     lines.extend(_panel_lines(data.get("reviewers"), origins))
     # Shown rather than asked: the wizard settles who does which job, and this
-    # is a behaviour knob like `max_review_iterations`. But it decides whether
+    # is a behaviour knob like `review.code.max_iterations`. But it decides whether
     # a whole stage runs, so leaving it out of the summary entirely would make
     # it the one stage nobody can see the state of.
     lines.append("    design review: %s  (review.design.enabled)" % _design_review_mode(data))

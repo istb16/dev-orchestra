@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:1daea2117bebdfab6c4833c4e07d6099c5e0c863ad475428faaa4ad554e3b8b3 -->
+<!-- translated-from: references/configuration.md sha256:e9134b1ceab7517fd47ec8da77aa3f170aca46007ef66822c68cb0ff064dcb12 -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -165,7 +165,7 @@ preset: quality
 枠を表します（下の手順 2）。
 
 プリセットが決めるのはこの9つのキーです。それ以外 — budgets、タイムアウト、
-`review.max_review_iterations`、`design.require_approval` — は、ファイルが設定しない限り
+`review.code.max_iterations`、`design.require_approval` — は、ファイルが設定しない限り
 組み込みデフォルトのままです（`design.require_approval` は global ファイルだけ:
 [下記](#what-the-project-file-may-not-loosen)）。`standard` のコードパネルは組み込みデフォルトから読み取って作るので、
 両者がずれることはありません。設計パネルはデフォルトに無いので、プリセット自身が持っています。
@@ -585,7 +585,8 @@ run:
     review_fixer: 1800
 
 review:
-  max_review_iterations: 2            # hard stop on review→fix→re-review loops
+  code:
+    max_iterations: 2                 # hard stop on review→fix→re-review loops
   parallel: true                      # run reviewers concurrently
   re_review_severities: [critical, high]
   whole_change_recheck: true          # end on a whole-change round with nothing above Low
@@ -654,7 +655,7 @@ implementation:
 | `reviewers_extra` | list \| null | ファイルが継承するパネルの横に足すレビュアー。`reviewers` のエントリと同じスキーマで、どちらのファイルにも置けます。id が使われていれば別の id になり、外されることはありません。[パネルの横にレビュアーを足す](#adding-reviewers-beside-the-panel-reviewers_extra)を参照。 |
 | `review.design.reviewers` | list \| null | 設計レビュー独自のパネル。`reviewers` のエントリと同じスキーマです（`when: paths` は不可）。どのファイルでも未設定なら、設計ラウンドはプリセットがフィットした設計パネルで、ファイルが `reviewers` を並べていれば `when` を無視したコードのパネルで走ります。プリセットが決めるキーなので、`config setup --preset` はこれを置き換えます。[独自の設計パネル](#a-design-panel-of-its-own-reviewdesignreviewers)を参照。 |
 | `review.design.reviewers_extra` | list \| null | ファイルが継承する設計パネルの横に足す設計レビュアー。どのファイルも設計パネルを並べていなければ、継承するのはフィットした設計パネルで、ファイルが `reviewers` を並べていれば `when` を外したコードのパネルです。 |
-| `review.max_review_iterations` | int ≥ 0 | プロジェクト単位ではなくレビュー単位のラウンド数です。新しいブランチ、新しい `--base`、または `budget reset` でカウントはリセットされます。`0` で再レビューを完全に無効にします。 |
+| `review.code.max_iterations` | int ≥ 0 | コードレビューのラウンド数です（デフォルト 2）。プロジェクト単位ではなくレビュー単位のラウンド数です。新しいブランチ、新しい `--base`、または `budget reset` でカウントはリセットされます。`0` で再レビューを完全に無効にします。古い名前の `review.max_review_iterations` も、同じファイルが新しい名前を設定していない限り（`null` に設定していても設定とみなします）、どちらのファイルからも読まれます。`doctor` と `config validate` はそれを知らせ、どちらの名前の `config set` も新しい名前で書き、そのファイルから古い名前を消します。 |
 | `review.parallel` | bool | `false` にするとレビュアーを 1 つずつ実行します（デバッグしやすくなります）。 |
 | `review.re_review_severities` | list | ブロッキングとみなす severity。`critical`、`high`、`medium`、`low` から選んだ空でないリストで、大文字小文字は問いません（デフォルトは `[critical, high]`）。リストにしない 1 つの名前、知らない名前、`[]` は断られます。検査せずにファイルを読むコマンドは、代わりにデフォルトでブロックします。 |
 | `run.timeout_seconds.<role>` | int、1 から 1,000,000,000 | `orchestrator`、`architect`、`implementer`、`review_fixer` の `run` 1 回の合計の締め切り（デフォルトは implementer が 3600、ほかは 1800）。`--timeout` で 1 回だけ上書きできます。ほかのキーは拒否されます。ロールのブロックの外にあるので、設定してもそのロールはプリセットのフィットから外れず、`config setup --preset` もこれを残します。この締め切りで止められた実行は、キーの名前を挙げてそう伝えます。 |
@@ -662,7 +663,7 @@ implementation:
 | `review.idle_timeout_seconds` | int、1 から 1,000,000,000 \| null | この時間出力がなければ、実行は固まったものとして扱われます（デフォルト 300。ストリーミングする provider のみ）。レビュアーと、ファイルを変えない `run` で共通です。沈黙の長さはタスクの大きさでは伸びないからです。ファイルを変えうる実行（implementer、review fixer、`--mode implement`）には代わりに 1200 秒を当て、この値の方が大きければこの値を当てます。走らせるテストやビルドがそれより長く黙りうる一方、期限をまったく当てないと、固まった実行が全体の期限まで走り続けるからです。ロールごとには `options.idle_timeout` で設定・上書きできます。 |
 | `review.exclude` | list | diff 本文をレビュアーに渡さない glob パターン。デフォルトのリストを丸ごと置き換えます。`[]` ですべてをレビューします。 |
 | `review.incremental_rounds` | bool | `true`（デフォルト）にすると、2 回目のラウンドは 1 回目のラウンドがレビューした内容に対する diff になり、修正が対処しようとした指摘を引き継ぎます。`false` にすると毎ラウンド変更全体の diff を取り直します。 |
-| `review.whole_change_recheck` | bool | `true`（デフォルト。`standard` と `quality`）にすると、Low より上のもの（medium 以上に `re_review_severities` を足したもの）で再レビューし、Low より上のものが無かった修正だけのラウンドの後に変更全体のラウンドを 1 つ行い -- それは予備のラウンド `max_review_iterations + 1` でもかまいません -- 変更全体のラウンドで Low より上のものが無ければ終わります。`false`（`fast`）はこれまでの規則で、`re_review_severities` でだけ再レビューします。プリセットが決めるキーです。`references/reviews.md`（「変更全体で締めくくる」）を参照。 |
+| `review.whole_change_recheck` | bool | `true`（デフォルト。`standard` と `quality`）にすると、Low より上のもの（medium 以上に `re_review_severities` を足したもの）で再レビューし、Low より上のものが無かった修正だけのラウンドの後に変更全体のラウンドを 1 つ行い -- それは予備のラウンド `review.code.max_iterations + 1` でもかまいません -- 変更全体のラウンドで Low より上のものが無ければ終わります。`false`（`fast`）はこれまでの規則で、`re_review_severities` でだけ再レビューします。プリセットが決めるキーです。`references/reviews.md`（「変更全体で締めくくる」）を参照。 |
 | `review.start_before_tests` | bool | `false`（デフォルト）はテストを走らせて記録してから、スナップショットを取ります。`true` はコードレビューのラウンドを先に始め、テストを並行して走らせます。ラウンドをトリアージして直すのは、レビューしたそのツリーでテストが通ってからで、そのツリーは `state record test` が記録します。`references/workflow.md`（「テストと並行してレビューする」）を参照してください。 |
 | `review.max_findings` | int \| null | 各レビュアーに求める指摘の数。`null`（デフォルト）は `optimization.level` に任せ、`0` は上限を外します。上限を超えて返ってきた指摘は保持され、切り捨てられることはありません。 |
 | `review.context.max_chars` | int ≥ 1 \| null | レビューラウンドがそもそも送信する変更本文の最大サイズです。対象は diff、または plan とそれが答える依頼です（デフォルト 400,000 ≈ 100k トークン。ここで記録された最大のプロンプトの 4 倍で、これまで誰かが実行したものは何も拒否しません）。これを超えると、`review run` は何もレビューせずに exit 3 で終了します。上限内に収める方法は、`--base`、`review.exclude`、変更の分割、または plan を短くすることです。`--force` は人間による上書きで、そのラウンドを予算超過として記録します。`null` は `review.max_findings` と同様にデフォルトを意味します。この上限を無効にする値はありません。`references/limits.md` を参照。 |
@@ -670,7 +671,7 @@ implementation:
 | `review.context.surrounding` | `none` \| `enclosing` | `enclosing` にすると、各 hunk を囲む Python の関数・メソッド・クラスも、すべてのコードレビュアーに渡します。スナップショットの取得時に、その git ツリーから抽出します（デフォルト `none`: diff だけ）。1 つのスナップショットで計測したところレビューが安くならなかったため、off です — `optimization report` が、これを使ったラウンドと使わなかったラウンドを比較します。`false` と `null` は `none` を意味します（`off` は `false` として読まれます）。`true` は拒否されます。`references/reviews.md` を参照。 |
 | `review.context.surrounding_chars` | int ≥ 1 \| null | 1 つのラウンドが追加できる周辺コンテキストの最大量（デフォルト 15,000: 1 つのスナップショットで計測したところ、実行あたりの費用は変わらず、60,000 では渡した分がそのまま上乗せされました）。さらに、diff が `max_chars` と `inline_chars` の下に残す分で上限がかかるので、コンテキストがラウンドを拒否させたり、diff をファイル渡しにしたりすることはありません。収まらなかったものは、プロンプトとすべてのレポートで名前を挙げて除外されます。`null` はデフォルトを意味します。`references/limits.md` を参照。 |
 | `review.design.enabled` | bool \| `auto` \| null | 実装の前に `.ai/plan.md` を設計パネル（`review.design.reviewers` を参照）にかけるかどうか。このステージはラウンドごとにパネルのメンバー 1 人につきレビュアー実行 1 回分のコストがかかります。`true` は常に実行、`false` は実行しません。`auto`（デフォルト）は計画書から判断し、その答えと理由を `status` が表示します。計画書のどこにあってもバッククォートで囲まれたトークンと、計画書の `Files to Modify` 見出しの下にあるパスらしい語（バッククォートの有無を問わず、そこにあるフェンスブロックも含む）はすべて、大文字小文字を区別せずに高リスクパターン（`optimization.high_risk_paths` と `extra_high_risk_paths`）と照合され、一致すれば実行します。`db/migrate` のように `/` を含み拡張子のない名前はディレクトリとしても照合します。規模は、`Files to Modify` の下にあるファイル名らしいトークン（`/` かファイル拡張子を含むもの）のうち、フェンスブロックの中、`docs/`・`references/`・`tests/` と `.md`・`.rst`・`.txt` ファイルを除いたものを、ディスクを見ずに数え、6 個以上なら実行します。そこにグロブ、ディレクトリ、`/` を含み拡張子のない名前、`..` を通るパスがあれば実行します（`payload["mode"]` のようなコードはグロブとして読みません）。計画書が読めない、`Files to Modify` セクションがない、あってもファイルを 1 つも挙げていない場合も実行します。計画書がまだないときの答えは `auto -> run (once a plan is written)` です。そしてワークフローで設計レビューのラウンドが一度でも走ったら答えは実行のままなので、改訂によってループが途中で止まることはありません。`null` はデフォルトの `auto` を意味します。 |
-| `review.design.max_iterations` | int ≥ 0 | 設計レビューのラウンド数（レビュー → トリアージ → 修正）。`max_review_iterations` とは別にカウントされます（デフォルト 2）。上限に達したラウンドでも修正は行われます。上限が拒否するのはその後の再レビューだけです。`1`: 1 ラウンド、1 回の修正、その後ユーザーに確認。`0`: 設計レビューなし。`budgets.architect`（デフォルト 3）は、デフォルトでは設計とラウンドごとに 1 回の修正をまかないます。`max_iterations` に合わせて引き上げ、承認時に変更を求められることが予想される場合はさらに 1 つ増やしてください。 |
+| `review.design.max_iterations` | int ≥ 0 | 設計レビューのラウンド数（レビュー → トリアージ → 修正）。`review.code.max_iterations` とは別にカウントされます（デフォルト 2）。上限に達したラウンドでも修正は行われます。上限が拒否するのはその後の再レビューだけです。`1`: 1 ラウンド、1 回の修正、その後ユーザーに確認。`0`: 設計レビューなし。`budgets.architect`（デフォルト 3）は、デフォルトでは設計とラウンドごとに 1 回の修正をまかないます。`max_iterations` に合わせて引き上げ、承認時に変更を求められることが予想される場合はさらに 1 つ増やしてください。 |
 | `design.require_approval` | bool \| `auto` \| null | `.ai/plan.md` が存在し、現時点の plan が `design approve` で承認されていない間に -- ユーザーが了承した後に承認するものです -- `run implementer` を拒否するか（exit 5）を決めます。`true` は常に承認を求めます。`false` は求めず、このゲートが導入される前の挙動に戻します。`auto`（デフォルト。`null` も同じ）は、次の3つがすべてそろったときだけ承認を省き、それ以外は求めます: 誰も見ていない（`DEV_ORCHESTRA_UNATTENDED` が `0`・`false`・`no`・`off` 以外の値で設定されている。未設定か空のときは `CI` を同じように読む。このため、プログラムに確認を出させないためだけに `CI` を設定する道具の中でも、`DEV_ORCHESTRA_UNATTENDED=0` なら承認を求め続ける）、plan が危ない変更でない（plan のどの語も `optimization.high_risk_paths` と `extra_high_risk_paths` に当たらず -- これらはデフォルトと global 設定の値に、project ファイルが足したものを加えたもので、project ファイルから減らすことはできない --、ワークフローのどの設計ラウンドも `--high-risk` で走っていない）、設計レビューで Low より上が残っていない（`review.design.enabled: auto` が小さくまとまった plan だとして省いた、または最新のラウンドで全レビュアーが最後まで終わり、plan 全体を見たうえでこの plan そのものをレビューし、Low より上 -- Medium 以上と、`review.re_review_severities` が止める重大度 -- の未解決の指摘がない）。報告のまだないラウンド、レビュアーが失敗したか `partial` で終わったラウンド、前の版の plan へのレビュー、走るべきなのにまだ走っていないレビュー、`review.design.enabled: false` は承認を求めます。project ファイルはレビュー対象のブランチと一緒に来ることがあるため、省いたことを認めるのは project ファイルを除いても（global 設定かデフォルトで）`review.design.enabled` が `auto` のときだけ、問題のないラウンドを認めるのは設計パネルが project ファイルの並べたものでないときだけです（project ファイルの `reviewers_extra` は席を足すだけなので数えません）。そうでなければどちらも承認を求めます。`status` は `Plan approval:` の行に答えと理由を出します。判定のあいだに plan が変わったときは承認を求めます。`review.design` の下ではなくトップレベルにあるのは、パネルが plan をレビューしたかどうかにかかわらず承認が重要だからです。`--force` ではバイパスできず、この設定だけがバイパスできます。global 設定からだけ受け付け、project ファイルにあっても無視します（[下記](#what-the-project-file-may-not-loosen)）。 |
 | `design.ask_questions` | bool \| `auto` \| `grill` \| null | plan を書く前に、設計の未決の点をユーザーに尋ねるかどうかです（[workflow](workflow.md#design-questions)）。`false`（デフォルト）は尋ねず、これまでどおりです。`auto` では、依頼があいまいなとき、新しい挙動や仕様のとき、いくつもの進め方がありうるときに orchestrator が尋ね、記録された質問が未回答の間は plan を書く `run architect` が拒否します（exit 6）。`true` は同じうえで、`run architect --questions` のラウンドが 1 回記録されるまでもその実行を拒否します。`grill` は `true` と同じように拒否したうえで、インタビューとして尋ねます。1 問ずつ尋ね、答えを掘り下げる質問は orchestrator の質問として記録します。architect のラウンドとその上限は変わりません。`design.require_approval: false`（誰も見ていない実行）でも質問は出して記録しますが、plan の実行は答えを待たず、未回答のものを architect に任せます。そのとき `grill` は `true` と同じに動きます。project ファイルでも設定できます。`null` はデフォルトの意味です。 |
 | `design.max_question_rounds` | int ≥ 1 \| null | architect の質問のラウンド数の上限です（デフォルト 2）。これを超えると `run architect --questions` と `design questions record --by architect` が拒否し（exit 6）、orchestrator はどう進めるかをユーザーに尋ねます。`--force` でもう 1 回実行できます。各ラウンドは `budgets.architect` ではなく `budgets.architect_questions`（デフォルト 3）を消費します。`null` はデフォルトの意味です。 |
@@ -866,7 +867,7 @@ project ファイルの `design.require_approval` は値にかかわらず、ま
 | --- | --- |
 | `reviewers` | それが無ければコードパネルにいるレビュアー id を外している（`[]` はすべて外す） |
 | `review.design.reviewers` | それが無ければ設計パネルにいるレビュアー id を外している。自身のリストのほか、フィットした設計パネルを外す `reviewers` のリストでも起きる |
-| `review.max_review_iterations` | 下げている |
+| `review.code.max_iterations` | どちらの名前でも下げている（`review.max_review_iterations` は古い名前） |
 | `review.re_review_severities` | 重大度を外している。`review status` と同じく、大文字小文字を問わず読み、`config validate` が拒否する値（`[]`、リストでない名前ひとつ、知らない名前）はデフォルトの `critical` と `high` として読む |
 | `review.exclude` | パターンを足して、差分をより多く伏せている |
 | `review.max_findings` | 各レビュアーに求める指摘を減らしている（`null` はレベルの上限、`0` は上限なしとして数える） |
@@ -1678,7 +1679,7 @@ dev-orchestra reviewer add --provider claude --role security
 
 ```bash
 dev-orchestra config set implementer.model.family sonnet
-dev-orchestra config set review.max_review_iterations 1
+dev-orchestra config set review.code.max_iterations 1
 dev-orchestra reviewer remove 2
 ```
 

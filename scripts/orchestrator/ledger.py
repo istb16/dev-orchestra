@@ -47,7 +47,7 @@ from .config_common import MAX_PARALLEL_UNITS
 _FREE_PIECES: Dict[str, int] = {"architect": MAX_PARALLEL_UNITS}
 
 #: Stages that consume an attempt budget. ``review`` is governed by
-#: ``review.max_review_iterations`` instead, since it already counts rounds.
+#: ``review.code.max_iterations`` instead, since it already counts rounds.
 #: ``architect_questions`` is ``run architect --questions``: the same seat, kept
 #: on a budget of its own so asking cannot spend the attempts the plan needs.
 BUDGETED_STAGES = ("architect", "architect_questions", "implementer", "review_fixer", "test")

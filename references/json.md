@@ -405,13 +405,14 @@ entry per finding: `id`, `severity`, `category`, `file`, `line`,
 
 ### `review status`
 
-Object. With `--design` the round budget is `max_iterations` and the last
-pass `final_revision`, in place of the two code keys named below.
+Object. With `--design` the last pass is `final_revision`, in place of the
+code keys named below, and there is no `max_review_iterations`.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `iteration` | integer | The round. |
-| `max_review_iterations` | integer | The round budget. With `--design`: `max_iterations`. |
+| `max_iterations` | integer | The round budget: `review.code.max_iterations`, or with `--design` `review.design.max_iterations`. |
+| `max_review_iterations` | integer | Without `--design` only: the same value as `max_iterations`, under the key it had before the setting was renamed. |
 | `blocking` | list of strings | The ids of the unresolved blocking findings. |
 | `blocking_count` | integer | How many. |
 | `wanted` | list of strings | The ids of the unresolved findings that keep the loop open, which `re_review_recommended`, `iteration_budget_exhausted` and the final pass are about: `blocking`, or with `review.whole_change_recheck` on, everything above Low. |
@@ -480,7 +481,7 @@ Object.
 | `stalls` | list | In-flight stages that look stuck or dead: `token`, `stage`, `started_at`, `elapsed_seconds`, `deadline_seconds`, `pid`, `process_alive`, `reason`. |
 | `abandoned_stages` | list of strings | The stages this call found dead and marked `abandoned`. |
 | `in_flight` | object | What is running now, keyed by token. |
-| `review` | object | `iteration`, `max_review_iterations`, `blocking`, `wanted`, `accepted`, `refused_for_size`, `identical_rounds`, `final_fix`, `final_fix_pending`, `next_review`, `round_tests` (values as in `review status`; `round_tests` is `null` when that leaves it out). |
+| `review` | object | `iteration`, `max_iterations`, `max_review_iterations` (the same value), `blocking`, `wanted`, `accepted`, `refused_for_size`, `identical_rounds`, `final_fix`, `final_fix_pending`, `next_review`, `round_tests` (values as in `review status`; `round_tests` is `null` when that leaves it out). |
 | `design_review` | object | `enabled`, `mode`, `reason`, `iteration`, `max_iterations`, `blocking`, `wanted`, `accepted`, `refused_for_size`, `identical_rounds`, `final_revision`, `final_revision_pending`, `optimization` (values as in `review status --design`). |
 | `design_approval` | object | `required`, `state` (`pending`, `stale`, `approved`, `no-plan`, `not-required` or `implemented-unapproved`), `pending`, `stale_reason` (`plan-changed`, `reviewed-since`, `decisions-changed` or `null`) and the rest -- see [Approval](workflow.md#approval). |
 | `design_questions` | object | `mode` (`off`, `auto`, `on` or `grill`), `state` (`off`, `none`, `open`, `round-required` or `answered`), `pending`, `open`, `answered`, `total`, `architect_rounds`, `max_rounds`, `decisions_file` -- see [Design questions](workflow.md#design-questions). |

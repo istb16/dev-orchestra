@@ -81,7 +81,9 @@ reviewers:
 
 review:
   # Hard stop on review -> fix -> re-review loops. 0 disables re-review.
-  max_review_iterations: 2
+  # Formerly review.max_review_iterations, which is still read.
+  code:
+    max_iterations: 2
   # Run reviewers concurrently. Set false to debug one at a time.
   parallel: true
   # Severities that count as blocking when deciding whether to re-review.
@@ -116,7 +118,7 @@ review:
   incremental_rounds: true
   # Re-review on anything above Low, and finish only on a round that reviewed
   # the whole change: a fix-only round that finds nothing above Low is followed
-  # by one whole-change round, even past max_review_iterations by one. false
+  # by one whole-change round, even past code.max_iterations by one. false
   # (the fast preset) re-reviews on re_review_severities only, as before.
   whole_change_recheck: true
   # How many findings each reviewer is asked for. Leave unset (null) to let
@@ -133,7 +135,7 @@ review:
   design:
     enabled: auto
     # Design review -> revise the plan -> re-review. Counted apart from
-    # max_review_iterations. 1 is the cheap setting: one round, then report
+    # code.max_iterations. 1 is the cheap setting: one round, then report
     # whatever is still open.
     max_iterations: 2
 

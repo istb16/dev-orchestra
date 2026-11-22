@@ -49,7 +49,7 @@ def _refuse_if_runtime_spent(book: ledger_mod.Ledger, stage: str, force: bool) -
 
     Only the runtime reason, not ``check()``: that would also apply the
     attempt, total-run and no-progress rules to review, which are governed by
-    ``review.max_review_iterations`` and decided above this point.
+    ``review.code.max_iterations`` and decided above this point.
     """
     if force:
         return None
@@ -264,7 +264,7 @@ class _ReviewKind(NamedTuple):
 _CODE = _ReviewKind(
     stage="review",
     label="review",
-    budget_setting="review.max_review_iterations",
+    budget_setting="review.code.max_iterations",
     leftover="fix and re-test",
     round_word="round",
     change_word="fix",

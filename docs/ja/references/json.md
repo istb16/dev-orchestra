@@ -1,4 +1,4 @@
-<!-- translated-from: references/json.md sha256:c5628b5a3befc315beba45818986696a248a06e1dba667089fff4bd9704b3fb3 -->
+<!-- translated-from: references/json.md sha256:03552e57180aed728dd36196e302087d01eaa0becd33d0ad3c6d679d3142f158 -->
 
 > この文書は [references/json.md](../../../references/json.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -408,12 +408,13 @@ Object. `review consolidate` と同じ、まとめたレポートです。`--acc
 
 ### `review status`
 
-Object. `--design` のときは、下に挙げたコードの 2 つのキーの代わりに、ラウンドの予算が `max_iterations`、最後の手当てが `final_revision` になります。
+Object. `--design` のときは、下に挙げたコードのキーの代わりに最後の手当てが `final_revision` になり、`max_review_iterations` はありません。
 
 | キー | 型 | 意味 |
 | --- | --- | --- |
 | `iteration` | integer | ラウンド。 |
-| `max_review_iterations` | integer | ラウンドの予算。`--design` では `max_iterations`。 |
+| `max_iterations` | integer | ラウンドの予算。`review.code.max_iterations`、`--design` では `review.design.max_iterations`。 |
+| `max_review_iterations` | integer | `--design` なしのときだけ。`max_iterations` と同じ値を、設定の名前が変わる前のキーで。 |
 | `blocking` | list of strings | 解決していないブロッキングの指摘の id。 |
 | `blocking_count` | integer | その数。 |
 | `wanted` | list of strings | ループを続けさせている解決していない指摘の id。`re_review_recommended`、`iteration_budget_exhausted` と最後のパスはこれについてのもの。`blocking` と同じで、`review.whole_change_recheck` が on なら Low より上のものすべて。 |
@@ -490,7 +491,7 @@ Object.
 | `stalls` | list | 止まっているか死んでいるように見える実行中の工程。`token`、`stage`、`started_at`、`elapsed_seconds`、`deadline_seconds`、`pid`、`process_alive`、`reason`。 |
 | `abandoned_stages` | list of strings | この呼び出しが死んでいると見て `abandoned` にした工程。 |
 | `in_flight` | object | いま動いているもの。トークンをキーにします。 |
-| `review` | object | `iteration`、`max_review_iterations`、`blocking`、`wanted`、`accepted`、`refused_for_size`、`identical_rounds`、`final_fix`、`final_fix_pending`、`next_review`、`round_tests`（値は `review status` と同じ。`round_tests` はそちらで省かれるときは `null`）。 |
+| `review` | object | `iteration`、`max_iterations`、`max_review_iterations`（同じ値）、`blocking`、`wanted`、`accepted`、`refused_for_size`、`identical_rounds`、`final_fix`、`final_fix_pending`、`next_review`、`round_tests`（値は `review status` と同じ。`round_tests` はそちらで省かれるときは `null`）。 |
 | `design_review` | object | `enabled`、`mode`、`reason`、`iteration`、`max_iterations`、`blocking`、`wanted`、`accepted`、`refused_for_size`、`identical_rounds`、`final_revision`、`final_revision_pending`、`optimization`（値は `review status --design` と同じ）。 |
 | `design_approval` | object | `required`、`state`（`pending`、`stale`、`approved`、`no-plan`、`not-required`、`implemented-unapproved`）、`pending`、`stale_reason`（`plan-changed`、`reviewed-since`、`decisions-changed`、`null`）など。[承認](workflow.md#approval) を参照。 |
 | `design_questions` | object | `mode`（`off`、`auto`、`on`、`grill`）、`state`（`off`、`none`、`open`、`round-required`、`answered`）、`pending`、`open`、`answered`、`total`、`architect_rounds`、`max_rounds`、`decisions_file`。[Design の質問](workflow.md#design-questions) を参照。 |

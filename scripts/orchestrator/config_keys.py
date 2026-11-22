@@ -5,11 +5,88 @@
 
 from __future__ import annotations
 
+import copy
 import re
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Sequence, Tuple
 
 from . import miniyaml
 from .config_common import ConfigError
+
+#: ``(old, new)`` for each key that moved. The old name is still read from a
+#: file, as the new one, whenever the same file does not set the new one.
+RENAMED_KEYS: Tuple[Tuple[str, str], ...] = (("review.max_review_iterations", "review.code.max_iterations"),)
+
+
+def current_name(dotted: str) -> str:
+    """``dotted``, or the name it was renamed to."""
+    for old, new in RENAMED_KEYS:
+        if dotted == old:
+            return new
+    return dotted
+
+
+def renamed_in(layer: Dict[str, Any]) -> List[Tuple[str, str, bool]]:
+    """``(old, new, both_set)`` for each old name ``layer`` still uses.
+
+    ``both_set`` is true when the same layer sets the new name too, so the
+    old one is ignored. An old name whose new parent is not a mapping is left
+    out: it is not read at all, and ``validate`` reports that parent.
+    """
+    found = []
+    for old, new in RENAMED_KEYS:
+        if _present(layer, old) and not _blocked(layer, new):
+            found.append((old, new, _present(layer, new)))
+    return found
+
+
+def with_current_names(layer: Dict[str, Any]) -> Dict[str, Any]:
+    """A copy of ``layer`` with each old name moved to its new one.
+
+    The new name wins when both are set, even to null; the old one is dropped
+    either way. A null parent of the new name counts as absent. A parent that
+    is set to anything else but a mapping leaves the layer as it is, for
+    ``validate`` to refuse.
+    """
+    result = copy.deepcopy(layer)
+    for old, new in RENAMED_KEYS:
+        if not _present(result, old) or _blocked(result, new):
+            continue
+        if not _present(result, new):
+            set_path(result, new, get_path(result, old))
+        pop_path(result, old)
+    return result
+
+
+def drop_old_names(layer: Dict[str, Any], written: str) -> None:
+    """Remove from ``layer``, in place, each old name that a write of ``written`` replaced.
+
+    That is each old name whose new one is ``written`` or lies under it, and
+    which the write left set, so a write of ``review.code`` that sets
+    ``max_iterations`` clears ``review.max_review_iterations`` too. The file
+    then sets the new name, and an old one there would only be ignored. A
+    write that leaves the new name unset keeps the old one, still read as it.
+    """
+    for old, new in RENAMED_KEYS:
+        if (new == written or new.startswith(written + ".")) and _present(layer, new):
+            pop_path(layer, old)
+
+
+def _present(layer: Dict[str, Any], dotted: str) -> bool:
+    parent, _, last = dotted.rpartition(".")
+    node = get_path(layer, parent) if parent else layer
+    return isinstance(node, dict) and last in node
+
+
+def _blocked(layer: Dict[str, Any], dotted: str) -> bool:
+    """True when a parent of ``dotted`` is set to something other than a mapping."""
+    node: Any = layer
+    for part in dotted.split(".")[:-1]:
+        node = node.get(part)
+        if node is None:
+            return False
+        if not isinstance(node, dict):
+            return True
+    return False
 
 
 def set_path(data: Dict[str, Any], dotted: str, value: Any) -> Dict[str, Any]:
