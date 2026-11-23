@@ -291,6 +291,13 @@ class RiskJudgeSummary(unittest.TestCase):
             ],
         )
 
+    def test_severity_is_read_without_regard_to_case(self):
+        """``High`` is an accepted critical/high finding here, as it is ``high`` in the scorecard's split."""
+        inputs = self.inputs()
+        inputs[0]["rounds"][1]["findings"][1] = finding("k3", " High ", "accepted")
+        summary = opt_report.risk_judge_summary(inputs)
+        self.assertEqual(summary["workflows"][0]["accepted_critical_high"], 2)
+
     def test_nothing_recorded_is_zero(self):
         summary = opt_report.risk_judge_summary(
             [{"workflow": "w", "stage": "code", "events": [review_round([])]}]

@@ -1261,7 +1261,8 @@ told apart, and how its events find its report:
   `duplicate`. A duplicate no candidate link joined is still counted.
 - **The accepted count of found alone is split by severity**, as in
   `(12 accepted: 2 high, 8 medium, 2 low)`: the severity is the last one a
-  round gave the finding, a round that gave none leaving it as it was, and `other` is any severity but `critical`, `high`,
+  round gave the finding, read without regard to case, a round that gave
+  none leaving it as it was, and `other` is any severity but `critical`, `high`,
   `medium` or `low`, a missing one included. Only the severities with a
   finding are listed, most serious first, so the split always adds up to the
   accepted count.
@@ -1312,8 +1313,10 @@ told apart, and how its events find its report:
   model a later round recorded. `?` is a run with no model recorded, and also
   a finding whose first-reporting round had no run of the reporter or a run
   with no model, so a slot can have a `?` row that holds findings and no runs.
-  A `?` entry made only of failed runs that reported nothing prints no row and does not count as a model, so a seat that ran one model
-  and had such a failure adds no rows; `--json` keeps it in `per_model`.
+  A `?` entry made only of failed runs that reported nothing prints no row,
+  does not count as a model and is left out of the slot's label, so a seat
+  that ran one model and had such a failure adds no rows; `--json` keeps it
+  in `per_model` and `by_model`.
 
 It says what review bought, not whether review got worse. A higher cost per
 accepted finding is what better code under review looks like, and also what a

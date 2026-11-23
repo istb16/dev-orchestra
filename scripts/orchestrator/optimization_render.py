@@ -420,8 +420,9 @@ _SCORECARD_PAIRS = (
 
 _SCORECARD_ALONE = (
     "  Found alone is an upper bound on what dropping the reviewer would lose: a duplicate no\n"
-    "  candidate link joined is counted as found alone. Its accepted count is split by the severity\n"
-    "  the last round gave the finding; other is any severity but critical, high, medium or low.\n"
+    "  candidate link joined is counted as found alone. Its accepted count is split by the last severity\n"
+    "  a round gave the finding (a round that gave none leaves it as it was); other is any severity but\n"
+    "  critical, high, medium or low, or none at all.\n"
     "  Rates are printed from %d decided findings; below that the counts stand alone."
 )
 
@@ -435,7 +436,8 @@ _SCORECARD_SLOTS = (
 _SCORECARD_MODELS = (
     "  A slot that ran several models gets a row per model under it (directly under the seat when it\n"
     "  only ran its usual slot); a finding counts for the model of the run that first reported it, and\n"
-    "  ? is a run, or a first-reporting round, with no model recorded."
+    "  ? is a run, or a first-reporting round, with no model recorded. A ? made only of failed runs\n"
+    "  that reported nothing gets no row and is not named in the slot's label; --json keeps it."
 )
 
 _SCORECARD_EFFORT = (
@@ -500,6 +502,10 @@ def _scorecard_spend(group: Dict[str, Any], panel: bool, per_run: bool = False) 
 def _slot_label(slot: str, group: Dict[str, Any]) -> str:
     """``usual (sonnet)``, or ``usual (sonnet x6, opus x4)`` when the slot ran several models."""
     by_model = group.get("by_model") or {}
+    # A `?` that gets no model row (failed runs alone) is left out of the label
+    # too, so the label names no model the rows below do not show.
+    if len(by_model) > 1 and "?" in (group.get("per_model") or {}) and "?" not in _shown_models(group):
+        by_model = {model: count for model, count in by_model.items() if model != "?"}
     if not by_model:
         return slot
     if len(by_model) == 1:

@@ -322,7 +322,8 @@ def _stage_scorecard(reviewers: Dict[str, Any]) -> Dict[str, Any]:
 SCORECARD_MODELS_TEXT = [
     "  A slot that ran several models gets a row per model under it (directly under the seat when it",
     "  only ran its usual slot); a finding counts for the model of the run that first reported it, and",
-    "  ? is a run, or a first-reporting round, with no model recorded.",
+    "  ? is a run, or a first-reporting round, with no model recorded. A ? made only of failed runs",
+    "  that reported nothing gets no row and is not named in the slot's label; --json keeps it.",
 ]
 
 FULL_TEXT = [
@@ -427,8 +428,9 @@ FULL_TEXT = [
     "  1 round(s) was a --surrounding pair: both runs' cost is in, and its findings and triage",
     "  are the second run's. See the paired block for what it measured.",
     "  Found alone is an upper bound on what dropping the reviewer would lose: a duplicate no",
-    "  candidate link joined is counted as found alone. Its accepted count is split by the severity",
-    "  the last round gave the finding; other is any severity but critical, high, medium or low.",
+    "  candidate link joined is counted as found alone. Its accepted count is split by the last severity",
+    "  a round gave the finding (a round that gave none leaves it as it was); other is any severity but",
+    "  critical, high, medium or low, or none at all.",
     "  Rates are printed from 10 decided findings; below that the counts stand alone.",
     "  A seat that ran its high-risk model gets a row per slot; a finding counts for the slot that",
     "  first reported it, and a record without a slot is the usual one.",
@@ -790,6 +792,21 @@ class TestOptimizationReportText(IsolatedCase):
                 labelled = [row for row in rows if row.startswith(("    opus", "    ?"))]
                 self.assertEqual(len(labelled), 2 if printed else 0)
                 self.assertEqual(SCORECARD_MODELS_TEXT[0] in rows, printed)
+
+    def test_slot_label_leaves_out_a_hidden_unknown_model(self):
+        """A ``?`` with no row is not named in the label; one with a row still is."""
+        opus = _score(runs=2, measured_runs=2, billed_tokens=2000, billed_per_run=1000)
+        failed = _score(runs=1, failed_runs=1, measured_runs=1, billed_tokens=300, billed_per_run=300)
+        found = _score(reported=1, open=1, runs=1, failed_runs=1)
+        risky = _score(by_model={"opus": 1}, runs=1, per_model={"opus": opus})
+        for unknown, label in ((failed, "    usual (opus)"), (found, "    usual (opus x2, ? x1)")):
+            with self.subTest(label=label):
+                usual = _score(by_model={"opus": 2, "?": 1}, runs=3, per_model={"opus": opus, "?": unknown})
+                scorecard = _stage_scorecard(
+                    {"a": _score(runs=4, models={"usual": usual, "high-risk": risky})}
+                )
+                rows = optimization_render._scorecard_rows(scorecard)
+                self.assertTrue(any(row.startswith(label) for row in rows), rows)
 
     def test_recorded_events_reach_the_text_unmocked(self):
         """The command reads the real run log, so its wiring into ``report_lines`` is what is tested."""

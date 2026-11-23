@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:92011dbb45e74fbae09342256fa38d73e8566025aeb5b8f4a9f17b0e11ac6b0c -->
+<!-- translated-from: references/cli.md sha256:c84d360825dfc9b7a7161b0e839695baa7abd9a75a6c265c6e6c00264c7d2fb2 -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -1128,8 +1128,8 @@ Review effort, code and design together: 128 accepted over 28 of 46 recorded rou
   `duplicate` とトリアージされた、ということが無いもの。候補リンクで結ばれなかった重複は、
   それでも数えられます。
 - **found alone の採用数は severity ごとに分けます。** `(12 accepted: 2 high, 8 medium, 2 low)`
-  のようになります。severity はラウンドがその指摘に最後に与えたもので（severity を与えなかったラウンドは
-  それを変えません）、`other` は `critical`、
+  のようになります。severity はラウンドがその指摘に最後に与えたもので、大文字と小文字は区別しません（severity を
+  与えなかったラウンドはそれを変えません）、`other` は `critical`、
   `high`、`medium`、`low` 以外のすべてで、severity が無いものも含みます。指摘のある severity だけを
   重いものから並べるので、内訳の和は常に採用数と一致します。
 - **率は判定済み（`accepted`、`rejected`、`duplicate`）10 件から、1 採用あたりの数字は採用 10 件から
@@ -1169,8 +1169,8 @@ Review effort, code and design together: 128 accepted over 28 of 46 recorded rou
   記録したモデルに数えることはありません。`?` はモデルが記録されていない run で、最初に報告した
   ラウンドに報告者の run が無いか、run にモデルが無かった指摘もここに入ります。そのため枠には、指摘
   だけがあって run の無い `?` の行が出ることがあります。失敗した run だけでできていて何も報告して
-  いない `?` は行を出さず、モデルとしても数えません。そのため 1 つのモデルしか
-  走らせず、そうした失敗が 1 回あった席は行を足しません。`--json` では `per_model` に残ります。
+  いない `?` は行を出さず、モデルとしても数えず、枠のラベルにも出しません。そのため 1 つのモデルしか
+  走らせず、そうした失敗が 1 回あった席は行を足しません。`--json` では `per_model` と `by_model` に残ります。
 
 これはレビューが何を買ったかを言うものであって、レビューが悪くなったかどうかを言うものではありません。
 1 採用あたりのコストが上がるのは、レビュー対象のコードが良くなったときの姿でもあり、レビュアーが欠陥を

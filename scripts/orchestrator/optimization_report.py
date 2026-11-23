@@ -1118,7 +1118,8 @@ def _unique_findings(groups: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
             )
             severity = finding.get("severity")
             if isinstance(severity, str) and severity.strip():
-                record["severity"] = severity
+                # Stored as every reader compares it: `High` is `high`.
+                record["severity"] = severity.strip().lower()
             else:
                 record.setdefault("severity", None)
             ours = [str(name) for name in finding.get("reported_by") or []]
