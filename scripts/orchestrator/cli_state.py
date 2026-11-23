@@ -483,7 +483,12 @@ def cmd_optimization_report(args: argparse.Namespace) -> int:
     report = opt_report.summarise_rounds(events)
     # Beside the event summary rather than inside it: that one reads the run
     # log alone, and what a round found is only in the round's report.
-    report["scorecard"] = opt_report.reviewer_scorecard(_scorecard_inputs(workflows))
+    inputs = _scorecard_inputs(workflows)
+    report["scorecard"] = opt_report.reviewer_scorecard(inputs)
+    # Only once a round has a record: under `rules` the report stays as it was.
+    judged = opt_report.risk_judge_summary(inputs)
+    if judged["rounds"]:
+        report["risk_judge"] = judged
     report["architect_revisions"] = opt_report.architect_revisions(
         [(item["events"], _wrote_plan(item["workspace"])) for item in workflows]
     )

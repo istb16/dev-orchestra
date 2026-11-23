@@ -10,7 +10,7 @@ of the remaining budget, because those are what the two read differently.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from . import approval as approval_mod
 from . import config as config_mod
@@ -60,6 +60,36 @@ def missing_path_lists(meta: Any) -> List[str]:
     return [key for key in ("changed_paths", "condition_paths") if not isinstance(meta.get(key), list)]
 
 
+class RoundInputs(NamedTuple):
+    """The paths a code round on a snapshot is decided from."""
+
+    #: Every path the change touches, plus the watched instruction paths it
+    #: still carries: what risk and the relevance rules are judged from.
+    risk_paths: List[str]
+    #: What a path-scoped reviewer's patterns are matched against.
+    condition_paths: List[str]
+    #: The snapshot's reviewed ``files``; None when it has no list.
+    reviewed: Optional[List[str]]
+    #: ``instructions.watched_paths``: high-risk, each matched verbatim.
+    literal_paths: List[str]
+
+
+def round_inputs(loaded: config_mod.LoadedConfig, meta: Dict[str, Any]) -> RoundInputs:
+    """``(risk_paths, condition_paths, reviewed, literal_paths)`` of the snapshot ``meta``.
+
+    What ``round_plan`` decides a round from, in one place, so that anything
+    else asking the same questions of the round -- the risk judge's record --
+    cannot drift from it.
+    """
+    files = meta.get("files")
+    return RoundInputs(
+        _risk_paths(meta) + [str(path) for path in meta.get("instruction_changes") or []],
+        _condition_paths(meta),
+        [str(path) for path in files] if isinstance(files, list) else None,
+        instructions.watched_paths(loaded),
+    )
+
+
 def round_plan(
     loaded: config_mod.LoadedConfig,
     workspace: ws.Workspace,
@@ -87,7 +117,7 @@ def round_plan(
     whole-change recheck is not, and keeps the full panel even if its
     snapshot carries ``incremental_from``.
     """
-    files = meta.get("files")
+    inputs = round_inputs(loaded, meta)
     alongside = loaded.start_before_tests()
     test_status = (
         review_tests.tested_status(
@@ -99,7 +129,7 @@ def round_plan(
     return opt_mod.decide(
         loaded.optimization_settings(),
         loaded.review_settings(),
-        _risk_paths(meta) + [str(path) for path in meta.get("instruction_changes") or []],
+        inputs.risk_paths,
         int(meta.get("lines_added") or 0) + int(meta.get("lines_deleted") or 0),
         test_status,
         len(panel),
@@ -108,9 +138,9 @@ def round_plan(
         declared=declared,
         carried=review_mod.carried_findings(workspace, meta),
         only=only,
-        condition_paths=_condition_paths(meta),
-        reviewed=[str(path) for path in files] if isinstance(files, list) else None,
-        literal_paths=instructions.watched_paths(loaded),
+        condition_paths=inputs.condition_paths,
+        reviewed=inputs.reviewed,
+        literal_paths=inputs.literal_paths,
         alongside_tests=alongside,
         # A recheck wins over `incremental_from`: it is the round that reads
         # the whole change again, so it must never get the narrowed panel.

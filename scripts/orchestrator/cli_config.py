@@ -469,10 +469,13 @@ def _refusal_warnings(loaded: config_mod.LoadedConfig) -> List[str]:
     return warnings
 
 
+#: The read-only role blocks, the risk judge included, as a regex alternation.
+_READ_ONLY_ROLE_ALTERNATION = "|".join(re.escape(role) for role in config_mod.READ_ONLY_BLOCKS)
+
 #: The keys that name a read-only seat's provider.
 _SEAT_PROVIDER_PATHS = (
-    re.compile(r"^(?P<role>orchestrator|architect)\.provider$"),
-    re.compile(r"^(?P<role>orchestrator|architect)\.model_tiers\.(?P<tier>.+)\.provider$"),
+    re.compile(r"^(?P<role>%s)\.provider$" % _READ_ONLY_ROLE_ALTERNATION),
+    re.compile(r"^(?P<role>%s)\.model_tiers\.(?P<tier>.+)\.provider$" % _READ_ONLY_ROLE_ALTERNATION),
     re.compile(r"^reviewers\[(?P<index>\d+)\]\.provider$"),
     re.compile(r"^reviewers_extra\[(?P<index>\d+)\]\.provider$"),
     re.compile(r"^review\.design\.reviewers\[(?P<index>\d+)\]\.provider$"),

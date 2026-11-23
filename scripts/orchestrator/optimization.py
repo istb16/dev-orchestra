@@ -743,6 +743,18 @@ def _rule_answer(
     return _architecture_needed(stage, evidence, settings)
 
 
+def rule_answer(
+    rule: str, stage: str, evidence: Evidence, settings: Dict[str, Any], literal_paths: Sequence[str] = ()
+) -> Tuple[bool, str]:
+    """A relevance rule's bare answer on ``evidence``: ``(needed, reason)``.
+
+    What the rule says about the change alone, before a high-risk hit, a
+    declaration, a carried finding or ``--only`` could keep a seat, and
+    whether or not any seat is judged by it. The reason is not redacted.
+    """
+    return _rule_answer(rule, stage, evidence, settings, literal_paths)
+
+
 #: The reason a carried finding keeps a seat; it alone of the keep reasons
 #: also keeps a code panel whole against the low-risk cut.
 _CARRIED = "has open accepted finding"

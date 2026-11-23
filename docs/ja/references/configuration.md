@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:e9134b1ceab7517fd47ec8da77aa3f170aca46007ef66822c68cb0ff064dcb12 -->
+<!-- translated-from: references/configuration.md sha256:b671d0f01d183ab06cb6618d554cce09e2160fd23571c38666a0f6b1ed1eb34f -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -22,6 +22,7 @@
 - [常設の指示（`instructions`）](#standing-instructions-instructions)
 - [作業単位: テストと無視されたファイル](#work-units-tests-and-ignored-files)
 - [最適化レベル](#optimization-level)
+  - [リスクについてのもう 1 つの意見（`optimization.risk_judge`）](#a-second-opinion-on-risk-optimizationrisk_judge)
   - [高リスクな変更でだけ走るレビュアー](#reviewers-that-run-only-on-high-risk-changes)
 - [モデルティア](#model-tiers)
 - [モデル family とバージョンポリシー](#model-families-and-version-policy)
@@ -602,6 +603,7 @@ optimization:
   skip_unneeded_roles: true           # a test/architecture seat sits out a round with nothing for it
   auto_tier: true                     # run picks a role's light tier itself when no --tier is given
   narrow_re_reviews: true             # a fix-only re-review round runs only the seats with open findings
+  risk_judge: rules                   # record: also ask the risk_judge role, record its answer, act on none of it
 
 design:
   require_approval: auto              # implementer waits for the user's yes (true, false or auto)
@@ -658,7 +660,7 @@ implementation:
 | `review.code.max_iterations` | int ≥ 0 | コードレビューのラウンド数です（デフォルト 2）。プロジェクト単位ではなくレビュー単位のラウンド数です。新しいブランチ、新しい `--base`、または `budget reset` でカウントはリセットされます。`0` で再レビューを完全に無効にします。古い名前の `review.max_review_iterations` も、同じファイルが新しい名前を設定していない限り（`null` に設定していても設定とみなします）、どちらのファイルからも読まれます。`doctor` と `config validate` はそれを知らせ、どちらの名前の `config set` も新しい名前で書き、そのファイルから古い名前を消します。 |
 | `review.parallel` | bool | `false` にするとレビュアーを 1 つずつ実行します（デバッグしやすくなります）。 |
 | `review.re_review_severities` | list | ブロッキングとみなす severity。`critical`、`high`、`medium`、`low` から選んだ空でないリストで、大文字小文字は問いません（デフォルトは `[critical, high]`）。リストにしない 1 つの名前、知らない名前、`[]` は断られます。検査せずにファイルを読むコマンドは、代わりにデフォルトでブロックします。 |
-| `run.timeout_seconds.<role>` | int、1 から 1,000,000,000 | `orchestrator`、`architect`、`implementer`、`review_fixer` の `run` 1 回の合計の締め切り（デフォルトは implementer が 3600、ほかは 1800）。`--timeout` で 1 回だけ上書きできます。ほかのキーは拒否されます。ロールのブロックの外にあるので、設定してもそのロールはプリセットのフィットから外れず、`config setup --preset` もこれを残します。この締め切りで止められた実行は、キーの名前を挙げてそう伝えます。 |
+| `run.timeout_seconds.<role>` | int、1 から 1,000,000,000 | `orchestrator`、`architect`、`implementer`、`review_fixer` の `run` 1 回の合計の締め切り（デフォルトは implementer が 3600、ほかは 1800）と、リスク判定役の 1 回の実行の締め切り `risk_judge`（デフォルト 180）。`--timeout` で 1 回だけ上書きできます。ほかのキーは拒否されます。ロールのブロックの外にあるので、設定してもそのロールはプリセットのフィットから外れず、`config setup --preset` もこれを残します。この締め切りで止められた実行は、キーの名前を挙げてそう伝えます。 |
 | `review.timeout_seconds` | int、1 から 1,000,000,000 | 各レビュアーの合計の締め切り。`review run` のラウンドのレビュアーと `run <reviewer-id>` に効きます（デフォルト 1800）。ロールの `run` にはもう効きません。そちらは `run.timeout_seconds.<role>` です。タイムアウトは報告されるだけで、例外にはなりません。 |
 | `review.idle_timeout_seconds` | int、1 から 1,000,000,000 \| null | この時間出力がなければ、実行は固まったものとして扱われます（デフォルト 300。ストリーミングする provider のみ）。レビュアーと、ファイルを変えない `run` で共通です。沈黙の長さはタスクの大きさでは伸びないからです。ファイルを変えうる実行（implementer、review fixer、`--mode implement`）には代わりに 1200 秒を当て、この値の方が大きければこの値を当てます。走らせるテストやビルドがそれより長く黙りうる一方、期限をまったく当てないと、固まった実行が全体の期限まで走り続けるからです。ロールごとには `options.idle_timeout` で設定・上書きできます。 |
 | `review.exclude` | list | diff 本文をレビュアーに渡さない glob パターン。デフォルトのリストを丸ごと置き換えます。`[]` ですべてをレビューします。 |
@@ -685,6 +687,8 @@ implementation:
 | `optimization.skip_unneeded_roles` | bool | `true`（デフォルト）: 常に走る `test`、`architecture` の席は、見るもののないラウンドを休みます。コードレビューでも設計レビューでも、`quality` を含むどのレベルでもそうです。`relevance: security` でオプトインした `security` の席も同じで、オプトインしていない席は常に走ります。`false` にすると、そうした席を従来どおり毎ラウンドすべて走らせます。`references/reviews.md`（「ラウンドが必要としないロール」）を参照。 |
 | `optimization.auto_tier` | bool | `true`（デフォルト）: `--tier` を渡さない `run implementer` と `run review_fixer` は、小さく低リスクな作業なら role の `light` tier を、そうでなければ role 本来のモデルを自分で選び、理由を `note:` 行に出します。対象は `light` tier を持つ role だけです。`false` にすると、`--tier` でティアを指定しない限り従来どおり role 本来のモデルで走ります。1 回だけなら `run --no-auto-tier` で同じことができます。[Model tiers](#model-tiers) と `references/workflow.md` を参照。 |
 | `optimization.narrow_re_reviews` | bool | `true`（デフォルト）: 修正だけの再レビューのラウンド（`incremental_from` が付いたスナップショット）では、ロールの関連性の規則が判断しない席（`general` の席、`relevance: always` の席、自分で指定していないセキュリティの席）と、まだ開いている受け入れ済みの指摘を報告した常時実行の席、修正が `optimization.security_paths` に触れるときは指定済みのセキュリティの席が走り、ほかは休みます。高リスクの一致、`--high-risk`、`--only` があればいつものレビュアー陣で、`optimization.skip_unneeded_roles: false` のときはどの席も休みません。`false` にすると、従来どおり毎ラウンドいつものレビュアー陣で走ります。`references/reviews.md`（「ラウンドが必要としないロール」）を参照。 |
+| `optimization.risk_judge` | `rules` \| `record` \| null | `rules`（デフォルト。`null` も同じ）: リスクと専門の席は、これまでどおりパスのパターンと席の条件だけで決まります。`record` にすると、コードレビューのラウンドごとに 1 回、`risk_judge` ロールにも diff についての独自の判断 -- リスクの段階と、専門の種類ごとに必要かどうか -- を尋ね、規則が決めたことの隣に記録します。ラウンドを変えることはありません。`record` には `risk_judge` ロールが必要です。`ai-escalate` と `ai` はまだ使えないとして断られ、引用符のない `off`（`false` として読まれる）は `rules` と書くよう案内を付けて断られます。検査せずにファイルを読むコマンドは、そうした値を `rules` として読みます。[リスクについてのもう 1 つの意見](#a-second-opinion-on-risk-optimizationrisk_judge) を参照。 |
+| `risk_judge` | mapping \| null | リスク判定役のロールのブロックで、`architect` と同じくトップレベルに置きます。`provider`、`model`、`options` を持ち、ロールと同じように検査され、レビュアーと同じく読み取り専用で走ります。`model_tiers` は持てません（判定役は 1 つのモデルで走ります）。省略可能で、プリセット、`config setup`、ウィザードが書くことはなく、`run` の対象でもありません。ファイルで設定すると、`doctor` が *Risk judge* としてモードと合わせて表示し、`config show` も *Risk judge* として期限と合わせて表示します。`config show` はその横に `risk judge: <mode>  (optimization.risk_judge)` の行も出します。この行はブロックがなくても `record` のときは出ます。 |
 | `optimization.security_paths` | list | `relevance: security` の席について、`security` の規則が高リスクパターンのほかに探すもの: リクエスト処理と入力、ファイル・URL・クライアント・クエリ・データベースへのアクセス、実行とデシリアライゼーション、設定と依存関係のマニフェスト、そしてデフォルトの高リスクパターンすべて。デフォルトのリストを丸ごと置き換えます。`[]` にすると高リスクパターンだけが残ります（`doctor` がそれを報告します）。 |
 | `optimization.extra_security_paths` | list | `security_paths` に追加する glob（デフォルト `[]`）。 |
 | `optimization.architecture_paths` | list | `architecture` の規則が探すもの: 契約とスキーマ、モジュールの表面、設定とレコードの形式、CLI、ビルド。デフォルトのリストを丸ごと置き換えます。`[]` にすると規模とディレクトリの判定だけが残ります（`doctor` がそれを報告します）。 |
@@ -705,6 +709,7 @@ implementation:
 | `reviewers[].instructions` | string \| `{file: <path>}` \| null | 席自身の常設の本文。ロール全体の `reviewers`（または `design_reviewers`）の本文のあとに続きます。`reviewers_extra` と設計パネルの席にも書けます。 |
 | `budgets.implementer` | int | implementer の試行回数（デフォルト 5）。ふつうの `run implementer` は 1 回の実行で 1 回使います。1 つの plan の作業単位は、合わせて 1 回を使います。これを **pass** と呼びます。plan のハッシュに対して最初に走った作業単位が 1 回を使い、ほかはそこに無料で加わり、同じ pass の中で作業単位をやり直したときだけもう 1 回使います。plan のハッシュが変わったとき（`design.require_approval` のもとでは新しい承認）か `budget reset` で、新しい pass が始まります。`budgets.total_delegated_runs` と `budgets.max_runtime_seconds` は、それでもすべての実行を数えます。この予算を使い切っていても、開いている pass でまだ走っていない作業単位は走ります。 |
 | `budgets.architect` | int | architect の試行回数（デフォルト 3）。`run architect --unit` も同じ pass の規則で数えます。鍵は最後に承認された plan のハッシュです（最初の承認の前は空）。1 回分の作業単位ごとの設計は 1 回の試行で済み、承認の後の設計し直しは新しい pass です。 |
+| `budgets.risk_judge` | int | リスク判定役の試行回数（デフォルト 4）。1 回の実行で 1 回使い、ほかの実行と同じく `budgets.total_delegated_runs` と `budgets.max_runtime_seconds` にも数えます。使い切ると、ラウンドは `budget_spent` を記録し、判定役なしのときと同じように走ります。予算の一覧には、判定役が一度走ってから載ります。 |
 | `<role>.options` | mapping | provider 固有の設定項目。下記を参照。 |
 | `<role>.model_tiers` | mapping | このロールのモデルに対する名前付きの代替。下記を参照。省略可。 |
 
@@ -1041,6 +1046,55 @@ optimization:
   low_risk_max_files: 3
   low_risk_max_lines: 80
 ```
+
+<a id="a-second-opinion-on-risk-optimizationrisk_judge"></a>
+
+### リスクについてのもう 1 つの意見（`optimization.risk_judge`）
+
+パターンは変更をパスの名前で判断します。`optimization.risk_judge: record` は、安価な
+モデルに diff そのものをどう見るかを尋ね、その答えをパターンの答えの隣に記録します。
+二つがどこで一致するかを `optimization report` で見るためです。これは測定の第 1 段階です。
+**判定役が何を言っても、ラウンドは変わりません** -- レベル、レビュアー陣、指摘の上限、
+モデルの枠、拒否、終了コードのどれもです。判定役が走ったかどうかでも変わりません。
+デフォルトの `rules` では走らず、出力はすべてこれまでどおりです。
+
+判定役は独立したトップレベルのロールで、デフォルトはありません。先にこれを設定します
+-- これなしの `record` は断られます。モデルは最も安価な Haiku です:
+
+```bash
+dev-orchestra config set risk_judge.provider claude
+dev-orchestra config set risk_judge.model.family haiku
+dev-orchestra config set risk_judge.model.version latest
+dev-orchestra config set optimization.risk_judge record
+```
+
+```yaml
+optimization:
+  risk_judge: record
+risk_judge:
+  provider: claude
+  model:
+    family: haiku
+    version: latest
+run:
+  timeout_seconds:
+    risk_judge: 180                   # the default
+budgets:
+  risk_judge: 4                       # the default
+```
+
+レビュアーと同じく読み取り専用で走り、同じ規則がかかります。プロジェクトファイルの
+`options.args` があれば実行は断られ、読み取り専用で走らせられない provider でも断られます。
+コードレビューのラウンドごとに最大 1 回、レビュアー陣と並んで走り、それもラウンドが
+すべての拒否を通ったあとだけです。設計レビューのラウンドと、修正だけの再レビューの
+ラウンドは判定しません。同じ系列のラウンドがすでに判定した変更の、変更全体の再確認も
+判定しません。1 回の実行で `budgets.risk_judge`（デフォルト 4）を 1 回使い、
+締め切りは `run.timeout_seconds.risk_judge`（デフォルト 180）と
+`review.idle_timeout_seconds` です。トークンと実行時間には、ステージ `risk_judge` として
+数えます。何がうまくいかなくても -- ロールがない、CLI がない、時間切れ、予算切れ、読めない
+答え -- 記録の status と 1 行の `note:` になるだけで、ラウンドが失敗することはありません。
+何を尋ね、何を記録し、レポートがそれをどう読むかは `references/reviews.md`
+（「リスクについてのもう 1 つの意見」）を参照。
 
 <a id="reviewers-that-run-only-on-high-risk-changes"></a>
 

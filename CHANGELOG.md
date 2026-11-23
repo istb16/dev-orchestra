@@ -13,6 +13,36 @@ authors can find it.
 
 ## [Unreleased]
 
+### Added
+
+- **`optimization.risk_judge: record`: a cheap model's own verdict on each
+  code round, recorded beside the rules' and never acted on** (#403). With a
+  `risk_judge` role set (`config set risk_judge.provider claude`,
+  `risk_judge.model.family haiku`), a code review round asks it once, beside
+  the panel and after every refusal, how risky the diff is and whether each
+  specialist kind -- `security`, `performance`, `test`, `architecture`,
+  `database`, `frontend`, `backend` -- is needed. It reads the diff blind,
+  with no pattern hit and no seat named, cut at a file boundary to 40,000
+  characters. Fix-only re-review rounds, design rounds, a round already
+  judged and the whole-change recheck of a change already judged are not
+  asked. The answer goes into the round's event,
+  `consolidated.json`, `rounds/*.json` and `review run --json` under
+  `risk_judge`, next to each kind's bare rule answer and how the rules decide
+  it (`paths`, `high-risk`, `relevance`, `always` or `none`), with one
+  `note:` line; a failure, a timeout or a spent budget is a status, never a
+  failed round. `optimization report` (and its `--json`) gains a `Risk judge`
+  section with one agreement row per kind and one for high risk. The judge
+  has its own budget, `budgets.risk_judge` (default 4), and deadline,
+  `run.timeout_seconds.risk_judge` (default 180), and is counted as the
+  stage `risk_judge`; each run also counts toward
+  `budgets.total_delegated_runs` and `budgets.max_runtime_seconds`, so a
+  workflow near either one has a later run refused sooner. `family: haiku`
+  now resolves on Claude. The default, `rules`, does not run it, and every
+  output stays as it was but the `optimization.risk_judge: rules` that
+  `config show` lists among the effective settings; under `record` the
+  round's panel, level, findings cap, model slots, refusals and exit code are
+  the same whatever the judge answers.
+
 ### Changed
 
 - **`review.max_review_iterations` is now `review.code.max_iterations`**, to

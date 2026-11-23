@@ -8,7 +8,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, List, NamedTuple, Optional, Sequence
 
-from .config_common import READ_ONLY_ROLES
+from .config_common import READ_ONLY_BLOCKS
 from .config_keys import get_path
 from .config_reviewers import DESIGN_PANEL, ReviewerOrigin
 
@@ -150,5 +150,5 @@ def same_run(reviewer: Any, other: Any) -> bool:
 def read_only_seats(
     data: Dict[str, Any], design_origins: Optional[Sequence[ReviewerOrigin]] = None
 ) -> List[SeatRun]:
-    """The read-only roles and their tiers, then every reviewer (``reviewer_seats``)."""
-    return role_seats(data, READ_ONLY_ROLES) + reviewer_seats(data, design_origins)
+    """The read-only roles and their tiers, the risk judge, then every reviewer (``reviewer_seats``)."""
+    return role_seats(data, READ_ONLY_BLOCKS) + reviewer_seats(data, design_origins)

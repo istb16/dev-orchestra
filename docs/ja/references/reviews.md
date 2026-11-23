@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:c9189b29b8927f55f0e39fe95f31ce3095bb6e2fbfe1067584e88d40c64fb47f -->
+<!-- translated-from: references/reviews.md sha256:103eccc3931c6d9436044cd8f4a17584484543a05ade1e3df5908524ef78bc44 -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -17,6 +17,7 @@
 - [設計レビュー](#design-review)
 - [レビューが実行されない場合、または縮小して実行される場合](#when-a-review-does-not-run-or-runs-smaller)
   - [ラウンドが必要としないロール](#roles-a-round-does-not-need)
+  - [リスクについてのもう 1 つの意見](#a-second-opinion-on-risk)
 - [ロール](#roles)
 - [出力スキーマ](#output-schema)
   - [出力の上限](#output-limits)
@@ -680,6 +681,107 @@ optimization.narrow_re_reviews false` でこの絞り込みをやめます
 `standard` のレビュアー陣では `claude-test` の席で、`quality` プリセットの利用者では
 `architecture`、`test` の席も同様です。security の席が休むのは、その席に
 `relevance: security` を設定したときだけで、そのときはパスのパターンだけで判定されます。
+
+<a id="a-second-opinion-on-risk"></a>
+
+### リスクについてのもう 1 つの意見
+
+ここまでのことは、すべてパスの名前と席の条件から決まります。
+`optimization.risk_judge: record` と `risk_judge` ロール（`references/configuration.md` の
+「リスクについてのもう 1 つの意見」を参照）があると、コードのラウンドは安価なモデルにも
+diff の読み方を尋ね、規則が決めたことの隣に記録します。記録するだけで、それに従って
+動くことはありません。ラウンドのレビュアー陣、レベル、指摘の上限、モデルの枠、拒否、
+終了コードは、判定役が何を答えても、そもそも走ったかどうかにかかわらず同じです。
+変わるのは、ワークフローの予算の残りです。1 回の実行は `budgets.total_delegated_runs` と
+`budgets.max_runtime_seconds` にも数えるので、どちらかの上限に近いワークフローでは、
+あとの実行が早く断られます。デフォルトの `rules` では走らず、`config show` が有効な
+設定として出す `optimization.risk_judge: rules` のほかは、どの出力も変わりません。
+
+**いつ走るか。** コードのラウンド（`round_id`）ごとに最大 1 回、レビュアー陣と並んで別の
+スレッドで走ります。テストのゲート、サイズによる拒否、実行時間による拒否のあとです。
+拒否されたラウンドは判定されず、記録も付きません。修正だけの再レビューのラウンド
+（`incremental_from` が付き、変更全体の再確認ではないスナップショット）と、すでに判定した
+ラウンドの再実行は、`skip_reason` 付きの `skipped` として記録します。再実行では、判定した
+ときの記録が残ります。変更全体の再確認も、同じ系列（最後のラウンド 1 からのラウンド）の
+ラウンドが判定済みなら同じく `skipped` です。ラウンド 1 が読んだ変更を読むので、もう一度
+判定すると 1 つの変更を 2 回数えることになるからです。判定済みと数えるのは、ラウンドのイベントに判定役が実際に走った記録が
+あるときだけです。レビュアー陣が失敗したラウンドは記録を残さないので、その再実行では
+もう一度判定し、試行回数をもう 1 回使います。設計レビューのラウンドは判定しません。
+
+**何を尋ねるか。** 判定役は変更を目隠しで読みます。パターンの一致も、レビュアー陣に
+どの席があるかも知らされないので、答えが設定に引きずられることはありません。プロンプトは、
+命令ではなくデータとして囲んだ diff を、ファイルの境目で 40,000 文字以下に切って渡します。
+表がすべてのファイルを、その大きさと追加・削除の行数とともに挙げ、省いたものに印を付けます。
+7 つの専門の種類 -- `security`、`performance`、`test`、`architecture`、`database`、
+`frontend`、`backend` -- それぞれについて中立な 1 行の説明を付け、レビュアー陣にその種類の
+席があるかどうかにかかわらず 7 つすべてを尋ねます。プロジェクトをまたいで記録を比べられる
+ようにするためです。答えは 1 つの JSON オブジェクトです:
+
+```
+{"risk":"low|medium|high","specialists":{"security":true,"performance":false,"test":true,"architecture":false,"database":false,"frontend":false,"backend":false},"reason":"one sentence"}
+```
+
+答えの中で最後に現れる、入れ子でない JSON オブジェクトを読みます。そのため前後の文章や
+コードフェンスがあってもかまいません。そうしたオブジェクトがない答えや、`risk` がない答え、
+どれかの種類に真偽値がない答えは `unparsed` です。余分なキーは無視し、
+`reason` は秘匿処理をして 1 行に収め、200 文字までにします。ラウンドはレビュアー陣のあとに、
+これについて 1 行を出します:
+
+```
+note: risk judge (recorded, not acted on): risk medium; specialists: security, test
+note: risk judge timed out: ...; the round is unchanged
+```
+
+読み取り専用を守らせられない provider の判定役は、`run` と同じ扱いで走ります。グローバル設定に
+あれば警告付きで走り、プロジェクトファイルにあれば拒否します。走るときは、その行の前に
+`warning: risk_judge: read-only is NOT enforced by ...` を出します。
+
+**記録。** `record` のもとでは、ラウンドのイベント、`consolidated.json`（同じラウンドの
+`review consolidate` でも残ります）、`rounds/*.json`、`review run --json` に `risk_judge` の
+ブロックが付きます:
+
+| フィールド | 意味 |
+| --- | --- |
+| `mode` | `record` |
+| `status` | `ok`、`skipped`（`skip_reason` 付き）、`failed`、`timed_out`、`stalled`、`unparsed`、`budget_spent`（`budgets.risk_judge` か実行時間の予算を使い切った）、`refused`（プロジェクトファイルの `options.args`、または provider が読み取り専用を守れない）、`unconfigured`（`risk_judge` ロールがない） |
+| `risk`、`reason` | 判定役の答え。`ok` でなければ null と空 |
+| `provider`、`model`、`usage`、`duration` | レビュアーと同じく、その実行のもの。トークンは `tokens.by_stage.risk_judge` にも入ります |
+| `diff` | `sent_chars`、`total_chars`、`cut`、`files`、`files_omitted` |
+| `warnings` | その実行で読み取り専用の確認と provider が出した警告。何もなければこのキーはありません |
+| `attempted` | 実行を始めて試行回数を使ったときに `true`。それ以外はこのキーはありません。これのない `failed` は実行の前に失敗したもので、そのラウンドは次の実行でもう一度判定されます |
+| `high_risk` | `judge`（`risk: high`）、`rules`（高リスクパターンへの一致）、`declared`（`--high-risk`。どちらとも比べません）、`agrees` |
+| `kinds.<kind>` | 7 つの種類それぞれについて、`judge`、`rules`、`basis`、関連性の規則が決めたときは `rule` と `reason`、`seats`（レビュアー陣にあるその種類の席の id）、`agrees` |
+
+`agrees` は、どちらかに答えがないとき -- 判定役が答えなかった、またはその種類を決める規則が
+ない -- は null です。何も決めていない種類が、一致にも不一致にも数えられることはありません。
+
+**規則の側とは何か。** 種類ごとの `rules` は、席が走ったかどうかではなく、変更そのものに
+対する規則の答えです。持ち越した指摘、`--only`、`--high-risk`、ラウンドに席を 1 つ残す
+仕組みは、これを変えません。最初に当てはまる場合が `basis` を決めます:
+
+| `basis` | いつ | `rules` |
+| --- | --- | --- |
+| `paths` | レビュアー陣にその種類の `when: paths` の席がある | そうした席のどれかのパターンが変更に一致するか |
+| `high-risk` | その種類の `when: high-risk` の席がある | ラウンドに高リスクパターンへの一致があるか |
+| `relevance` | その種類の常時実行の席で、関連性が規則を指すもの（`rule` がどれかを示します。`relevance: architecture` の backend の席なら `rule: architecture`）。それ以外では、`security`、`test`、`architecture` について、レビュアー陣にその席があるか、オプトインしているかにかかわらず、同じ名前の組み込みの規則 | 規則の答え。`optimization.skip_unneeded_roles` が false のとき、または判断材料が疑わしい（スナップショットがレビューしたファイルを挙げていない）ときは null で、`reason` がどちらかを示します |
+| `always` | その種類の常時実行の席で、規則のないもの | null: 規則は決めず、席はただ走ります |
+| `none` | その種類の席がなく、組み込みの規則もない | null |
+
+つまり `security` は、レビュアー陣のセキュリティの席が毎ラウンド走る場合でも、常に
+`security` の規則そのもの（`optimization.security_paths` と高リスクパターン）と比べます。
+レビュアー陣が何をするかは `seats` と `basis` が示します。
+
+**レポートでは。** `optimization report` は、どれかのラウンドに記録があれば `Risk judge` の
+節を加え、各ラウンドを 1 回だけ数えます。記録の status、判定役のリスクの段階、高リスクの行、
+種類ごとの 1 行です。行は、判定役が答えた（`ok`）ラウンドを `both`、`rules only`、
+`judge only`、`neither` に分けて数えます。種類の行には、`rules` が null だったラウンドを
+`no rule` として加え、`basis` ごとに分けます。続いて、判定役の実行回数、課金トークン、秒数、
+そしてワークフローごとに、判定したラウンド、それぞれの側が高リスクとしたラウンド、受け入れた
+critical と high の指摘（最初に報告したラウンドで数えます）と、そのうち規則の高リスクの
+ラウンドと判定役の高リスクのラウンドにあった数です。`--json` では `risk_judge` の下にあります
+（`rounds`、`statuses`、`risk`、`high_risk`、`both`、`rules_only`、`judge_only`、`neither`、
+`no_rule`、`no_rule_by_basis` を持つ `kinds.<kind>`、`usage`、`workflows`）。`rules` のもとでは
+この節はありません。
 
 <a id="roles"></a>
 

@@ -48,6 +48,32 @@ class TestConfigCommands(IsolatedCase):
         preview = summary_mod.render_summary(config_mod.default_config())
         self.assertIn("    Implementer: 3600s  (run.timeout_seconds.implementer)", preview)
 
+    def test_config_show_lists_the_risk_judge_only_when_it_is_in_play(self):
+        """Under ``rules`` with no judge block nothing of it shows; else its role, mode and deadline do."""
+        from orchestrator import summary as summary_mod
+
+        plain = summary_mod.render_summary(config_mod.default_config())
+        self.assertNotIn("isk judge", plain)
+
+        recorded = config_mod.default_config()
+        recorded["optimization"]["risk_judge"] = "record"
+        lines = summary_mod.render_summary(recorded).splitlines()
+        self.assertIn("    risk judge: record  (optimization.risk_judge)", lines)
+        self.assertNotIn("  Risk judge", lines)
+
+        self.write(
+            ".dev-orchestra.yaml",
+            "version: 1\noptimization:\n  risk_judge: record\nrun:\n  timeout_seconds:\n    risk_judge: 90\n"
+            "risk_judge:\n  provider: mock\n  model:\n    family: small\n",
+        )
+        code, out, err = run_cli("config", "show")
+        self.assertEqual(code, 0, err)
+        lines = out.splitlines()
+        start = lines.index("  Risk judge")
+        self.assertEqual(lines[start + 1], "    mock / small / latest")
+        self.assertIn("    risk judge: record  (optimization.risk_judge)", lines)
+        self.assertIn("    Risk judge: 90s (project)  (run.timeout_seconds.risk_judge)", lines)
+
     def test_config_show_reads_a_broken_review_deadline_as_the_default(self):
         """``config show`` loads unvalidated: a bad ``review`` must show, not crash the summary."""
         from orchestrator import summary as summary_mod

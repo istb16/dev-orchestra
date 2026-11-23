@@ -481,6 +481,10 @@ def consolidation_from(
     surrounding = _surrounding(current)
     if surrounding is not None:
         data["surrounding"] = surrounding
+    # The risk judge's record of this round, kept across a rebuild of it and
+    # only of it: a new round sets its own, or none under ``rules``.
+    if round_id and "risk_judge" in last and (last.get("snapshot") or {}).get("round_id") == round_id:
+        data["risk_judge"] = last["risk_judge"]
     data.update(
         {
             "reviewers": list(runs),

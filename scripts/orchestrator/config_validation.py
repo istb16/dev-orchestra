@@ -21,6 +21,10 @@ from .config_common import (
     PROGRESS_INTERVAL_MAX,
     PROGRESS_INTERVAL_MIN,
     PROGRESS_WAIT_MAX,
+    RISK_JUDGE_LATER,
+    RISK_JUDGE_MODES,
+    RISK_JUDGE_ROLE,
+    ROLE_BLOCKS,
     STALE_NOTICE_MAX_DAYS,
     UNIT_TESTS_MODES,
     default_config,
@@ -230,6 +234,7 @@ def validate(
     providers = known_providers if known_providers is not None else available_providers()
     problems = _validate_version_and_preset(data, project_layer, presets.NAMES)
     problems.extend(_validate_roles(data, providers))
+    problems.extend(_validate_risk_judge_role(data, providers))
     problems.extend(_validate_reviewers(data, providers, origins, global_layer, project_layer))
     problems.extend(_validate_design_panel(data, providers, design_origins, global_layer, project_layer))
     for key, check in (
@@ -285,6 +290,7 @@ def _key_schema() -> Dict[str, Any]:
     }
     schema = shape(default_config())
     schema.update(dict.fromkeys(KNOWN_ROLES, role))
+    schema[RISK_JUDGE_ROLE] = role
     schema.update({"preset": None, "reviewers": [reviewer], "reviewers_extra": [reviewer], "budgets": _FREE})
     schema["run"]["timeout_seconds"] = _FREE
     schema["review"]["design"].update({"reviewers": [reviewer], "reviewers_extra": [reviewer]})
@@ -504,9 +510,9 @@ def _validate_run(run: Any) -> List[str]:
         return ["run.timeout_seconds: must be a mapping of role to seconds"]
     problems: List[str] = []
     for role, value in timeouts.items():
-        if role not in KNOWN_ROLES:
+        if role not in ROLE_BLOCKS:
             problems.append(
-                "run.timeout_seconds.%s: unknown role (known: %s)" % (role, ", ".join(KNOWN_ROLES))
+                "run.timeout_seconds.%s: unknown role (known: %s)" % (role, ", ".join(ROLE_BLOCKS))
             )
         else:
             problems.extend(_check_value(_RUN_TIMEOUT, value, "run.timeout_seconds.%s" % role))
@@ -915,7 +921,47 @@ def _validate_optimization(data: Any) -> List[str]:
     level = data.get("level")
     if level is not None and (not isinstance(level, str) or level.strip().lower() not in levels):
         problems.append("optimization.level: must be one of %s, or null" % ", ".join(sorted(levels)))
+    problems.extend(_validate_risk_judge_mode(data.get("risk_judge")))
     problems.extend(_check(data, _OPTIMIZATION_RULES))
+    return problems
+
+
+def _validate_risk_judge_mode(mode: Any) -> List[str]:
+    """``optimization.risk_judge``: one of ``RISK_JUDGE_MODES``, or null.
+
+    A later stage's value is refused as not available yet. A boolean is what
+    an unquoted ``off`` reads as, so it gets a hint to write ``rules``.
+    """
+    if mode is None or mode in RISK_JUDGE_MODES:
+        return []
+    accepted = ", ".join(RISK_JUDGE_MODES)
+    if mode in RISK_JUDGE_LATER:
+        return ["optimization.risk_judge: %s is not available yet (stage 1 accepts %s)" % (mode, accepted)]
+    hint = " -- write `rules` to leave the decision to the path patterns" if isinstance(mode, bool) else ""
+    return ["optimization.risk_judge: must be one of %s, or null (got %r)%s" % (accepted, mode, hint)]
+
+
+def _validate_risk_judge_role(data: Dict[str, Any], providers: List[str]) -> List[str]:
+    """The top-level ``risk_judge`` role block, which ``record`` needs.
+
+    Checked as a role is, but optional, since it is not in ``KNOWN_ROLES``,
+    and with no ``model_tiers``: the judge runs one model.
+    """
+    spec = data.get(RISK_JUDGE_ROLE)
+    optimization = data.get("optimization")
+    mode = optimization.get("risk_judge") if isinstance(optimization, dict) else None
+    if spec is None:
+        if mode == "record":
+            return [
+                "optimization.risk_judge: record needs a %s role (set %s.provider and %s.model)"
+                % (RISK_JUDGE_ROLE, RISK_JUDGE_ROLE, RISK_JUDGE_ROLE)
+            ]
+        return []
+    if not isinstance(spec, dict):
+        return ["%s: must be a mapping with provider and model" % RISK_JUDGE_ROLE]
+    problems = ["%s: %s" % (RISK_JUDGE_ROLE, msg) for msg in _validate_role(spec, providers)]
+    if spec.get("model_tiers") is not None:
+        problems.append("%s.model_tiers: not supported; the judge runs one model" % RISK_JUDGE_ROLE)
     return problems
 
 

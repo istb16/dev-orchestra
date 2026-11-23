@@ -20,7 +20,7 @@ def report_lines(report: Dict[str, Any], source: str) -> List[str]:
     """The whole report, as ``cmd_optimization_report`` prints it line by line.
 
     ``report`` is ``summarise_rounds`` with ``scorecard``,
-    ``architect_revisions`` and, where recorded, ``tiers`` attached;
+    ``architect_revisions`` and, where recorded, ``tiers`` and ``risk_judge`` attached;
     ``source`` names what was read.
     """
     revisions = report["architect_revisions"]
@@ -46,6 +46,10 @@ def report_lines(report: Dict[str, Any], source: str) -> List[str]:
         lines.append("")
         lines.extend(_paired_rows(paired))
     lines.extend(_scorecard_rows(report["scorecard"]))
+    judged = _risk_judge_lines(report.get("risk_judge") or {})
+    if judged:
+        lines.append("")
+        lines.extend(judged)
     if tiers:
         lines.append("")
         lines.extend(tiers)
@@ -302,6 +306,73 @@ def _revision_rows(revisions: Dict[str, Any]) -> List[str]:
         lines.append("  --resume ran fresh because:")
         for reason, count in sorted(reasons.items()):
             lines.append("    %s x%d" % (reason, count))
+    return lines
+
+
+def _agreement_text(group: Dict[str, Any]) -> str:
+    """``both x2, rules only x1, judge only x0, neither x5``."""
+    return "both x%d, rules only x%d, judge only x%d, neither x%d" % (
+        int(group.get("both") or 0),
+        int(group.get("rules_only") or 0),
+        int(group.get("judge_only") or 0),
+        int(group.get("neither") or 0),
+    )
+
+
+def _risk_judge_lines(summary: Dict[str, Any]) -> List[str]:
+    """``Risk judge``: one row per kind plus a high-risk row; none before a round has a record."""
+    if not summary.get("rounds"):
+        return []
+    lines = [
+        "Risk judge (recorded, not acted on), code review rounds: %d" % int(summary["rounds"]),
+        _OPT_ROW % ("statuses", _counter_text(summary.get("statuses") or {})),
+        _OPT_ROW % ("risk", _counter_text(summary.get("risk") or {})),
+    ]
+    high_risk = summary.get("high_risk") or {}
+    row = _agreement_text(high_risk)
+    if high_risk.get("declared"):
+        row += "; declared with --high-risk x%d" % int(high_risk["declared"])
+    lines.append(_OPT_ROW % ("high risk", row))
+    for kind, group in (summary.get("kinds") or {}).items():
+        row = _agreement_text(group) + ", no rule x%d" % int(group.get("no_rule") or 0)
+        by_basis = group.get("no_rule_by_basis") or {}
+        if by_basis:
+            row += " (%s)" % _counter_text(by_basis)
+        lines.append(_OPT_ROW % (kind, row))
+    usage = summary.get("usage") or {}
+    lines.append(
+        _OPT_ROW
+        % (
+            "judge runs",
+            "%d (%d reported usage), %s billed, %.1fs"
+            % (
+                int(usage.get("runs") or 0),
+                int(usage.get("measured_runs") or 0),
+                ws.fmt_int(int(usage.get("billed_tokens") or 0)),
+                float(usage.get("seconds") or 0.0),
+            ),
+        )
+    )
+    for entry in summary.get("workflows") or []:
+        lines.append(
+            "  %s: %d round(s) judged, high risk by rules x%d, by judge x%d; accepted critical/high x%d, "
+            "in rules' high-risk rounds x%d, in judge's x%d"
+            % (
+                entry.get("workflow") or "-",
+                int(entry.get("rounds_judged") or 0),
+                int(entry.get("rules_high_risk_rounds") or 0),
+                int(entry.get("judge_high_risk_rounds") or 0),
+                int(entry.get("accepted_critical_high") or 0),
+                int(entry.get("on_rules_high_risk") or 0),
+                int(entry.get("on_judge_high_risk") or 0),
+            )
+        )
+    lines.extend(
+        [
+            "  Rows count the rounds the judge answered for. Rules are each kind's bare rule answer on",
+            "  the change, not whether its seat ran; `no rule` is a kind no rule decided.",
+        ]
+    )
     return lines
 
 
