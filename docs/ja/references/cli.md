@@ -1,4 +1,4 @@
-<!-- translated-from: references/cli.md sha256:41e33dd44110042e84a8f0f4e9d394e1367e1576e85a47c2cb97e176ade2834c -->
+<!-- translated-from: references/cli.md sha256:92011dbb45e74fbae09342256fa38d73e8566025aeb5b8f4a9f17b0e11ac6b0c -->
 
 > この文書は [references/cli.md](../../../references/cli.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -1127,6 +1127,11 @@ Review effort, code and design together: 128 accepted over 28 of 46 recorded rou
   レビュアーだけが報告し、どのラウンドでも、別レビュアーの指摘と重複候補として結ばれ、かつどちらかが
   `duplicate` とトリアージされた、ということが無いもの。候補リンクで結ばれなかった重複は、
   それでも数えられます。
+- **found alone の採用数は severity ごとに分けます。** `(12 accepted: 2 high, 8 medium, 2 low)`
+  のようになります。severity はラウンドがその指摘に最後に与えたもので（severity を与えなかったラウンドは
+  それを変えません）、`other` は `critical`、
+  `high`、`medium`、`low` 以外のすべてで、severity が無いものも含みます。指摘のある severity だけを
+  重いものから並べるので、内訳の和は常に採用数と一致します。
 - **率は判定済み（`accepted`、`rejected`、`duplicate`）10 件から、1 採用あたりの数字は採用 10 件から
   印字します**。それ未満では件数だけが出ます。1 採用あたりの数字は読めたラウンドだけに対する値で、
   読めなかったラウンドはそれをどちらにも動かし得ます。コスト合計は床 (floor) です: 何も報告しなかった
@@ -1156,6 +1161,16 @@ Review effort, code and design together: 128 accepted over 28 of 46 recorded rou
   走らせた場合（`--only` の再実行に `--high-risk` を付けたとき）、各 run のコストはそれぞれの枠に、
   指摘はレビューを終えた後のほうの run の枠に入ります。失敗やタイムアウトに終わった run は指摘を
   返していないからです。列に収まらないラベルは、数字の上に 1 行で出します。
+- **複数のモデルを走らせた枠には、モデルごとの行が付きます。** 枠自身の 2 行の下に、さらに 2 文字
+  字下げして run の多い順に、同じ数字を出し、閾値はモデルごとに単独で当てはめます。通常の枠しか
+  走らせていない席では、モデルの行は席自身の 2 行のすぐ下に出し、それを繰り返すだけの `usual` の行は
+  出しません。1 つのモデルしか走らせなかった枠は行を足しません。run のコストはその run が記録した
+  モデルに入ります。指摘は、それを最初に報告した run のモデルに、枠と同じ決め方で数え、後のラウンドが
+  記録したモデルに数えることはありません。`?` はモデルが記録されていない run で、最初に報告した
+  ラウンドに報告者の run が無いか、run にモデルが無かった指摘もここに入ります。そのため枠には、指摘
+  だけがあって run の無い `?` の行が出ることがあります。失敗した run だけでできていて何も報告して
+  いない `?` は行を出さず、モデルとしても数えません。そのため 1 つのモデルしか
+  走らせず、そうした失敗が 1 回あった席は行を足しません。`--json` では `per_model` に残ります。
 
 これはレビューが何を買ったかを言うものであって、レビューが悪くなったかどうかを言うものではありません。
 1 採用あたりのコストが上がるのは、レビュー対象のコードが良くなったときの姿でもあり、レビュアーが欠陥を
@@ -1167,15 +1182,18 @@ Review effort, code and design together: 128 accepted over 28 of 46 recorded rou
 `findings`、`reviewers`（id ごと）、`panel` を持ちます。レビュアーは `runs`、`failed_runs`、
 `measured_runs`、`priced_runs`、`billed_tokens`、`cost_usd`、`billed_per_run`（計測された run
 あたり）、`cost_per_run`（価格の付いた run あたり）、`reported`、`accepted`、`rejected`、
-`duplicate`、`open`、`alone`、`alone_accepted`、`rejection_rate`、`billed_per_accepted`、
-`cost_per_accepted` を持ち、run あたりの 2 つは割るものが無ければ `null`、最後の 3 つは閾値未満で
-`null` です。数えたラウンドのどれかで条件付きと
+`duplicate`、`open`、`alone`、`alone_accepted`、`alone_accepted_by_severity`、`rejection_rate`、
+`billed_per_accepted`、`cost_per_accepted` を持ち、run あたりの 2 つは割るものが無ければ `null`、
+最後の 3 つは閾値未満で `null` です。`alone_accepted_by_severity` は常に `critical`、`high`、
+`medium`、`low`、`other` を持ち、何も無いものは 0 で、和は `alone_accepted` と一致します。数えたラウンドのどれかで条件付きと
 記録されたレビュアーは、さらに `when`（`high-risk`、`paths`、`relevance` のいずれか。そう記録された最新のラウンドの値）と
 `left_out_rounds` を持ちます。どのレビュアーも `models` を持ち、枠（`usual`、`high-risk`）を
 キーとして、走ったか報告した枠だけを持ちます -- 一度も走らなかった席は `{}` です。各枠は
 `when` と `left_out_rounds` を除いたレビュアーと同じ数字に加え、`by_model`（run を走らせたモデルごとに
-数えたもの）を持ちます。`panel` と `total` は `alone` の 2 つと `models` を
-除いた同じ列で、2 人のレビュアーが報告した指摘は 1 回と数えます。`total` は 4 つのラウンド数の和も
+数えたもの）と `per_model`（モデルをキーとし、記録が無ければ `?`。各エントリは `by_model` と
+`per_model` を除いた枠と同じ数字）を持ちます。`per_model` は枠が 1 つのモデルしか走らせなかった
+ときにもありますが、テキストではそのモデルの行は出しません。`panel` と `total` は `alone`、
+`alone_accepted`、`alone_accepted_by_severity`、`models` を除いた同じ列で、2 人のレビュアーが報告した指摘は 1 回と数えます。`total` は 4 つのラウンド数の和も
 持ちます。
 
 すべてのラウンドがエスカレートした場合、レポートはそれをはっきり述べます。設定されたレベルは一度も適用

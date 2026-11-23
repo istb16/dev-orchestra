@@ -420,7 +420,8 @@ _SCORECARD_PAIRS = (
 
 _SCORECARD_ALONE = (
     "  Found alone is an upper bound on what dropping the reviewer would lose: a duplicate no\n"
-    "  candidate link joined is counted as found alone.\n"
+    "  candidate link joined is counted as found alone. Its accepted count is split by the severity\n"
+    "  the last round gave the finding; other is any severity but critical, high, medium or low.\n"
     "  Rates are printed from %d decided findings; below that the counts stand alone."
 )
 
@@ -428,6 +429,13 @@ _SCORECARD_ALONE = (
 _SCORECARD_SLOTS = (
     "  A seat that ran its high-risk model gets a row per slot; a finding counts for the slot that\n"
     "  first reported it, and a record without a slot is the usual one."
+)
+
+#: Under a stage where some slot ran several models.
+_SCORECARD_MODELS = (
+    "  A slot that ran several models gets a row per model under it (directly under the seat when it\n"
+    "  only ran its usual slot); a finding counts for the model of the run that first reported it, and\n"
+    "  ? is a run, or a first-reporting round, with no model recorded."
 )
 
 _SCORECARD_EFFORT = (
@@ -450,10 +458,16 @@ def _scorecard_counts(group: Dict[str, Any], alone: bool) -> str:
     counts = tuple(int(group.get(field) or 0) for field in _SCORECARD_OUTCOMES)
     row = "%d reported: %d accepted, %d rejected, %d duplicate, %d open" % counts
     if alone:
-        row += "; %d found alone (%d accepted)" % (
-            int(group.get("alone") or 0),
-            int(group.get("alone_accepted") or 0),
-        )
+        accepted = int(group.get("alone_accepted") or 0)
+        note = "%d accepted" % accepted
+        split = group.get("alone_accepted_by_severity") or {}
+        # Only the buckets that hold something: an all-zero split adds nothing.
+        parts = [
+            "%d %s" % (int(split[name]), name) for name in opt_report.SEVERITY_BUCKETS if split.get(name)
+        ]
+        if accepted and parts:
+            note += ": " + ", ".join(parts)
+        row += "; %d found alone (%s)" % (int(group.get("alone") or 0), note)
     return row
 
 
@@ -519,6 +533,38 @@ def _scorecard_cost_row(group: Dict[str, Any], panel: bool) -> str:
     return "%s; %s" % (_scorecard_spend(group, panel), _scorecard_rates(group))
 
 
+def _shown_models(figures: Dict[str, Any]) -> Dict[str, Any]:
+    """A slot's ``per_model`` as text shows it.
+
+    A ``?`` entry made only of failed runs that reported nothing is left out:
+    it says nothing about the models. A ``?`` entry with a run that did not
+    fail stays, so its runs and their cost are not dropped. ``--json`` keeps
+    both.
+    """
+    return {
+        model: group
+        for model, group in (figures.get("per_model") or {}).items()
+        if model != "?"
+        or int(group.get("reported") or 0)
+        or int(group.get("failed_runs") or 0) < int(group.get("runs") or 0)
+    }
+
+
+def _scorecard_model_rows(figures: Dict[str, Any], indent: str) -> List[str]:
+    """A slot's rows per model, each the two lines a slot row has, labelled at ``indent``."""
+    lines: List[str] = []
+    # Ordered by runs already, as the report writes them.
+    for model, group in _shown_models(figures).items():
+        label = indent + model
+        if len(label) > _OPT_LABEL_WIDTH:
+            lines.append("  " + label)
+            label = ""
+        lines.append(_OPT_ROW % (label, _scorecard_counts(group, True)))
+        spend = _scorecard_spend(group, False, per_run=True)
+        lines.append(_OPT_ROW % ("", "%s; %s" % (spend, _scorecard_rates(group))))
+    return lines
+
+
 def _scorecard_rows(scorecard: Dict[str, Any]) -> List[str]:
     """``optimization report``'s scorecard: one block per stage, then both together.
 
@@ -539,6 +585,7 @@ def _scorecard_rows(scorecard: Dict[str, Any]) -> List[str]:
             head += "; %d round(s) no reviewer reviewed" % unreviewed
         lines.extend(["", head + "."])
         slot_rows = False
+        model_rows = False
         for name, group in sorted((block.get("reviewers") or {}).items()):
             lines.append(_OPT_ROW % (name, _scorecard_counts(group, True)))
             cost_row = _scorecard_cost_row(group, False)
@@ -549,8 +596,16 @@ def _scorecard_rows(scorecard: Dict[str, Any]) -> List[str]:
                 )
             lines.append(_OPT_ROW % ("", cost_row))
             models = group.get("models") or {}
-            # A seat that only ever ran its usual model adds no lines.
-            if not models or set(models) == {opt_report.USUAL_SLOT}:
+            if not models:
+                continue
+            if set(models) == {opt_report.USUAL_SLOT}:
+                # A seat that only ever ran its usual slot adds no slot row,
+                # which would repeat its own two lines; its models, if several,
+                # go directly under it.
+                usual = models[opt_report.USUAL_SLOT]
+                if len(_shown_models(usual)) > 1:
+                    model_rows = True
+                    lines.extend(_scorecard_model_rows(usual, "  "))
                 continue
             slot_rows = True
             # In slot order already, as the report writes them.
@@ -564,6 +619,9 @@ def _scorecard_rows(scorecard: Dict[str, Any]) -> List[str]:
                 lines.append(_OPT_ROW % (label, _scorecard_counts(figures, True)))
                 spend = _scorecard_spend(figures, False, per_run=True)
                 lines.append(_OPT_ROW % ("", "%s; %s" % (spend, _scorecard_rates(figures))))
+                if len(_shown_models(figures)) > 1:
+                    model_rows = True
+                    lines.extend(_scorecard_model_rows(figures, "    "))
         panel = block.get("panel") or {}
         lines.append(_OPT_ROW % ("panel", _scorecard_counts(panel, False)))
         lines.append(_OPT_ROW % ("", _scorecard_cost_row(panel, True)))
@@ -576,6 +634,8 @@ def _scorecard_rows(scorecard: Dict[str, Any]) -> List[str]:
         lines.extend((_SCORECARD_ALONE % opt_report.SCORECARD_MIN_DECIDED).splitlines())
         if slot_rows:
             lines.extend(_SCORECARD_SLOTS.splitlines())
+        if model_rows:
+            lines.extend(_SCORECARD_MODELS.splitlines())
     if not lines:
         return lines
     total = scorecard.get("total") or {}

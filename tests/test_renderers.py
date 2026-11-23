@@ -57,6 +57,11 @@ def _score(**changes: Any) -> Dict[str, Any]:
     return merged(opt_report.reviewer_scorecard([])["code"]["panel"], **changes)
 
 
+def _severities(**counts: int) -> Dict[str, int]:
+    """An ``alone_accepted_by_severity`` split: every bucket, ``counts`` laid over zeroes."""
+    return {**dict.fromkeys(("critical", "high", "medium", "low", "other"), 0), **counts}
+
+
 def _revisions(**changes: Any) -> Dict[str, Any]:
     """``architect_revisions`` over no workflows, with ``changes`` laid over it."""
     return merged(opt_report.architect_revisions([]), **changes)
@@ -199,6 +204,25 @@ def _full_scorecard() -> Dict[str, Any]:
         billed_tokens=12345,
         priced_runs=1,
         cost_usd=0.5,
+        alone_accepted_by_severity=_severities(medium=1),
+    )
+    sonnet = _score(
+        alone=0,
+        alone_accepted=0,
+        alone_accepted_by_severity=_severities(),
+        runs=1,
+        failed_runs=1,
+        measured_runs=1,
+        billed_tokens=2345,
+        billed_per_run=2345,
+    )
+    # A reporter with no run in the round it first reported in.
+    unknown = _score(
+        reported=1,
+        accepted=1,
+        alone=1,
+        alone_accepted=1,
+        alone_accepted_by_severity=_severities(medium=1),
     )
     usual = _score(
         by_model={"sonnet": 1},
@@ -206,6 +230,8 @@ def _full_scorecard() -> Dict[str, Any]:
         accepted=1,
         alone=1,
         alone_accepted=1,
+        alone_accepted_by_severity=_severities(medium=1),
+        per_model={"sonnet": sonnet, "?": unknown},
         runs=1,
         failed_runs=1,
         measured_runs=1,
@@ -226,9 +252,20 @@ def _full_scorecard() -> Dict[str, Any]:
         priced_runs=1,
         cost_usd=0.5,
         cost_per_run=0.5,
+        alone_accepted_by_severity=_severities(),
     )
+    # One model only: it prints no row of its own.
+    high_risk["per_model"] = {"opus": {key: value for key, value in high_risk.items() if key != "by_model"}}
     m1["models"] = {"usual": usual, "high-risk": high_risk}
-    sec = _score(alone=0, alone_accepted=0, runs=1, rejection_rate=0.25, when="risk: auth", left_out_rounds=2)
+    sec = _score(
+        alone=0,
+        alone_accepted=0,
+        alone_accepted_by_severity=_severities(),
+        runs=1,
+        rejection_rate=0.25,
+        when="risk: auth",
+        left_out_rounds=2,
+    )
     panel = _score(
         reported=3,
         accepted=2,
@@ -270,6 +307,23 @@ def _full_revisions() -> Dict[str, Any]:
     fallbacks = {"total": 3, "reasons": {"no-session": 1, "budget": 2}}
     return _revisions(attempts=3, resumed=resumed, fresh=fresh, fallbacks=fallbacks)
 
+
+#: A scorecard row: the label column, then the figures.
+SCORECARD_ROW = "  %-22s %s"
+
+
+def _stage_scorecard(reviewers: Dict[str, Any]) -> Dict[str, Any]:
+    """An empty scorecard whose code stage read one round and holds ``reviewers``."""
+    scorecard = opt_report.reviewer_scorecard([])
+    scorecard["code"].update(rounds_recorded=1, rounds_read=1, reviewers=reviewers)
+    return scorecard
+
+
+SCORECARD_MODELS_TEXT = [
+    "  A slot that ran several models gets a row per model under it (directly under the seat when it",
+    "  only ran its usual slot); a finding counts for the model of the run that first reported it, and",
+    "  ? is a run, or a first-reporting round, with no model recorded.",
+]
 
 FULL_TEXT = [
     "Review rounds recorded: 5 (3 ran, 2 refused)",
@@ -337,13 +391,20 @@ FULL_TEXT = [
     "Reviewer scorecard, code review: 2 of 4 recorded round(s) had a report to read; "
     "1 round(s) no reviewer reviewed.",
     "  m1                     3 reported: 2 accepted, 1 rejected, 0 duplicate, 0 open; "
-    "2 found alone (1 accepted)",
+    "2 found alone (1 accepted: 1 medium)",
     "                         2 run(s) (1 failed), 12,345 billed, $0.50 over 1 priced run(s); "
     "rates withheld under 10 decided",
     "    usual (sonnet)       1 reported: 1 accepted, 0 rejected, 0 duplicate, 0 open; "
-    "1 found alone (1 accepted)",
+    "1 found alone (1 accepted: 1 medium)",
     "                         1 run(s) (1 failed), 2,345 billed, 2,345 per run, no cost reported; "
     "rates withheld under 10 decided",
+    "      sonnet             0 reported: 0 accepted, 0 rejected, 0 duplicate, 0 open; "
+    "0 found alone (0 accepted)",
+    "                         1 run(s) (1 failed), 2,345 billed, 2,345 per run, no cost reported; "
+    "rates withheld under 10 decided",
+    "      ?                  1 reported: 1 accepted, 0 rejected, 0 duplicate, 0 open; "
+    "1 found alone (1 accepted: 1 medium)",
+    "                         0 run(s), nothing reported; rates withheld under 10 decided",
     "    high-risk (opus)     2 reported: 1 accepted, 1 rejected, 0 duplicate, 0 open; "
     "1 found alone (0 accepted)",
     "                         1 run(s), 10,000 billed, 10,000 per run, $0.50 over 1 priced run(s), "
@@ -366,10 +427,12 @@ FULL_TEXT = [
     "  1 round(s) was a --surrounding pair: both runs' cost is in, and its findings and triage",
     "  are the second run's. See the paired block for what it measured.",
     "  Found alone is an upper bound on what dropping the reviewer would lose: a duplicate no",
-    "  candidate link joined is counted as found alone.",
+    "  candidate link joined is counted as found alone. Its accepted count is split by the severity",
+    "  the last round gave the finding; other is any severity but critical, high, medium or low.",
     "  Rates are printed from 10 decided findings; below that the counts stand alone.",
     "  A seat that ran its high-risk model gets a row per slot; a finding counts for the slot that",
     "  first reported it, and a record without a slot is the usual one.",
+    *SCORECARD_MODELS_TEXT,
     "",
     "Review effort, code and design together: 2 accepted over 2 of 4 recorded round(s); 12,345 billed,",
     "  $0.50 over 1 priced run(s); per accepted withheld under 10 accepted",
@@ -538,6 +601,195 @@ class TestOptimizationReportText(IsolatedCase):
         code, out, _ = self.report(rounds, scorecard, revisions, "--json")
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out), merged(rounds, scorecard=scorecard, architect_revisions=revisions))
+
+    def test_scorecard_single_model_slot_prints_no_model_rows(self):
+        usual = _score(by_model={"sonnet": 1}, runs=1, per_model={"sonnet": _score(runs=1)})
+        high = _score(by_model={"opus": 1}, runs=1, per_model={"opus": _score(runs=1)})
+        for models in ({"usual": usual}, {"usual": usual, "high-risk": high}):
+            with self.subTest(list(models)):
+                seat = _score(runs=len(models), models=models)
+                bare = merged(
+                    seat, models={slot: merged(figures, per_model={}) for slot, figures in models.items()}
+                )
+                rows = optimization_render._scorecard_rows(_stage_scorecard({"a": seat}))
+                self.assertEqual(rows, optimization_render._scorecard_rows(_stage_scorecard({"a": bare})))
+                self.assertNotIn(SCORECARD_MODELS_TEXT[0], rows)
+
+    def test_scorecard_usual_only_seat_with_two_models(self):
+        sol = _score(
+            reported=2,
+            accepted=2,
+            alone=2,
+            alone_accepted=2,
+            alone_accepted_by_severity=_severities(critical=1, other=1),
+            runs=2,
+            measured_runs=2,
+            billed_tokens=2000,
+            billed_per_run=1000,
+        )
+        terra = _score(
+            reported=1,
+            rejected=1,
+            alone=1,
+            alone_accepted=0,
+            alone_accepted_by_severity=_severities(),
+            runs=1,
+            measured_runs=1,
+            billed_tokens=500,
+            billed_per_run=500,
+        )
+        usual = _score(
+            by_model={"gpt-6.1-sol": 2, "gpt-5.6-terra": 1},
+            per_model={"gpt-6.1-sol": sol, "gpt-5.6-terra": terra},
+        )
+        seat = _score(
+            reported=3,
+            accepted=2,
+            rejected=1,
+            alone=3,
+            alone_accepted=2,
+            alone_accepted_by_severity=_severities(critical=1, other=1),
+            runs=3,
+            measured_runs=3,
+            billed_tokens=2500,
+            models={"usual": usual},
+        )
+        rows = optimization_render._scorecard_rows(_stage_scorecard({"codex-general": seat}))
+        withheld = "; rates withheld under 10 decided"
+        expected = [
+            SCORECARD_ROW
+            % (
+                "codex-general",
+                "3 reported: 2 accepted, 1 rejected, 0 duplicate, 0 open; "
+                "3 found alone (2 accepted: 1 critical, 1 other)",
+            ),
+            SCORECARD_ROW % ("", "3 run(s), 2,500 billed, no cost reported" + withheld),
+            SCORECARD_ROW
+            % (
+                "  gpt-6.1-sol",
+                "2 reported: 2 accepted, 0 rejected, 0 duplicate, 0 open; "
+                "2 found alone (2 accepted: 1 critical, 1 other)",
+            ),
+            SCORECARD_ROW % ("", "2 run(s), 2,000 billed, 1,000 per run, no cost reported" + withheld),
+            SCORECARD_ROW
+            % (
+                "  gpt-5.6-terra",
+                "1 reported: 0 accepted, 1 rejected, 0 duplicate, 0 open; 1 found alone (0 accepted)",
+            ),
+            SCORECARD_ROW % ("", "1 run(s), 500 billed, 500 per run, no cost reported" + withheld),
+        ]
+        index = rows.index(expected[0])
+        self.assertEqual(rows[index : index + len(expected)], expected)
+        self.assertTrue(rows[index + len(expected)].startswith("  panel "))
+        # No usual row repeating the seat's own two lines, and no slot footnote.
+        # Matched on the label, as the models footnote says "usual slot" in prose.
+        self.assertFalse(any(line.lstrip().startswith("usual") for line in rows))
+        self.assertNotIn(optimization_render._SCORECARD_SLOTS.splitlines()[0], rows)
+        start = rows.index(SCORECARD_MODELS_TEXT[0])
+        self.assertEqual(rows[start : start + len(SCORECARD_MODELS_TEXT)], SCORECARD_MODELS_TEXT)
+
+    def test_scorecard_long_model_label_breaks_line(self):
+        long_model = "claude-opus-4-7-20261101"
+        high = _score(
+            by_model={long_model: 1, "opus": 1},
+            runs=2,
+            per_model={long_model: _score(runs=1), "opus": _score(runs=1)},
+        )
+        seat = _score(runs=3, models={"usual": _score(by_model={"sonnet": 1}, runs=1), "high-risk": high})
+        rows = optimization_render._scorecard_rows(_stage_scorecard({"a": seat}))
+        counts = "0 reported: 0 accepted, 0 rejected, 0 duplicate, 0 open; 0 found alone (0 accepted)"
+        spend = "1 run(s), nothing reported; rates withheld under 10 decided"
+        index = rows.index("      " + long_model)
+        self.assertEqual(
+            rows[index + 1 : index + 5],
+            [
+                SCORECARD_ROW % ("", counts),
+                SCORECARD_ROW % ("", spend),
+                SCORECARD_ROW % ("    opus", counts),
+                SCORECARD_ROW % ("", spend),
+            ],
+        )
+        self.assertIn(SCORECARD_MODELS_TEXT[0], rows)
+
+    def test_scorecard_long_model_label_breaks_line_usual_only(self):
+        long_model = "claude-sonnet-4-9-2026"
+        self.assertGreater(len("  " + long_model), 22)
+        usual = _score(
+            by_model={long_model: 1, "opus": 1},
+            runs=2,
+            per_model={long_model: _score(runs=1), "opus": _score(runs=1)},
+        )
+        seat = _score(runs=2, models={"usual": usual})
+        rows = optimization_render._scorecard_rows(_stage_scorecard({"a": seat}))
+        counts = "0 reported: 0 accepted, 0 rejected, 0 duplicate, 0 open; 0 found alone (0 accepted)"
+        spend = "1 run(s), nothing reported; rates withheld under 10 decided"
+        index = rows.index("    " + long_model)
+        self.assertEqual(
+            rows[index + 1 : index + 5],
+            [
+                SCORECARD_ROW % ("", counts),
+                SCORECARD_ROW % ("", spend),
+                SCORECARD_ROW % ("  opus", counts),
+                SCORECARD_ROW % ("", spend),
+            ],
+        )
+
+    def test_scorecard_models_footnote_only_under_its_stage(self):
+        several = _score(
+            by_model={"sonnet": 1, "opus": 1},
+            runs=2,
+            per_model={"sonnet": _score(runs=1), "opus": _score(runs=1)},
+        )
+        one = _score(by_model={"sonnet": 1}, runs=1, per_model={"sonnet": _score(runs=1)})
+        scorecard = _stage_scorecard({"a": _score(runs=2, models={"usual": several})})
+        scorecard["design"].update(
+            rounds_recorded=1, rounds_read=1, reviewers={"b": _score(runs=1, models={"usual": one})}
+        )
+        rows = optimization_render._scorecard_rows(scorecard)
+        self.assertEqual(rows.count(SCORECARD_MODELS_TEXT[0]), 1)
+        footnote = rows.index(SCORECARD_MODELS_TEXT[0])
+        design = next(
+            i for i, line in enumerate(rows) if line.startswith("Reviewer scorecard, design review")
+        )
+        self.assertLess(footnote, design)
+
+    def test_scorecard_models_footnote_under_a_later_stage(self):
+        """A first stage without model rows does not keep a later one's footnote away."""
+        several = _score(
+            by_model={"sonnet": 1, "opus": 1},
+            runs=2,
+            per_model={"sonnet": _score(runs=1), "opus": _score(runs=1)},
+        )
+        one = _score(by_model={"sonnet": 1}, runs=1, per_model={"sonnet": _score(runs=1)})
+        scorecard = _stage_scorecard({"a": _score(runs=1, models={"usual": one})})
+        scorecard["design"].update(
+            rounds_recorded=1, rounds_read=1, reviewers={"b": _score(runs=2, models={"usual": several})}
+        )
+        rows = optimization_render._scorecard_rows(scorecard)
+        self.assertEqual(rows.count(SCORECARD_MODELS_TEXT[0]), 1)
+        footnote = rows.index(SCORECARD_MODELS_TEXT[0])
+        design = next(
+            i for i, line in enumerate(rows) if line.startswith("Reviewer scorecard, design review")
+        )
+        self.assertGreater(footnote, design)
+
+    def test_scorecard_unknown_model_counts_only_with_findings(self):
+        """A ``?`` entry made of failed runs alone adds no model rows; one with a finding does."""
+        opus = _score(runs=2, measured_runs=2, billed_tokens=2000, billed_per_run=1000)
+        failed = _score(runs=1, failed_runs=1, measured_runs=1, billed_tokens=300, billed_per_run=300)
+        silent = _score(by_model={"opus": 2, "?": 1}, runs=3, per_model={"opus": opus, "?": failed})
+        found = _score(reported=1, open=1, runs=1, failed_runs=1)
+        reporting = _score(by_model={"opus": 2, "?": 1}, runs=3, per_model={"opus": opus, "?": found})
+        # A run that did not fail and found nothing still ran and cost, so it keeps its row.
+        clean = _score(runs=1, measured_runs=1, billed_tokens=300, billed_per_run=300)
+        quiet = _score(by_model={"opus": 2, "?": 1}, runs=3, per_model={"opus": opus, "?": clean})
+        for usual, printed in ((silent, False), (reporting, True), (quiet, True)):
+            with self.subTest(printed=printed):
+                scorecard = _stage_scorecard({"a": _score(runs=3, models={"usual": usual})})
+                rows = optimization_render._scorecard_rows(scorecard)
+                labelled = [row for row in rows if row.startswith(("    opus", "    ?"))]
+                self.assertEqual(len(labelled), 2 if printed else 0)
+                self.assertEqual(SCORECARD_MODELS_TEXT[0] in rows, printed)
 
     def test_recorded_events_reach_the_text_unmocked(self):
         """The command reads the real run log, so its wiring into ``report_lines`` is what is tested."""
