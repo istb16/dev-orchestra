@@ -3613,14 +3613,15 @@ class TestScorecardModelSlots(unittest.TestCase):
     def test_render_prints_a_row_per_slot_with_model_label(self):
         rows = optimization_render._scorecard_rows({"code": self.two_slots()})
         withheld = "; rates withheld under 10 decided"
-        counts = "%d reported: %d accepted, %d rejected, 0 duplicate, 0 open; %d found alone (%d accepted)"
+        counts = "%d reported: %d accepted, %d rejected, 0 duplicate, 0 open; %d found alone (%s)"
+        # The fixture's findings carry no severity, so the accepted one is split as other.
         per_run = "1 run(s), %d billed, %d per run, $%.2f over 1 priced run(s), $%.2f per run" + withheld
         expected = [
-            ("a", counts % (2, 1, 1, 2, 1)),
+            ("a", counts % (2, 1, 1, 2, "1 accepted: 1 other")),
             ("", "2 run(s), 400 billed, $2.00 over 2 priced run(s)" + withheld),
-            ("  usual (sonnet)", counts % (1, 1, 0, 1, 1)),
+            ("  usual (sonnet)", counts % (1, 1, 0, 1, "1 accepted: 1 other")),
             ("", per_run % (100, 100, 0.5, 0.5)),
-            ("  high-risk (opus)", counts % (1, 0, 1, 1, 0)),
+            ("  high-risk (opus)", counts % (1, 0, 1, 1, "0 accepted")),
             ("", per_run % (300, 300, 1.5, 1.5)),
         ]
         index = rows.index(SCORE_ROW % expected[0])
@@ -3645,7 +3646,9 @@ class TestScorecardModelSlots(unittest.TestCase):
         card = scorecard(events, [scored_round([scored_finding("F1", "k1", ["a"], "accepted")])])["code"]
         self.assertEqual(list(card["reviewers"]["a"]["models"]), ["high-risk"])
         rows = optimization_render._scorecard_rows({"code": card})
-        counts = "1 reported: 1 accepted, 0 rejected, 0 duplicate, 0 open; 1 found alone (1 accepted)"
+        counts = (
+            "1 reported: 1 accepted, 0 rejected, 0 duplicate, 0 open; 1 found alone (1 accepted: 1 other)"
+        )
         index = rows.index(SCORE_ROW % ("  high-risk (opus)", counts))
         spend = "1 run(s), 100 billed, 100 per run, no cost reported; rates withheld under 10 decided"
         self.assertEqual(rows[index + 1], SCORE_ROW % ("", spend))
@@ -3661,11 +3664,12 @@ class TestScorecardModelSlots(unittest.TestCase):
         rounds = slot_rounds([carried], [carried, scored_finding("F2", "k2", ["a", "z"], "accepted")])
         card = scorecard(events, rounds)["code"]
         rows = optimization_render._scorecard_rows({"code": card})
-        counts = "1 reported: 1 accepted, 0 rejected, 0 duplicate, 0 open; %d found alone (%d accepted)"
-        index = rows.index(SCORE_ROW % ("  usual", counts % (0, 0)))
+        counts = "1 reported: 1 accepted, 0 rejected, 0 duplicate, 0 open; %d found alone (%s)"
+        index = rows.index(SCORE_ROW % ("  usual", counts % (0, "0 accepted")))
         spend = "0 run(s), nothing reported; rates withheld under 10 decided"
         self.assertEqual(rows[index + 1], SCORE_ROW % ("", spend))
-        self.assertEqual(rows[index + 2], SCORE_ROW % ("  high-risk (opus)", counts % (1, 1)))
+        high = counts % (1, "1 accepted: 1 other")
+        self.assertEqual(rows[index + 2], SCORE_ROW % ("  high-risk (opus)", high))
 
     def test_render_puts_a_label_wider_than_the_column_on_its_own_line(self):
         events = [
@@ -3678,7 +3682,12 @@ class TestScorecardModelSlots(unittest.TestCase):
         index = rows.index("    usual (opus x1, sonnet x1)")
         counts = "0 reported: 0 accepted, 0 rejected, 0 duplicate, 0 open; 0 found alone (0 accepted)"
         self.assertEqual(rows[index + 1], SCORE_ROW % ("", counts))
-        self.assertEqual(rows[index + 3], SCORE_ROW % ("  high-risk (opus)", counts))
+        # The usual slot ran two models, so their rows sit between it and the
+        # high-risk row: found by label, each after the one before.
+        opus = rows.index(SCORE_ROW % ("    opus", counts), index)
+        sonnet = rows.index(SCORE_ROW % ("    sonnet", counts), opus)
+        high = rows.index(SCORE_ROW % ("  high-risk (opus)", counts), sonnet)
+        self.assertEqual((opus, sonnet, high), (index + 3, index + 5, index + 7))
 
 
 @unittest.skipUnless(has_git(), "git is required")
@@ -4242,6 +4251,7 @@ REPORT_NAMES = {
     "_SCORE_FINDINGS",
     "_SCORE_ROUNDS",
     "_SLOTS",
+    "SEVERITY_BUCKETS",
     # Rounds and pairs.
     "summarise_rounds",
     "_tool_fields",
@@ -4293,6 +4303,7 @@ REPORT_NAMES = {
     "tier_choices",
     # Scorecard.
     "reviewer_scorecard",
+    "_severity_bucket",
     "_round_key_of_event",
     "_match_rounds",
     "_explicit_triage",
@@ -4301,8 +4312,10 @@ REPORT_NAMES = {
     "_score_group",
     "_score_reviewer",
     "_slot_of",
-    "_round_slots",
+    "_model_of",
+    "_round_runs",
     "_score_slot",
+    "_score_model",
     "_add_spend",
     "_add_left_out",
     "_final_triage",
@@ -4355,7 +4368,7 @@ class TestTheSplit(unittest.TestCase):
     must never need either of the others, nor the design half the report."""
 
     def test_the_split_partitions_the_old_module(self):
-        self.assertEqual((len(DECISION_NAMES), len(REPORT_NAMES), len(DESIGN_NAMES)), (90, 77, 4))
+        self.assertEqual((len(DECISION_NAMES), len(REPORT_NAMES), len(DESIGN_NAMES)), (90, 81, 4))
         self.assertEqual(_top_level_names(opt), DECISION_NAMES)
         self.assertEqual(_top_level_names(opt_report), REPORT_NAMES)
         self.assertEqual(_top_level_names(opt_design), DESIGN_NAMES)

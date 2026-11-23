@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 from . import tier_record
 from .config_common import SPECIALIST_KINDS, risk_judge_ran
 from .optimization import HIGH_RISK_SLOT, REFUSED, USUAL_SLOT, WHEN_RE_REVIEW, WHEN_RELEVANCE
+from .review_common import SEVERITIES
 from .review_consolidation import round_key
 from .workspace import is_int
 
@@ -900,6 +901,14 @@ _SCORE_FINDINGS = ("reported", "accepted", "rejected", "duplicate", "open")
 _SCORE_ROUNDS = ("rounds_recorded", "rounds_read", "rounds_unreviewed", "rerun_rounds")
 #: The model slots a seat's figures are split by, in the order they print.
 _SLOTS = (USUAL_SLOT, HIGH_RISK_SLOT)
+#: The buckets a found-alone, accepted count is split by, in the order they print.
+SEVERITY_BUCKETS = (*SEVERITIES, "other")
+
+
+def _severity_bucket(value: Any) -> str:
+    """A finding's severity bucket; anything not one of ``SEVERITIES``, or none, is ``other``."""
+    bucket = str(value or "").strip().lower()
+    return bucket if bucket in SEVERITIES else "other"
 
 
 def reviewer_scorecard(inputs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -918,6 +927,12 @@ def reviewer_scorecard(inputs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     nobody fixed comes back in every later round, carrying its triage, and
     counting it per round would make the most persistent finding the most
     accepted one.
+
+    Each reviewer and slot splits ``alone_accepted`` by the finding's last
+    severity in ``alone_accepted_by_severity``, and each slot carries the same
+    figures per model in ``per_model``: a run counts for its own model, and a
+    finding for the model of the run that first reported it -- ``?`` when that
+    round has no run of the reporter or the run recorded no model.
     """
     stages: Dict[str, Dict[str, Any]] = {}
     for stage in ("code", "design"):
@@ -1075,27 +1090,45 @@ def _unique_findings(groups: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     renumbered every round.
 
     Each reporter's model slot is the one its run had in the first round that
-    named it, and ``usual`` when that round has no run of it. ``first`` is the
-    position in ``groups`` of the round that first reported the finding, and
-    ``severity`` the last one a round gave it.
+    named it, and ``usual`` when that round has no run of it; its model is
+    that run's too, and ``?`` when there is no such run or it recorded none.
+    ``first`` is the position in ``groups`` of the round that first reported
+    the finding, and ``severity`` the last one a round gave it, a round that
+    gave none (missing, empty or blank) leaving it as it was -- none, and so
+    ``other``, only when no round gave one.
     """
     unique: Dict[str, Dict[str, Any]] = {}
     for position, group in enumerate(groups):
         report = group["round"]
-        slots = _round_slots(group["events"])
+        runs = _round_runs(group["events"])
         findings = [finding for finding in report.get("findings") or [] if isinstance(finding, dict)]
         by_id = {str(finding.get("id") or ""): finding for finding in findings}
         for finding in findings:
             key = str(finding.get("key") or "") or "%d:%s" % (position, finding.get("id"))
             record = unique.setdefault(
-                key, {"reported_by": [], "slots": {}, "triage": None, "paired": False, "first": position}
+                key,
+                {
+                    "reported_by": [],
+                    "slots": {},
+                    "models": {},
+                    "triage": None,
+                    "paired": False,
+                    "first": position,
+                },
             )
-            record["severity"] = finding.get("severity")
+            severity = finding.get("severity")
+            if isinstance(severity, str) and severity.strip():
+                # Stored as every reader compares it: `High` is `high`.
+                record["severity"] = severity.strip().lower()
+            else:
+                record.setdefault("severity", None)
             ours = [str(name) for name in finding.get("reported_by") or []]
             for name in ours:
                 if name not in record["reported_by"]:
                     record["reported_by"].append(name)
-                    record["slots"][name] = slots.get(name, USUAL_SLOT)
+                    run = runs.get(name)
+                    record["slots"][name] = _slot_of(run) if run is not None else USUAL_SLOT
+                    record["models"][name] = _model_of(run) if run is not None else "?"
             if _explicit_triage(finding):
                 record["triage"] = finding.get("triage")
             if _alone_pairs(finding, by_id, ours):
@@ -1133,6 +1166,7 @@ def _score_reviewer(stage: Dict[str, Any], name: str) -> Dict[str, Any]:
     if group is None:
         group = stage["reviewers"][name] = _score_group()
         group.update(alone=0, alone_accepted=0, models={})
+        group["alone_accepted_by_severity"] = dict.fromkeys(SEVERITY_BUCKETS, 0)
     return group
 
 
@@ -1141,13 +1175,18 @@ def _slot_of(run: Dict[str, Any]) -> str:
     return HIGH_RISK_SLOT if run.get("model_slot") == HIGH_RISK_SLOT else USUAL_SLOT
 
 
-def _round_slots(events: Sequence[Dict[str, Any]]) -> Dict[str, str]:
-    """Each reviewer id of a round to its run's slot; a later event of the round wins.
+def _model_of(run: Dict[str, Any]) -> str:
+    """The model a run ran on; ``?`` when it recorded none."""
+    return str(run.get("model") or "?")
 
-    A run that did not review returned no findings, so it sets the slot only
-    while no run of that reviewer in the round did.
+
+def _round_runs(events: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Each reviewer id of a round to the run that speaks for it; a later event of the round wins.
+
+    A run that did not review returned no findings, so it is taken only while
+    no run of that reviewer in the round did.
     """
-    slots: Dict[str, str] = {}
+    runs: Dict[str, Dict[str, Any]] = {}
     reviewed: set = set()
     for event in events:
         for run in event.get("reviewers") or []:
@@ -1158,8 +1197,8 @@ def _round_slots(events: Sequence[Dict[str, Any]]) -> Dict[str, str]:
                 reviewed.add(name)
             elif name in reviewed:
                 continue
-            slots[name] = _slot_of(run)
-    return slots
+            runs[name] = run
+    return runs
 
 
 def _score_slot(group: Dict[str, Any], slot: str) -> Dict[str, Any]:
@@ -1167,12 +1206,23 @@ def _score_slot(group: Dict[str, Any], slot: str) -> Dict[str, Any]:
     models = group["models"]
     if slot not in models:
         models[slot] = _score_group()
-        models[slot].update(alone=0, alone_accepted=0, by_model={})
+        models[slot].update(alone=0, alone_accepted=0, by_model={}, per_model={})
+        models[slot]["alone_accepted_by_severity"] = dict.fromkeys(SEVERITY_BUCKETS, 0)
     return models[slot]
 
 
+def _score_model(slot: Dict[str, Any], model: str) -> Dict[str, Any]:
+    """A slot's figures on one model, created on first use."""
+    per_model = slot["per_model"]
+    if model not in per_model:
+        per_model[model] = _score_group()
+        per_model[model].update(alone=0, alone_accepted=0)
+        per_model[model]["alone_accepted_by_severity"] = dict.fromkeys(SEVERITY_BUCKETS, 0)
+    return per_model[model]
+
+
 def _add_spend(stage: Dict[str, Any], event: Dict[str, Any]) -> None:
-    """One event's runs, added to each reviewer, its slot, and to the panel.
+    """One event's runs, added to each reviewer, its slot and model, and to the panel.
 
     A run that reported nothing still ran, and adds nothing to the totals --
     which is why they are floors.
@@ -1187,8 +1237,9 @@ def _add_spend(stage: Dict[str, Any], event: Dict[str, Any]) -> None:
         priced = isinstance(cost, (int, float)) and not isinstance(cost, bool)
         reviewer = _score_reviewer(stage, str(run.get("id") or "?"))
         slot = _score_slot(reviewer, _slot_of(run))
-        _bump(slot["by_model"], str(run.get("model") or "?"))
-        for group in (reviewer, slot, stage["panel"]):
+        model = _model_of(run)
+        _bump(slot["by_model"], model)
+        for group in (reviewer, slot, _score_model(slot, model), stage["panel"]):
             group["runs"] += 1
             if run.get("status") not in _REVIEWED:
                 group["failed_runs"] += 1
@@ -1257,15 +1308,19 @@ def _score_finding(stage: Dict[str, Any], record: Dict[str, Any]) -> None:
     # another reviewer's as a duplicate. A duplicate nobody linked is still
     # counted here, which is what makes this an upper bound.
     alone = len(reporters) == 1 and not record["paired"]
+    bucket = _severity_bucket(record.get("severity"))
     for name in reporters:
         reviewer = _score_reviewer(stage, name)
-        for group in (reviewer, _score_slot(reviewer, record["slots"].get(name, USUAL_SLOT))):
+        slot = _score_slot(reviewer, record["slots"].get(name, USUAL_SLOT))
+        model = _score_model(slot, record["models"].get(name, "?"))
+        for group in (reviewer, slot, model):
             group["reported"] += 1
             group[outcome] += 1
             if alone:
                 group["alone"] += 1
                 if outcome == "accepted":
                     group["alone_accepted"] += 1
+                    group["alone_accepted_by_severity"][bucket] += 1
     stage["panel"]["reported"] += 1
     stage["panel"][outcome] += 1
 
@@ -1288,6 +1343,9 @@ def _finish_score(group: Dict[str, Any], alone: bool) -> Dict[str, Any]:
     if alone:
         finished["alone"] = group.get("alone", 0)
         finished["alone_accepted"] = group.get("alone_accepted", 0)
+        finished["alone_accepted_by_severity"] = dict(
+            group.get("alone_accepted_by_severity") or dict.fromkeys(SEVERITY_BUCKETS, 0)
+        )
     # Only a reviewer some round recorded as conditional has either.
     if "when" in group:
         finished["when"] = group["when"]
@@ -1306,6 +1364,11 @@ def _finish_score(group: Dict[str, Any], alone: bool) -> Dict[str, Any]:
     if "models" in group:
         models = group["models"]
         finished["models"] = {slot: _finish_score(models[slot], True) for slot in _SLOTS if slot in models}
+    # Only a slot has them, most runs first, then by name.
+    if "per_model" in group:
+        per_model = group["per_model"]
+        order = sorted(per_model, key=lambda model: (-per_model[model]["runs"], model))
+        finished["per_model"] = {model: _finish_score(per_model[model], True) for model in order}
     return finished
 
 

@@ -42,6 +42,26 @@ authors can find it.
   `config show` lists among the effective settings; under `record` the
   round's panel, level, findings cap, model slots, refusals and exit code are
   the same whatever the judge answers.
+- **The `optimization report` reviewer scorecard splits what each reviewer
+  found alone by severity, and gives a row per model** (#404). The
+  `found alone (M accepted)` part of a reviewer's or slot's line now lists
+  the accepted findings by severity, such as `(12 accepted: 2 high, 8 medium,
+  2 low)`: each counts under the last severity a round gave it, read without
+  regard to case, a round that gave none leaving it as it was, and one that
+  never had a known severity counts as `other`; buckets at zero are left out. A slot that
+  ran several models is followed by one row per model, with the same figures
+  a slot row has; a seat that only ran its usual slot gets these rows
+  directly under it, with no `usual` row. A run counts for its own model, and
+  a finding for the model of the run that first reported it -- `?` when that
+  round has no run of the reporter or the run records no model; a `?` made
+  only of failed runs that reported nothing gets no row and is left out of
+  the slot's label. A new footnote explains the rows. In `--json`, each reviewer and each slot under
+  `scorecard.<stage>.reviewers.<id>` gains `alone_accepted_by_severity`, with
+  all five buckets (`critical`, `high`, `medium`, `low`, `other`), and each
+  slot gains `per_model`, keyed by model. Keys are only added and every
+  existing figure keeps its value; in the text, the found-alone part of each
+  reviewer and slot line and the footnote under it read differently, and the
+  panel and total rows are unchanged.
 
 ### Changed
 

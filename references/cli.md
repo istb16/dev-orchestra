@@ -1259,6 +1259,13 @@ told apart, and how its events find its report:
   reported by that reviewer alone, and not linked in any round, as a possible
   duplicate, to another reviewer's finding with either side triaged
   `duplicate`. A duplicate no candidate link joined is still counted.
+- **The accepted count of found alone is split by severity**, as in
+  `(12 accepted: 2 high, 8 medium, 2 low)`: the severity is the last one a
+  round gave the finding, read without regard to case, a round that gave
+  none leaving it as it was, and `other` is any severity but `critical`, `high`,
+  `medium` or `low`, a missing one included. Only the severities with a
+  finding are listed, most serious first, so the split always adds up to the
+  accepted count.
 - **Rates are printed from 10 decided findings** (`accepted`, `rejected`,
   `duplicate`), and per-accepted figures from 10 accepted; below that the
   counts stand alone. A per-accepted figure is over the readable rounds only,
@@ -1296,6 +1303,20 @@ told apart, and how its events find its report:
   cost goes to its own slot and the findings to the later one that reviewed:
   a run that failed or timed out returned none. A label wider than the column
   goes on a line of its own above its figures.
+- **A slot that ran several models gets a row per model** under its own two
+  lines, indented two more spaces, most runs first, with the same figures and
+  the thresholds applied to each model alone. A seat that only ran its usual
+  slot gets the model rows directly under its own two lines, with no `usual`
+  row, which would repeat them. A slot that ran one model adds no rows. A
+  run's cost goes to the model it recorded; a finding counts for the model of
+  the run that first reported it, chosen as its slot is, and never for a
+  model a later round recorded. `?` is a run with no model recorded, and also
+  a finding whose first-reporting round had no run of the reporter or a run
+  with no model, so a slot can have a `?` row that holds findings and no runs.
+  A `?` entry made only of failed runs that reported nothing prints no row,
+  does not count as a model and is left out of the slot's label, so a seat
+  that ran one model and had such a failure adds no rows; `--json` keeps it
+  in `per_model` and `by_model`.
 
 It says what review bought, not whether review got worse. A higher cost per
 accepted finding is what better code under review looks like, and also what a
@@ -1310,17 +1331,23 @@ always present, with `code`, `design` and `total`. Each stage has
 `failed_runs`, `measured_runs`, `priced_runs`, `billed_tokens`, `cost_usd`,
 `billed_per_run` (over the measured runs), `cost_per_run` (over the priced
 runs), `reported`, `accepted`, `rejected`, `duplicate`, `open`, `alone`,
-`alone_accepted`, `rejection_rate`, `billed_per_accepted` and
-`cost_per_accepted`, the per-run pair `null` with nothing to divide by and the
-last three `null` below their threshold. A reviewer some counted round
+`alone_accepted`, `alone_accepted_by_severity`, `rejection_rate`,
+`billed_per_accepted` and `cost_per_accepted`, the per-run pair `null` with
+nothing to divide by and the last three `null` below their threshold.
+`alone_accepted_by_severity` always holds `critical`, `high`, `medium`, `low`
+and `other`, zero where nothing was found, and adds up to `alone_accepted`. A reviewer some counted round
 recorded as conditional also carries `when` (`high-risk`, `paths` or
 `relevance`, from the latest such round) and `left_out_rounds`. Every reviewer
 carries `models`, keyed by slot (`usual`, `high-risk`) and holding only the
 slots it ran or reported on -- `{}` for a seat that never ran: each slot has the
 same figures as a reviewer without `when` and `left_out_rounds`, plus
-`by_model`, its runs counted by the model each one ran. `panel` and `total`
-are the same as a reviewer without the `alone` pair and without `models`, a
-finding reported by two reviewers counted once. `total` also sums the four
+`by_model`, its runs counted by the model each one ran, and `per_model`, keyed
+by model (`?` for none recorded), each entry with the slot's figures without
+`by_model` and `per_model`. `per_model` is there even when the slot ran one
+model, though the text prints no model rows for it. `panel` and `total` are
+the same as a reviewer without `alone`, `alone_accepted`,
+`alone_accepted_by_severity` and `models`, a finding reported by two
+reviewers counted once. `total` also sums the four
 round counts.
 
 When every round escalated, the report says so outright: the level as
