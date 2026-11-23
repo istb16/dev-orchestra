@@ -691,15 +691,23 @@ Everything above decides from path names and seat conditions. With
 asks a cheap model for its own reading of the diff, and records it beside what
 the rules decide. It is recorded, never acted on: the round's panel, level,
 findings cap, model slots, refusals and exit code are the same whatever it
-answers, and whether it ran at all. Under `rules`, the default, it does not
-run and no output changes.
+answers, and whether it ran at all. What it does change is what is left of
+the workflow's backstops: each run counts toward
+`budgets.total_delegated_runs` and `budgets.max_runtime_seconds`, so a
+workflow near either one has a later run refused sooner. Under `rules`, the
+default, it does not run, and no output changes but the
+`optimization.risk_judge: rules` that `config show` lists among the
+effective settings.
 
 **When it runs.** At most once per code round (`round_id`), in a thread beside
 the panel, after the test gate, the size refusal and the runtime refusal: a
 refused round is not judged and gets no record. A fix-only re-review round (a
 snapshot with `incremental_from` that is not the whole-change recheck) and a
 re-run of a round already judged are recorded as `skipped`, with
-`skip_reason`; the re-run keeps the record of the run that judged it. A round
+`skip_reason`; the re-run keeps the record of the run that judged it. So is
+the whole-change recheck when a round of its lineage -- the rounds since the
+last round 1 -- was judged: it reads the change round 1 read, and judging it
+again would count one change twice. A round
 counts as judged once its event holds a record the judge ran for: one whose
 panel failed saved none, so its re-run is judged again and spends another
 attempt. Design rounds are never judged.

@@ -1,4 +1,4 @@
-<!-- translated-from: references/configuration.md sha256:10656ea2a558cb31f48c1658a84c5f31746fd6fadfb674bd5abfae22408a565d -->
+<!-- translated-from: references/configuration.md sha256:b671d0f01d183ab06cb6618d554cce09e2160fd23571c38666a0f6b1ed1eb34f -->
 
 > この文書は [references/configuration.md](../../../references/configuration.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -1087,7 +1087,8 @@ budgets:
 `options.args` があれば実行は断られ、読み取り専用で走らせられない provider でも断られます。
 コードレビューのラウンドごとに最大 1 回、レビュアー陣と並んで走り、それもラウンドが
 すべての拒否を通ったあとだけです。設計レビューのラウンドと、修正だけの再レビューの
-ラウンドは判定しません。1 回の実行で `budgets.risk_judge`（デフォルト 4）を 1 回使い、
+ラウンドは判定しません。同じ系列のラウンドがすでに判定した変更の、変更全体の再確認も
+判定しません。1 回の実行で `budgets.risk_judge`（デフォルト 4）を 1 回使い、
 締め切りは `run.timeout_seconds.risk_judge`（デフォルト 180）と
 `review.idle_timeout_seconds` です。トークンと実行時間には、ステージ `risk_judge` として
 数えます。何がうまくいかなくても -- ロールがない、CLI がない、時間切れ、予算切れ、読めない

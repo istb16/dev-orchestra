@@ -501,6 +501,22 @@ class TestShouldRun(unittest.TestCase):
         other = {"stage": "review", "round_id": "r2", "risk_judge": {"status": "ok"}}
         self.assertTrue(risk_judge.should_run(meta, [other])[0])
 
+    def test_a_recheck_of_a_judged_change_is_skipped(self):
+        """The recheck reads the change round 1 read: judged once per lineage, not twice."""
+        recheck = {"round_id": "r3", "incremental_from": "abc", "recheck": True}
+        judged = {"stage": "review", "iteration": 1, "round_id": "r1", "risk_judge": {"status": "ok"}}
+        fix = {"stage": "review", "iteration": 2, "round_id": "r2", "risk_judge": {"status": "skipped"}}
+        self.assertEqual(
+            risk_judge.should_run(recheck, [judged, fix]),
+            (False, "whole-change recheck of a change already judged"),
+        )
+        # Round 1 was not judged (budget spent, say): the recheck is the change's first verdict.
+        spent = dict(judged, risk_judge={"status": "budget_spent"})
+        self.assertTrue(risk_judge.should_run(recheck, [spent, fix])[0])
+        # A judged round of an earlier lineage does not count: the new round 1 starts another.
+        new_start = {"stage": "review", "iteration": 1, "round_id": "r4"}
+        self.assertTrue(risk_judge.should_run(recheck, [judged, fix, new_start])[0])
+
 
 class TestRoundInputs(IsolatedCase):
     def test_round_inputs_are_what_the_plan_reads(self):
@@ -819,6 +835,21 @@ class TestRunJudge(_JudgeCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(book.in_flight(), {})
         self.assertEqual(len(self.events()), 1)
+
+    def test_an_end_that_raises_in_the_handler_still_records_the_attempt(self):
+        """Both ends raising: the spent attempt is still marked, so the round is not judged again."""
+        loaded = self.load()
+        book = self.book(loaded)
+
+        def broken_run(*args, **kwargs):
+            raise RuntimeError("adapter fell over")
+
+        with mock.patch.object(MockProvider, "run", broken_run):
+            with mock.patch.object(book, "end", side_effect=OSError("state.json is locked")):
+                record = risk_judge._judge(loaded, self.workspace, book, dict(META), plan(), {})
+        self.assertEqual(record.status, "failed")
+        self.assertIn("adapter fell over", record.note)
+        self.assertTrue(record.to_dict()["attempted"])
 
     def test_an_error_after_the_run_still_closes_its_entry(self):
         self.set_env("DEV_ORCHESTRA_MOCK_RESPONSE", answer())

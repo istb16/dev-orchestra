@@ -742,10 +742,11 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     refusal = _refuse_if_runtime_spent(book, "review", args.force)
     if refusal is not None:
         return refusal
+    ctx = _RoundContext(args, loaded, settings, workspace, book, _CODE, iteration)
     # After every refusal, so a refused round is never judged; beside the
     # panel, so it adds no wall clock. Nothing it returns reaches the round.
+    # Started right before the `try` that joins it, so nothing raises between.
     judged = _start_judge(loaded, workspace, book, meta, plan, configured)
-    ctx = _RoundContext(args, loaded, settings, workspace, book, _CODE, iteration)
     try:
         panel = _run_panel(
             ctx,

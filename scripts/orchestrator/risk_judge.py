@@ -497,27 +497,46 @@ class Record:
         return data
 
 
+def _judged(event: Any) -> bool:
+    """Whether ``event`` is a review round's event holding a record the judge ran for."""
+    return (
+        isinstance(event, dict)
+        and event.get("stage") == _REVIEW_STAGE
+        and isinstance(event.get("risk_judge"), dict)
+        and risk_judge_ran(event["risk_judge"])
+    )
+
+
+def _lineage_judged(events: Sequence[Any]) -> bool:
+    """Whether a round of the current lineage was judged.
+
+    The lineage starts at the last review event of round 1: the rounds after
+    it are its fixes and its recheck, all on the same change.
+    """
+    reviews = [event for event in events if isinstance(event, dict) and event.get("stage") == _REVIEW_STAGE]
+    starts = [index for index, event in enumerate(reviews) if event.get("iteration") == 1]
+    return any(_judged(event) for event in reviews[starts[-1] :]) if starts else False
+
+
 def should_run(meta: Dict[str, Any], events: Sequence[Any]) -> Tuple[bool, str]:
-    """``(runs, skip reason)``: a fix-only round and a ``round_id`` already judged are skipped.
+    """``(runs, skip reason)``: fix-only rounds, rechecks of a judged change, judged rounds are skipped.
 
     A fix-only round is the one ``round_plan`` calls a re-review: a snapshot
-    with ``incremental_from`` that is not a whole-change recheck. A round is
-    judged once: a ``review`` event for its ``round_id`` whose ``risk_judge``
-    record the judge ran for means it was. A ``risk_judge`` event alone does
-    not: a round whose panel failed saved no record, and is judged again.
+    with ``incremental_from`` that is not a whole-change recheck. The
+    whole-change recheck reads the change round 1 already read, so it is
+    judged only when no round of its lineage was. A round is judged once: a
+    ``review`` event for its ``round_id`` whose ``risk_judge`` record the
+    judge ran for means it was. A ``risk_judge`` event alone does not: a round
+    whose panel failed saved no record, and is judged again.
     """
     if meta.get("incremental_from") and not meta.get("recheck"):
         return False, "fix-only round"
+    if meta.get("recheck") and _lineage_judged(events):
+        return False, "whole-change recheck of a change already judged"
     round_id = str(meta.get("round_id") or "")
     if round_id:
         for event in events:
-            if (
-                isinstance(event, dict)
-                and event.get("stage") == _REVIEW_STAGE
-                and str(event.get("round_id") or "") == round_id
-                and isinstance(event.get("risk_judge"), dict)
-                and risk_judge_ran(event["risk_judge"])
-            ):
+            if _judged(event) and str(event.get("round_id") or "") == round_id:
                 return False, "round %s already judged" % round_id
     return True, ""
 
@@ -693,11 +712,15 @@ def _judge(
         error = redact("%s: %s" % (type(exc).__name__, exc))
         if not closed:
             closed = True
-            book.end(
-                token,
-                "failed",
-                {"round_id": round_id, "provider": name, "judge_status": "failed", "error": error},
-            )
+            try:
+                book.end(
+                    token,
+                    "failed",
+                    {"round_id": round_id, "provider": name, "judge_status": "failed", "error": error},
+                )
+            except Exception:
+                # The record below must still say the attempt was spent.
+                pass
         return Record(
             "failed",
             blank,

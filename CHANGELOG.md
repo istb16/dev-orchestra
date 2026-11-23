@@ -23,8 +23,9 @@ authors can find it.
   specialist kind -- `security`, `performance`, `test`, `architecture`,
   `database`, `frontend`, `backend` -- is needed. It reads the diff blind,
   with no pattern hit and no seat named, cut at a file boundary to 40,000
-  characters. Fix-only re-review rounds, design rounds and a round already
-  judged are not asked. The answer goes into the round's event,
+  characters. Fix-only re-review rounds, design rounds, a round already
+  judged and the whole-change recheck of a change already judged are not
+  asked. The answer goes into the round's event,
   `consolidated.json`, `rounds/*.json` and `review run --json` under
   `risk_judge`, next to each kind's bare rule answer and how the rules decide
   it (`paths`, `high-risk`, `relevance`, `always` or `none`), with one
@@ -33,10 +34,14 @@ authors can find it.
   section with one agreement row per kind and one for high risk. The judge
   has its own budget, `budgets.risk_judge` (default 4), and deadline,
   `run.timeout_seconds.risk_judge` (default 180), and is counted as the
-  stage `risk_judge`. `family: haiku` now resolves on Claude. The default,
-  `rules`, does not run it, and every output stays as it was; under `record`
-  the round's panel, level, findings cap, model slots, refusals and exit code
-  are the same whatever the judge answers.
+  stage `risk_judge`; each run also counts toward
+  `budgets.total_delegated_runs` and `budgets.max_runtime_seconds`, so a
+  workflow near either one has a later run refused sooner. `family: haiku`
+  now resolves on Claude. The default, `rules`, does not run it, and every
+  output stays as it was but the `optimization.risk_judge: rules` that
+  `config show` lists among the effective settings; under `record` the
+  round's panel, level, findings cap, model slots, refusals and exit code are
+  the same whatever the judge answers.
 
 ### Changed
 

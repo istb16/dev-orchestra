@@ -1132,7 +1132,8 @@ It runs read-only, as a reviewer does, and the same rules apply to it: a
 project file's `options.args` refuses its runs, and so does a provider that
 cannot run it read-only. It runs at most once per code review round, beside
 the panel, and only once the round is past every refusal; a design round and
-a fix-only re-review round are never judged. Each run spends one of
+a fix-only re-review round are never judged, nor is the whole-change recheck
+of a change a round of its lineage already judged. Each run spends one of
 `budgets.risk_judge` (default 4), is deadlined by
 `run.timeout_seconds.risk_judge` (default 180) and
 `review.idle_timeout_seconds`, and is counted in the run's tokens and runtime
