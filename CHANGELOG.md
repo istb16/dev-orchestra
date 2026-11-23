@@ -13,6 +13,8 @@ authors can find it.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-23
+
 ### Added
 
 - **`optimization.risk_judge: record`: a cheap model's own verdict on each
@@ -3816,7 +3818,8 @@ First release.
   none of which invoke a real CLI.
 - CI on Linux, macOS and Windows: lint, tests, skill validation.
 
-[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/istb16/dev-orchestra/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/istb16/dev-orchestra/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/istb16/dev-orchestra/compare/v1.3.2...v1.4.0
 [1.3.2]: https://github.com/istb16/dev-orchestra/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/istb16/dev-orchestra/compare/v1.3.0...v1.3.1
