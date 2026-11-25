@@ -13,6 +13,16 @@ authors can find it.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A fix-only round no longer reviews a nested repository or worktree that
+  nothing ignores** (#414). Its two trees are written with `git add -A`, which
+  records such a directory as a gitlink, so the round's diff carried a
+  `Subproject commit` hunk for it and its path reached `files`,
+  `changed_paths` and `condition_paths`, where the first round had left it
+  out. A gitlink in neither `HEAD` nor the index is now dropped from a
+  fix-only round's change as well; a tracked submodule is unchanged.
+
 ## [1.5.0] - 2026-11-23
 
 ### Added

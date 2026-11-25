@@ -1,4 +1,4 @@
-<!-- translated-from: references/reviews.md sha256:103eccc3931c6d9436044cd8f4a17584484543a05ade1e3df5908524ef78bc44 -->
+<!-- translated-from: references/reviews.md sha256:6d4898e69f41f9186743d243f79380c4f04a7bd23133128fe275bbe82a9b5d5a -->
 
 > この文書は [references/reviews.md](../../../references/reviews.md) の日本語訳です。内容が食い違うときは英語版が正です。
 
@@ -186,7 +186,10 @@ minify された出力、ソースマップ、`*.snap` をカバーします。�
 
 入れ子のリポジトリや、このリポジトリの中に置いた worktree は変更の一部では
 ありません。git はこれをディレクトリとして挙げ、これまでどおりスナップショット
-から外します。diff も省略もしません。
+から外します。diff も省略もしません。修正だけのラウンドでも外します。このラウンドの
+tree には、何にも無視されていない入れ子のリポジトリが gitlink として入りますが、
+`HEAD` にもインデックスにもない gitlink は、そのパスも含めて変更から外します。
+リポジトリが追跡している submodule は、変更の一部のままです。
 
 ファイルはディスク上のとおりの名前で読みますが、スナップショットへの記録、
 `review snapshot` の表示、レビュアーへのプロンプトでは、名前の中の制御文字を
