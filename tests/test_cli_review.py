@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import threading
 import unittest
 from typing import Any, ClassVar, Dict, List, Tuple
@@ -414,6 +415,35 @@ class TestReviewPipeline(IsolatedCase):
         self.assertEqual(run_cli("review", "run")[0], 0)
         self.accept_all()
         self.write("app.py", '"""Adding."""\n\n\ndef add(a, b):\n    return a + b  # fixed\n')
+
+    def nested_commit(self, path, message):
+        """Commit everything in the nested repository at ``path``."""
+        identity = ["-c", "user.name=t", "-c", "user.email=t@example.com"]
+        for args in (["add", "-A"], [*identity, "commit", "-qm", message]):
+            subprocess.run(["git", *args], cwd=path, check=True, capture_output=True)
+
+    def test_a_fix_only_round_leaves_out_a_nested_worktree_as_round_1_does(self):
+        """``git add -A`` writes an unignored nested repository into both trees as a
+        gitlink; round 1 never listed it, so round 2 must not either (#414)."""
+        nested = os.path.join(self.project, ".claude", "worktrees", "feat-template")
+        os.makedirs(nested)
+        subprocess.run(["git", "init", "-q"], cwd=nested, check=True, capture_output=True)
+        self.write(".claude/worktrees/feat-template/a.txt", "one\n")
+        self.nested_commit(nested, "one")
+        meta = json.loads(run_cli("review", "snapshot", "--json")[1])
+        self.assertNotIn(".claude/worktrees/feat-template", meta["files"])
+        self.assertEqual(run_cli("review", "run")[0], 0)
+        self.accept_all()
+        self.write("app.py", "def add(a, b):\n    return a + b  # fixed\n")
+        self.write(".claude/worktrees/feat-template/a.txt", "two\n")
+        self.nested_commit(nested, "two")
+        meta = json.loads(run_cli("review", "snapshot", "--json")[1])
+        self.assertTrue(meta["incremental_from"])
+        self.assertEqual(meta["files"], ["app.py"])
+        for key in ("changed_paths", "condition_paths"):
+            self.assertNotIn(".claude/worktrees/feat-template", meta[key], key)
+        with open(self.cli_workspace().snapshot_path, encoding="utf-8") as handle:
+            self.assertNotIn("Subproject commit", handle.read())
 
     def test_run_allows_the_spare_round_only_on_a_recheck_snapshot(self):
         self.clean_fix_round(enabled=True)

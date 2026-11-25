@@ -274,6 +274,12 @@ def _tracked_diff(
     # decided from this cheap listing, so the expensive call is made once and
     # already filtered.
     tracked, listed_code, listed_err = _numstat(root, revisions, patterns)
+    # A nested repository or worktree nothing ignores is in both trees as a
+    # gitlink, where round 1's untracked pass never listed it: it is no part
+    # of the change, not even a path the risk check reads (#414).
+    nested = _untracked_gitlinks(root, revisions) if previous_tree else set()
+    if nested:
+        tracked = [entry for entry in tracked if entry.get("path") not in nested]
     if previous_tree and include_untracked:
         _mark_unread_untracked(tracked, root, revisions)
     withheld = [entry for entry in tracked if entry.get("pattern") or entry.get("reason")]
@@ -286,7 +292,9 @@ def _tracked_diff(
         withheld = [entry for entry in withheld if entry["path"] not in suppressed]
 
     if listed_code == 0:
-        exclusions = _pathspecs(withheld) + [":(exclude,literal)%s" % path for path in suppressed]
+        exclusions = _pathspecs(withheld) + [
+            ":(exclude,literal)%s" % path for path in [*suppressed, *sorted(nested)]
+        ]
         code, diff, err = _diff(root, revisions, exclusions)
         if code != 0 and exclusions:
             # Old git, or pathspec magic it does not accept. Taking the whole
@@ -925,6 +933,36 @@ def _not_under_review(
         if is_orchestrator_artifact(path, workspace) or path in untracked:
             suppressed.append(path)
     return suppressed
+
+
+#: The mode git gives a gitlink: a submodule, or any nested repository or
+#: worktree ``git add -A`` met in the working tree.
+_GITLINK_MODE = "160000"
+
+
+def _untracked_gitlinks(root: str, revisions: Sequence[str]) -> "set[str]":
+    """Gitlinks the diff between ``revisions`` changes that the user does not track.
+
+    A gitlink in ``HEAD`` or in the index is a submodule the user tracks, and
+    stays part of the change. One in neither is a nested repository or
+    worktree that ``ws.write_tree`` picked up because nothing ignores it --
+    what round 1's untracked pass leaves out (``_list_untracked``).
+    """
+    code, raw, _ = ws.git_bytes(["diff", "--raw", "-z", "--no-renames", *revisions, "--"], root)
+    if code != 0:
+        return set()
+    links: "set[str]" = set()
+    fields = raw.split(b"\0")
+    # Each record is a ``:old new sha sha status`` header and then its path.
+    for header, name in zip(fields[::2], fields[1::2], strict=False):
+        modes = header.decode("ascii", "replace").lstrip(":").split()[:2]
+        if _GITLINK_MODE in modes and name:
+            links.add(_decode_name(name))
+    if not links:
+        return links
+    known = _listed_paths(root, ["ls-files", "-z"])
+    known |= _listed_paths(root, ["ls-tree", "-r", "-z", "--name-only", "HEAD"])
+    return links - known
 
 
 def _parse_numstat(out: str) -> "List[tuple[Optional[int], Optional[int], str, str]]":

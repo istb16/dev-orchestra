@@ -386,6 +386,29 @@ class TestUntrackedFileNames(IsolatedCase):
         self.assertEqual(code, 1)
         self.assertIn("the snapshot is empty -- there is nothing to review", out)
 
+    def test_only_a_gitlink_the_user_does_not_track_is_left_out_of_a_tree_diff(self):
+        """What ``git add -A`` wrote into both trees of a re-review (#414): left
+        out while nothing tracks it, kept once the index holds it as a submodule."""
+        nested = os.path.join(self.project, "wt")
+        os.makedirs(nested)
+        subprocess.run(["git", "init", "-q"], cwd=nested, check=True, capture_output=True)
+
+        def commit(text):
+            with open(os.path.join(nested, "a.txt"), "w", encoding="utf-8") as handle:
+                handle.write(text)
+            identity = ["-c", "user.name=t", "-c", "user.email=t@example.com"]
+            for args in (["add", "-A"], [*identity, "commit", "-qm", text]):
+                subprocess.run(["git", *args], cwd=nested, check=True, capture_output=True)
+
+        commit("one")
+        before = ws.write_tree(self.project)
+        commit("two")
+        after = ws.write_tree(self.project)
+        self.assertTrue(before and after and before != after)
+        self.assertEqual(review_snapshot._untracked_gitlinks(self.project, [before, after]), {"wt"})
+        self.git("add", "wt")
+        self.assertEqual(review_snapshot._untracked_gitlinks(self.project, [before, after]), set())
+
     @unittest.skipIf(os.name == "nt", "Windows does not allow these bytes in a file name")
     def test_a_carriage_return_or_a_byte_that_is_not_utf8_survives(self):
         names = [b"cr\rname.py", b"latin\xe9.py"]
