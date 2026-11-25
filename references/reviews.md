@@ -174,7 +174,10 @@ renamed one is withheld under both names.
 
 A nested repository, or a worktree placed inside this one, is not part of the
 change: git lists it as a directory, and it is left out of the snapshot as
-before, neither diffed nor withheld.
+before, neither diffed nor withheld. A fix-only round leaves it out too: its
+trees hold one that nothing ignores as a gitlink, and a gitlink in neither
+`HEAD` nor the index is dropped from the change, its paths included. A
+submodule the repository tracks stays part of the change.
 
 A file is read by its name as it is on disk, but the name is recorded in the
 snapshot, printed by `review snapshot` and put in a reviewer's prompt with
